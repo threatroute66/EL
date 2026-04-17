@@ -90,6 +90,9 @@ def _h_apt(f: Finding) -> int:
     if _has_tag("H_C2_OR_REVERSE_SHELL")(f): s += 1
     if _has_tag("H_LIVING_OFF_THE_LAND")(f): s += 1
     if _has_tag("H_CREDENTIAL_ACCESS")(f): s += 3
+    if _has_tag("H_LATERAL_MOVEMENT")(f): s += 2
+    if _has_tag("H_PERSISTENCE_SCHEDULED_TASK")(f): s += 1
+    if _has_tag("H_PERSISTENCE_SERVICE")(f): s += 1
     if _claim_contains("4624", "4672", "4769", "kerberos",
                         "credential-access target")(f):
         s += 1
@@ -215,6 +218,19 @@ HYPOTHESES: list[Hypothesis] = [
                "Malware or operator extracting credentials from system processes "
                "(lsass memory, SAM hive, Kerberos tickets). Mimikatz-class activity.",
                _h_credential_access),
+    Hypothesis("H_LATERAL_MOVEMENT",
+               "Lateral movement",
+               "Operator pivoting between hosts via PsExec, WMIC, RDP, SSH, "
+               "or admin-share file copy.",
+               lambda f: 3 if "H_LATERAL_MOVEMENT" in f.hypotheses_supported else 0),
+    Hypothesis("H_PERSISTENCE_SCHEDULED_TASK",
+               "Persistence via scheduled task",
+               "Attacker-installed scheduled task surviving reboot.",
+               lambda f: 3 if "H_PERSISTENCE_SCHEDULED_TASK" in f.hypotheses_supported else 0),
+    Hypothesis("H_PERSISTENCE_SERVICE",
+               "Persistence via service",
+               "Attacker-installed Windows service surviving reboot.",
+               lambda f: 3 if "H_PERSISTENCE_SERVICE" in f.hypotheses_supported else 0),
 ]
 
 

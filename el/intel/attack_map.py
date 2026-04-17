@@ -45,6 +45,16 @@ HYPOTHESIS_MAP: dict[str, list[Technique]] = {
         ("T1003.001", "OS Credential Dumping: LSASS Memory"),
         ("T1003", "OS Credential Dumping"),
     ],
+    "H_LATERAL_MOVEMENT": [
+        ("T1021.002", "Remote Services: SMB/Windows Admin Shares"),
+        ("T1569.002", "System Services: Service Execution"),
+    ],
+    "H_PERSISTENCE_SCHEDULED_TASK": [
+        ("T1053.005", "Scheduled Task/Job: Scheduled Task"),
+    ],
+    "H_PERSISTENCE_SERVICE": [
+        ("T1543.003", "Create or Modify System Process: Windows Service"),
+    ],
     "H_EID_4625": [("T1110", "Brute Force")],
     "H_EID_1102": [("T1070.001", "Indicator Removal: Clear Windows Event Logs")],
     "H_EID_4697": [("T1543.003", "Create or Modify System Process: Windows Service")],

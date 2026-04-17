@@ -9,8 +9,8 @@ from __future__ import annotations
 from pathlib import Path
 
 from el.agents.base import Agent, AgentContext
-from el.schemas.finding import Finding
-from el.skills import sleuthkit as sk
+from el.schemas.finding import EvidenceItem, Finding
+from el.skills import disk_anomaly, sleuthkit as sk
 
 
 class DiskForensicatorAgent(Agent):
@@ -120,6 +120,16 @@ class DiskForensicatorAgent(Agent):
                 if fls_run.rc == 0 and fls_run.stdout_path.stat().st_size > 0:
                     out.extend(self._fls_to_timeline(ctx, fls_run, analysis,
                                                      part_label="whole-image"))
+                    # No partition table = single filesystem at offset 0.
+                    # Try mounting + extracting artifacts the same way we do per-partition.
+                    extracted = self._extract_ntfs_artifacts(
+                        ctx, raw_image,
+                        partition={"slot": "0", "start_sector": 0,
+                                    "description": "whole-image (no partition table)"},
+                        sector_size=sector_size,
+                        label="whole-image-off0")
+                    if extracted:
+                        ctx.shared["artifacts_dir"] = str(extracted)
                 else:
                     out.append(self.emit(ctx, Finding(
                         case_id=ctx.case_id, agent=self.name, confidence="insufficient",
@@ -266,5 +276,47 @@ class DiskForensicatorAgent(Agent):
             out.append(self.emit(ctx, Finding(
                 case_id=ctx.case_id, agent=self.name, confidence="insufficient",
                 claim=f"mactime failed for {part_label}: {e}",
+            )))
+
+        # Disk-side anomaly detection: walk the bodyfile for suspicious path
+        # patterns (PsExec, PyInstaller temp dirs, masqueraded svchost/lsass,
+        # scheduled-task persistence, ransomware-tooling traces, …).
+        out.extend(self._scan_disk_anomalies(ctx, fls_run.stdout_path, part_label))
+        return out
+
+    def _scan_disk_anomalies(self, ctx: AgentContext, bodyfile_path,
+                              part_label: str) -> list[Finding]:
+        out: list[Finding] = []
+        try:
+            hits = disk_anomaly.scan_file(bodyfile_path)
+        except Exception as e:
+            out.append(self.emit(ctx, Finding(
+                case_id=ctx.case_id, agent=self.name, confidence="insufficient",
+                claim=f"disk-anomaly scan failed for {part_label}: {e}",
+            )))
+            return out
+        if not hits:
+            return out
+
+        import hashlib
+        for h in hits:
+            sample = "; ".join(h.matches[:3])
+            facts = {"pattern_id": h.pattern_id,
+                     "match_count": len(h.matches),
+                     "samples": h.matches[:5],
+                     "partition": part_label}
+            ev = EvidenceItem(
+                tool="el.disk_anomaly", version="0.1.0",
+                command=f"disk_anomaly.scan_file({bodyfile_path.name})",
+                output_sha256=hashlib.sha256(
+                    bodyfile_path.read_bytes()[:1024 * 1024]).hexdigest(),
+                output_path=str(bodyfile_path),
+                extracted_facts=facts,
+            )
+            out.append(self.emit(ctx, Finding(
+                case_id=ctx.case_id, agent=self.name, confidence="high",
+                claim=(f"Disk anomaly [{h.pattern_id}] in {part_label}: {h.description}. "
+                       f"{len(h.matches)} match(es). Samples: {sample}"),
+                evidence=[ev], hypotheses_supported=h.hypotheses,
             )))
         return out
