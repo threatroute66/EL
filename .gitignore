@@ -1,0 +1,82 @@
+# --- Python ---
+.venv/
+venv/
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+build/
+dist/
+.python-version
+pip-wheel-metadata/
+
+# --- Test / lint caches ---
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.tox/
+.coverage
+htmlcov/
+
+# --- IDE / editor ---
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# --- EL case workspaces (per-case evidence + outputs) ---
+# Each case dir under cases/ is gitignored; cases/.keep lets the dir live
+cases/*/
+!cases/.keep
+
+# --- EL ad-hoc analysis area ---
+analysis/*
+!analysis/.keep
+
+# --- Provisioning snapshots (host-state captures) ---
+provisioning/snapshots/snap-*/
+!provisioning/snapshots/.keep
+
+# --- Local-only Claude Code overrides ---
+.claude/settings.local.json
+.claude/.credentials.json
+
+# --- Defensive: forensic data must NEVER be committed ---
+# Memory images
+*.vmem
+*.mem
+*.raw
+*.lime
+*.dmp
+*.kdmp
+# Disk images
+*.E01
+*.e01
+*.L01
+*.l01
+*.AD1
+*.ad1
+*.dd
+*.img
+*.iso
+*.vhd
+*.vhdx
+*.vmdk
+# Logs / artifacts
+*.evtx
+*.etl
+*.plaso
+# DBs that case workflows may produce outside cases/
+*.kuzu
+*.sqlite
+*.db
+# Misc evidence containers
+*.zip
+*.tar.gz
+*.7z
+
+# --- Editor / OS noise we don't want to track ---
+nohup.out
+*.pid

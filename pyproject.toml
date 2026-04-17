@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "el"
+version = "0.1.0"
+description = "EL — Edmond Locard. Multi-agent DFIR orchestrator for SANS SIFT."
+requires-python = ">=3.11"
+dependencies = [
+    "pydantic>=2.6",
+    "kuzu>=0.4",
+    "typer>=0.12",
+    "rich>=13.7",
+    "python-ulid>=2.2",
+    "volatility3>=2.7",
+    "anthropic>=0.39",
+    "scapy>=2.5",
+    "stix2>=3.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8",
+    "ruff>=0.4",
+]
+
+[project.scripts]
+el = "el.cli:app"
+
+[tool.setuptools.packages.find]
+include = ["el*"]

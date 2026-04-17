@@ -1,0 +1,160 @@
+"""Skill: Volatility 3 wrapper.
+
+Deterministic. No LLM. Runs a vol3 plugin against a memory image, captures
+the JSON output to disk, hashes it, and returns a provenance bundle suitable
+for embedding directly into a Finding's evidence[] field.
+"""
+from __future__ import annotations
+
+import hashlib
+import json
+import shutil
+import subprocess
+from dataclasses import dataclass
+from pathlib import Path
+
+from el.schemas.finding import EvidenceItem
+
+
+class Vol3Error(RuntimeError):
+    pass
+
+
+@dataclass
+class PluginRun:
+    plugin: str
+    image: Path
+    rc: int
+    stdout_path: Path
+    stderr_path: Path
+    rows: list[dict]
+    command: list[str]
+    version: str
+
+    def as_evidence(self, facts: dict | None = None) -> EvidenceItem:
+        sha = hashlib.sha256(self.stdout_path.read_bytes()).hexdigest()
+        merged_facts = {"row_count": len(self.rows), "rc": self.rc}
+        if facts:
+            merged_facts.update(facts)
+        return EvidenceItem(
+            tool="volatility3",
+            version=self.version,
+            command=" ".join(self.command),
+            output_sha256=sha,
+            output_path=str(self.stdout_path),
+            extracted_facts=merged_facts,
+        )
+
+
+def _vol_executable() -> str:
+    """Locate the `vol` script. shutil.which respects PATH only — when EL is
+    invoked via .venv/bin/el WITHOUT venv activation, the venv's bin/ is NOT
+    on PATH, so we also probe the bin directory next to the active Python.
+    """
+    import sys
+    from pathlib import Path as _Path
+    p = shutil.which("vol")
+    if p:
+        return p
+    venv_vol = _Path(sys.executable).parent / "vol"
+    if venv_vol.is_file():
+        return str(venv_vol)
+    raise Vol3Error("vol3 not found (not on PATH and not next to active python interpreter); "
+                    "install volatility3 in the venv via `pip install -e .`")
+
+
+def _vol_version() -> str:
+    try:
+        from volatility3.framework import constants
+        return constants.PACKAGE_VERSION
+    except Exception:
+        return "unknown"
+
+
+def run_plugin(
+    image: str | Path,
+    plugin: str,
+    out_dir: str | Path,
+    extra_args: list[str] | None = None,
+    timeout: int = 600,
+    offline: bool = False,
+) -> PluginRun:
+    """Run a single vol3 plugin and capture its JSON output + stderr.
+
+    plugin: e.g. 'windows.pslist', 'windows.pstree', 'windows.malfind'
+    offline: pass --offline to fail fast when ISF symbol downloads would hang
+             (per memory-analysis SKILL: vol3 fetches PDB symbol tables from
+             Microsoft on first use; offline runs need this flag).
+    """
+    image = Path(image)
+    if not image.exists():
+        raise Vol3Error(f"image not found: {image}")
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    safe = plugin.replace(".", "_").replace("/", "_")
+    stdout_path = out_dir / f"{safe}.json"
+    stderr_path = out_dir / f"{safe}.stderr"
+
+    base = [_vol_executable(), "-q", "-r", "json"]
+    if offline:
+        base.append("--offline")
+    cmd = [*base, "-f", str(image), plugin, *(extra_args or [])]
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+    except subprocess.TimeoutExpired as e:
+        stderr_path.write_text(f"TIMEOUT after {timeout}s\n{e}")
+        raise Vol3Error(f"timeout running {plugin}") from e
+
+    stderr_path.write_text(proc.stderr or "")
+    raw = proc.stdout or ""
+    stdout_path.write_text(raw)
+
+    rows: list[dict] = []
+    if raw.strip():
+        try:
+            parsed = json.loads(raw)
+            rows = parsed if isinstance(parsed, list) else [parsed]
+        except json.JSONDecodeError:
+            rows = []
+
+    return PluginRun(
+        plugin=plugin,
+        image=image,
+        rc=proc.returncode,
+        stdout_path=stdout_path,
+        stderr_path=stderr_path,
+        rows=rows,
+        command=cmd,
+        version=_vol_version(),
+    )
+
+
+def detect_os(image: str | Path, out_dir: str | Path) -> tuple[str | None, PluginRun]:
+    """Best-effort OS family detection by trying banner plugins.
+
+    Returns (os_family, run) where os_family in {'windows','linux','mac', None}.
+    """
+    out_dir = Path(out_dir)
+    for plugin, family in (
+        ("windows.info.Info", "windows"),
+        ("linux.bash.Bash", "linux"),
+        ("mac.bash.Bash", "mac"),
+        ("banners.Banners", None),
+    ):
+        try:
+            r = run_plugin(image, plugin, out_dir, timeout=120)
+        except Vol3Error:
+            continue
+        if r.rc == 0 and r.rows:
+            if family:
+                return family, r
+            txt = (r.stdout_path.read_text(errors="ignore") + r.stderr_path.read_text(errors="ignore")).lower()
+            if "windows" in txt or "ntoskrnl" in txt:
+                return "windows", r
+            if "linux" in txt:
+                return "linux", r
+            if "darwin" in txt or "xnu" in txt:
+                return "mac", r
+            return None, r
+    raise Vol3Error("no banner plugin produced usable output")

@@ -1,0 +1,33 @@
+# Optional tools EL detects + supports gracefully but does NOT install.
+# When absent, the affected agents emit `confidence=insufficient` Findings
+# with a clear note about what's missing. The state machine still completes.
+#
+# Install these on a SIFT box only if you need their respective agent paths.
+# ============================================================================
+
+# --- Memory Baseliner ---------------------------------------------------------
+# Used by: MemoryForensicatorAgent (when comparing a suspect image against a
+# known-good baseline JSON). Without it, baseline comparison Findings are skipped.
+#
+# git clone https://github.com/Bigb1n/Memory-Baseliner /opt/memory-baseliner
+# # Verify with: python3 /opt/memory-baseliner/baseline.py --help
+
+# --- Network analysis tools (Zeek / Suricata / tshark) -----------------------
+# EL's NetworkAnalystAgent currently uses scapy (pure-Python, ships in deps).
+# These tools are NOT consumed by EL today — install only if you plan to
+# add agents that need them. Doctor reports them as "no" until installed.
+#
+# sudo apt install -y zeek suricata tshark
+
+# --- PECmd (Prefetch parser) -------------------------------------------------
+# Other EZ Tools ship with the SIFT distribution; PECmd is occasionally absent.
+# When present at /opt/zimmermantools/PECmd.dll, the ezt skill wrapper
+# (run_pecmd) becomes available to DiskForensicatorAgent extensions.
+# No package install — copy from a SIFT image that has it, or pull from:
+#   https://ericzimmerman.github.io/
+
+# --- Volatility 3 system install (alternative to pip) ------------------------
+# EL ships vol3 as a Python dependency installed into its venv. The
+# Protocol SIFT global CLAUDE.md describes a system install at
+# /opt/volatility3-2.20.0/vol.py — that path is OPTIONAL, EL probes both
+# locations and prefers whichever it finds. Do not install both.

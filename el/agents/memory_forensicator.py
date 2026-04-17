@@ -1,0 +1,233 @@
+"""Memory Forensicator — runs vol3 plugins, parses, emits Findings.
+
+Mostly deterministic. Tool output IS the evidence. The claim text is a
+factual summary of parsed rows; confidence is grounded in plugin success.
+Suspicious-pattern flagging is rule-based (no LLM) — Red Reviewer + ACH
+handle the reasoning layer.
+"""
+from __future__ import annotations
+
+from pathlib import Path
+
+from el.agents.base import Agent, AgentContext
+from el.evidence.graph import open_graph
+from el.schemas.finding import Finding
+from el.skills import memory_baseliner, vol3
+
+
+SUSPICIOUS_PARENTS = {
+    "winword.exe", "excel.exe", "powerpnt.exe", "outlook.exe",
+    "acrord32.exe", "wmic.exe",
+}
+SUSPICIOUS_CHILDREN = {
+    "powershell.exe", "cmd.exe", "wscript.exe", "cscript.exe",
+    "rundll32.exe", "regsvr32.exe", "mshta.exe", "bitsadmin.exe",
+}
+
+WIN_PLUGINS = [
+    "windows.pslist.PsList",
+    "windows.psscan.PsScan",       # SKILL: pool-tag scan finds hidden + exited
+    "windows.pstree.PsTree",
+    "windows.cmdline.CmdLine",
+    "windows.malfind.Malfind",
+    "windows.netstat.NetStat",     # SKILL: netstat = current state
+    "windows.netscan.NetScan",     # SKILL: netscan = historical (pool-tag)
+    "windows.dlllist.DllList",
+    "windows.svcscan.SvcScan",
+]
+LIN_PLUGINS = [
+    "linux.pslist.PsList",
+    "linux.pstree.PsTree",
+    "linux.bash.Bash",
+    "linux.malfind.Malfind",
+]
+
+
+class MemoryForensicatorAgent(Agent):
+    name = "memory_forensicator"
+
+    def run(self, ctx: AgentContext) -> list[Finding]:
+        out: list[Finding] = []
+        family = ctx.shared.get("mem_os")
+        if not family:
+            return [self.emit(ctx, Finding(
+                case_id=ctx.case_id, agent=self.name, confidence="insufficient",
+                claim="Skipping memory analysis — Triage did not establish an OS family",
+            ))]
+
+        plugins = WIN_PLUGINS if family == "windows" else LIN_PLUGINS if family == "linux" else []
+        if not plugins:
+            return [self.emit(ctx, Finding(
+                case_id=ctx.case_id, agent=self.name, confidence="insufficient",
+                claim=f"No plugin set wired for OS family '{family}' yet",
+            ))]
+
+        analysis = ctx.case_dir / "analysis" / self.name
+        analysis.mkdir(parents=True, exist_ok=True)
+
+        runs = {}
+        for plugin in plugins:
+            try:
+                r = vol3.run_plugin(ctx.input_path, plugin, analysis, timeout=900)
+                runs[plugin] = r
+                ev = r.as_evidence()
+                if r.rc == 0 and r.rows:
+                    out.append(self.emit(ctx, Finding(
+                        case_id=ctx.case_id, agent=self.name,
+                        claim=f"{plugin}: {len(r.rows)} row(s) parsed",
+                        confidence="high", evidence=[ev],
+                    )))
+                elif r.rc == 0:
+                    out.append(self.emit(ctx, Finding(
+                        case_id=ctx.case_id, agent=self.name,
+                        claim=f"{plugin} ran but returned no rows",
+                        confidence="low", evidence=[ev],
+                    )))
+                else:
+                    out.append(self.emit(ctx, Finding(
+                        case_id=ctx.case_id, agent=self.name, confidence="insufficient",
+                        claim=f"{plugin} failed (rc={r.rc}) — see {r.stderr_path}",
+                    )))
+            except vol3.Vol3Error as e:
+                out.append(self.emit(ctx, Finding(
+                    case_id=ctx.case_id, agent=self.name, confidence="insufficient",
+                    claim=f"{plugin}: {e}",
+                )))
+
+        if family == "windows" and "windows.pslist.PsList" in runs:
+            out.extend(self._analyze_pslist_windows(ctx, runs["windows.pslist.PsList"]))
+        if family == "windows" and {"windows.pslist.PsList", "windows.psscan.PsScan"} <= runs.keys():
+            out.extend(self._diff_hidden_processes(
+                ctx, runs["windows.pslist.PsList"], runs["windows.psscan.PsScan"]))
+        if "windows.malfind.Malfind" in runs and runs["windows.malfind.Malfind"].rows:
+            out.extend(self._flag_malfind(ctx, runs["windows.malfind.Malfind"]))
+
+        baseline_path = ctx.shared.get("memory_baseline_json")
+        if baseline_path:
+            out.extend(self._run_baseline(ctx, Path(baseline_path)))
+
+        return out
+
+    def _run_baseline(self, ctx: AgentContext, baseline_json: Path) -> list[Finding]:
+        out: list[Finding] = []
+        analysis = ctx.case_dir / "analysis" / self.name / "baseliner"
+        for mode in ("proc", "drv", "svc"):
+            try:
+                r = memory_baseliner.compare(mode, ctx.input_path, baseline_json,
+                                             analysis, timeout=3600)
+            except memory_baseliner.BaselinerError as e:
+                out.append(self.emit(ctx, Finding(
+                    case_id=ctx.case_id, agent=self.name, confidence="insufficient",
+                    claim=f"Memory Baseliner ({mode}) unavailable: {e}",
+                )))
+                continue
+            ev = r.as_evidence()
+            if r.rc != 0:
+                out.append(self.emit(ctx, Finding(
+                    case_id=ctx.case_id, agent=self.name, confidence="insufficient",
+                    claim=f"Memory Baseliner {mode} returned rc={r.rc}; see {r.stderr_path.name}",
+                )))
+                continue
+            if r.nonbaseline_count == 0:
+                out.append(self.emit(ctx, Finding(
+                    case_id=ctx.case_id, agent=self.name, confidence="high",
+                    claim=f"Baseline comparison ({mode}): no non-baseline items observed",
+                    evidence=[ev],
+                )))
+            else:
+                hyp = {"proc": "H_PROCESS_INJECTION", "drv": "H_ROOTKIT",
+                       "svc": "H_PERSISTENCE_SERVICE"}[mode]
+                out.append(self.emit(ctx, Finding(
+                    case_id=ctx.case_id, agent=self.name, confidence="high",
+                    claim=f"Baseline comparison ({mode}): {r.nonbaseline_count} item(s) "
+                          f"present in suspect image but absent from baseline — review {r.output_csv.name}",
+                    evidence=[ev], hypotheses_supported=[hyp],
+                )))
+        return out
+
+    def _diff_hidden_processes(self, ctx: AgentContext, pslist: vol3.PluginRun,
+                                psscan: vol3.PluginRun) -> list[Finding]:
+        """Per memory-analysis SKILL: PIDs present in psscan but NOT pslist =
+        hidden (unlinked) processes — strong injection / rootkit indicator."""
+        listed = {row.get("PID") for row in pslist.rows if isinstance(row, dict)}
+        scanned = {row.get("PID") for row in psscan.rows if isinstance(row, dict)}
+        hidden_pids = sorted(p for p in (scanned - listed) if p is not None)
+        if not hidden_pids:
+            return []
+        ev = psscan.as_evidence({"hidden_pids": hidden_pids})
+        return [self.emit(ctx, Finding(
+            case_id=ctx.case_id, agent=self.name, confidence="high",
+            claim=(f"Hidden processes detected — {len(hidden_pids)} PID(s) in psscan but absent "
+                   f"from pslist (likely unlinked / rootkit / injection): {hidden_pids[:20]}"),
+            evidence=[ev],
+            hypotheses_supported=["H_PROCESS_INJECTION", "H_ROOTKIT"],
+        ))]
+
+    def _analyze_pslist_windows(self, ctx: AgentContext, run: vol3.PluginRun) -> list[Finding]:
+        findings: list[Finding] = []
+        ev = run.as_evidence()
+        by_pid = {row.get("PID"): row for row in run.rows if isinstance(row, dict) and "PID" in row}
+        suspicious_pairs = []
+        for row in run.rows:
+            if not isinstance(row, dict):
+                continue
+            child = (row.get("ImageFileName") or "").lower()
+            ppid = row.get("PPID")
+            parent_row = by_pid.get(ppid)
+            parent = (parent_row.get("ImageFileName") or "").lower() if parent_row else ""
+            if parent in SUSPICIOUS_PARENTS and child in SUSPICIOUS_CHILDREN:
+                suspicious_pairs.append((parent, row.get("PID"), child, ppid))
+
+        if suspicious_pairs:
+            details = "; ".join(f"{p}->[pid {cpid}] {c}" for p, cpid, c, _ in suspicious_pairs)
+            findings.append(self.emit(ctx, Finding(
+                case_id=ctx.case_id, agent=self.name,
+                claim=f"Suspicious parent->child process pair(s) observed: {details}",
+                confidence="high", evidence=[ev],
+                hypotheses_supported=["H_INITIAL_ACCESS_DOC_MACRO", "H_LIVING_OFF_THE_LAND"],
+            )))
+
+        try:
+            db, conn = open_graph(ctx.case_dir)
+            host = "host_unknown"
+            conn.execute(f"MERGE (:Host {{name: '{host}', os: 'windows'}})")
+            for row in run.rows:
+                if not isinstance(row, dict):
+                    continue
+                pid = row.get("PID")
+                ppid = row.get("PPID")
+                name = (row.get("ImageFileName") or "").replace("'", "''")
+                if pid is None:
+                    continue
+                conn.execute(
+                    f"MERGE (p:Process {{pid: {int(pid)}}}) "
+                    f"SET p.ppid = {int(ppid) if ppid is not None else 0}, "
+                    f"p.name = '{name}', p.host = '{host}'"
+                )
+            for row in run.rows:
+                if not isinstance(row, dict):
+                    continue
+                pid = row.get("PID"); ppid = row.get("PPID")
+                if pid is None or ppid is None:
+                    continue
+                conn.execute(
+                    f"MATCH (c:Process {{pid:{int(pid)}}}), (p:Process {{pid:{int(ppid)}}}) "
+                    f"MERGE (c)-[:CHILD_OF]->(p)"
+                )
+        except Exception as e:
+            findings.append(self.emit(ctx, Finding(
+                case_id=ctx.case_id, agent=self.name, confidence="low",
+                claim=f"Process graph population partially failed: {e}",
+                evidence=[ev],
+            )))
+        return findings
+
+    def _flag_malfind(self, ctx: AgentContext, run: vol3.PluginRun) -> list[Finding]:
+        ev = run.as_evidence()
+        names = sorted({(r.get("Process") or "").lower() for r in run.rows if isinstance(r, dict)})
+        return [self.emit(ctx, Finding(
+            case_id=ctx.case_id, agent=self.name,
+            claim=f"malfind flagged {len(run.rows)} region(s) across processes: {', '.join(filter(None, names))}",
+            confidence="high", evidence=[ev],
+            hypotheses_supported=["H_PROCESS_INJECTION", "H_CODE_EXECUTION"],
+        ))]
