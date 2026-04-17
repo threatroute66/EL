@@ -84,10 +84,26 @@ class MemoryForensicatorAgent(Agent):
                         confidence="low", evidence=[ev],
                     )))
                 else:
-                    out.append(self.emit(ctx, Finding(
-                        case_id=ctx.case_id, agent=self.name, confidence="insufficient",
-                        claim=f"{plugin} failed (rc={r.rc}) — see {r.stderr_path}",
-                    )))
+                    err_text = ""
+                    try:
+                        err_text = r.stderr_path.read_text(errors="ignore")
+                    except Exception:
+                        pass
+                    if "Unable to locate symbols" in err_text or "ISF" in err_text:
+                        out.append(self.emit(ctx, Finding(
+                            case_id=ctx.case_id, agent=self.name, confidence="insufficient",
+                            claim=(f"{plugin} blocked by Vol3 symbol mismatch — the image's module "
+                                   "(typically tcpip.sys / a Windows version-specific PDB) is not in "
+                                   "the local symbol cache. Per memory-analysis SKILL: pre-download "
+                                   "ISF from downloads.volatilityfoundation.org/volatility3/symbols/ "
+                                   "into volatility3/symbols/windows/, or run with internet access "
+                                   "for auto-fetch."),
+                        )))
+                    else:
+                        out.append(self.emit(ctx, Finding(
+                            case_id=ctx.case_id, agent=self.name, confidence="insufficient",
+                            claim=f"{plugin} failed (rc={r.rc}) — see {r.stderr_path}",
+                        )))
             except vol3.Vol3Error as e:
                 out.append(self.emit(ctx, Finding(
                     case_id=ctx.case_id, agent=self.name, confidence="insufficient",
@@ -148,7 +164,20 @@ class MemoryForensicatorAgent(Agent):
     def _diff_hidden_processes(self, ctx: AgentContext, pslist: vol3.PluginRun,
                                 psscan: vol3.PluginRun) -> list[Finding]:
         """Per memory-analysis SKILL: PIDs present in psscan but NOT pslist =
-        hidden (unlinked) processes — strong injection / rootkit indicator."""
+        hidden (unlinked) processes — strong injection / rootkit indicator.
+
+        Guard: if pslist returned no rows at all, the diff is meaningless
+        (it would flag every psscan PID as 'hidden'). That's a tool-failure
+        condition, not an injection signal — we surface it as such.
+        """
+        if not pslist.rows:
+            return [self.emit(ctx, Finding(
+                case_id=ctx.case_id, agent=self.name, confidence="insufficient",
+                claim=("Hidden-process diff skipped — pslist returned 0 rows "
+                       "(likely a Vol3 symbol/structure mismatch for this Windows version; "
+                       "psscan succeeded so the image itself is parseable). "
+                       "Cannot distinguish 'all processes hidden' from 'pslist tool failure'."),
+            ))]
         listed = {row.get("PID") for row in pslist.rows if isinstance(row, dict)}
         scanned = {row.get("PID") for row in psscan.rows if isinstance(row, dict)}
         hidden_pids = sorted(p for p in (scanned - listed) if p is not None)

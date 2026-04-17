@@ -39,15 +39,23 @@ def _claim_contains(*needles: str) -> Callable[[Finding], bool]:
 
 
 def _h_benign(f: Finding) -> int:
+    """Benign / null hypothesis. Lifted ONLY by positive baseline-style
+    indicators ("no non-baseline items in Memory Baseliner", "all binaries
+    signed by expected publisher"). NOT lifted by insufficient or low
+    findings — 'we couldn't analyze it' is not 'it's clean'.
+    """
     s = 0
-    if f.confidence == "insufficient":
-        s += 1
-    if f.confidence == "low":
-        s += 1
+    # Positive lift: explicit baseline-success findings
+    if _claim_contains("no non-baseline items observed",
+                       "no malicious activity",
+                       "all signatures verified")(f):
+        s += 2
+    # Refute: any tag that points to active malice
     for tag in ("H_PROCESS_INJECTION", "H_C2_OR_REVERSE_SHELL",
                 "H_INITIAL_ACCESS_DOC_MACRO", "H_LIVING_OFF_THE_LAND",
                 "H_BEC_ACCOUNT_TAKEOVER", "H_CLOUD_PERSISTENCE",
-                "H_BRUTE_FORCE", "H_LATERAL_MOVEMENT"):
+                "H_BRUTE_FORCE", "H_LATERAL_MOVEMENT", "H_ROOTKIT",
+                "H_PERSISTENCE_SERVICE"):
         if tag in f.hypotheses_supported:
             s -= 3
     if _claim_contains("createaccesskey", "putbucketpolicy", "failed console",

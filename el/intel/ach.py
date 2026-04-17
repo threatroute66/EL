@@ -33,10 +33,21 @@ class HypothesisRow:
 
 
 def score_findings(findings: list[Finding]) -> tuple[list[HypothesisRow], list[Finding]]:
-    """Returns (ranked rows, mutated findings with ach_score_delta filled)."""
+    """Returns (ranked rows, mutated findings with ach_score_delta filled).
+
+    Findings with confidence='insufficient' are EXCLUDED from scoring. Such
+    findings represent "we couldn't evaluate this" — they are not evidence
+    for or against any hypothesis. Letting them score lets tool-failure
+    messages (e.g. "netscan blocked by symbol mismatch") falsely lift the
+    C2 hypothesis via keyword matching on the failure text. Same applies
+    to "vol3 unavailable" lifting the benign hypothesis.
+    """
     rows = {h.hyp_id: HypothesisRow(hyp_id=h.hyp_id, name=h.name) for h in HYPOTHESES}
 
     for f in findings:
+        if f.confidence == "insufficient":
+            f.ach_score_delta = {}
+            continue
         deltas: dict[str, int] = {}
         for h in HYPOTHESES:
             d = h.score(f)

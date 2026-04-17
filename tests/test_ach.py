@@ -20,12 +20,29 @@ def test_c2_finding_lifts_c2_beaconing_above_benign():
     assert benign.score < leader.score
 
 
-def test_only_insufficient_findings_lift_benign():
+def test_insufficient_findings_do_not_lift_benign():
+    """'We couldn't analyze it' is not the same as 'it's clean'.
+    Insufficient evidence must be NEUTRAL to all hypotheses, including benign.
+    Otherwise a tool-failure cascade falsely concludes the host is clean."""
     f = Finding(case_id="c", agent="t", confidence="insufficient",
                 claim="vol3 unavailable")
     ranked, _ = score_findings([f])
     benign = next(r for r in ranked if r.hyp_id == "H_BENIGN_NO_INCIDENT")
-    assert benign.score >= 1
+    assert benign.score == 0
+
+
+def test_explicit_baseline_match_lifts_benign():
+    """Memory Baseliner reporting zero non-baseline items IS positive
+    evidence the host is clean — that should lift benign."""
+    from el.schemas.finding import EvidenceItem
+    ev = EvidenceItem(tool="memory-baseliner", version="present", command="x",
+                      output_sha256="0"*64, output_path="/tmp/x")
+    f = Finding(case_id="c", agent="memory_forensicator", confidence="high",
+                claim="Baseline comparison (proc): no non-baseline items observed",
+                evidence=[ev])
+    ranked, _ = score_findings([f])
+    benign = next(r for r in ranked if r.hyp_id == "H_BENIGN_NO_INCIDENT")
+    assert benign.score > 0
 
 
 def test_ach_score_delta_populated_on_findings():
