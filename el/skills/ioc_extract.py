@@ -78,6 +78,39 @@ _NOISE_DOMAINS = {
     "in-addr.arpa", "ip6.arpa",
     "net.tcp", "net.pipe", "net.msmq",
     "mscorlib.dll", "system.runtime",
+    "www.openssl.org",
+}
+
+# X.509 / OpenSSL OID-name strings that the regex sees as `<word>.<word>`
+# domains. From real OpenSSL-bearing memory dumps (nrom-01).
+_X509_OPENSSL_LABELS = {
+    "name.fullname", "name.relativename", "value.bykey", "value.byname",
+    "value.good", "value.implicitlyca", "value.parameters", "value.revoked",
+    "value.set", "value.single", "value.unknown",
+    "p.onbasis", "p.other", "p.ppbasis", "p.prime", "p.tpbasis",
+    "d.cpsuri", "d.data", "d.digest", "d.directoryname", "d.dnsname",
+    "d.edipartyname", "d.encrypted", "d.enveloped", "d.ipaddress", "d.other",
+    "d.othername", "d.registeredid", "d.sign", "d.usernotice",
+    "cert.pem", "faq.html",
+}
+
+# Well-known cryptographic constants that look like SHA-256 hashes but are
+# fixed curve generator coordinates / standard parameters embedded in OpenSSL,
+# Bitcoin, and other crypto libraries. Surface as IOCs only if explicitly asked.
+_CRYPTO_CONSTANTS = {
+    # secp256k1 (Bitcoin) generator G
+    "79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798",
+    "483ada7726a3c4655da4fbfc0e1108a8fd17b448a68554199c47d08ffb10d4b8",
+    # secp256k1 group order n
+    "fffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141",
+    # secp256r1 / NIST P-256 generator G
+    "6b17d1f2e12c4247f8bce6e563a440f277037d812deb33a0f4a13945d898c296",
+    "4fe342e2fe1a7f9b8ee7eb4a7c0f9e162bce33576b315ececbb6406837bf51f5",
+    # secp256r1 prime p
+    "ffffffff00000001000000000000000000000000ffffffffffffffffffffffff",
+    # secp384r1 prime p (truncated to first 64 chars when parsed)
+    # NIST P-384 / P-521 — surface only if non-noise contexts demand it
+    "5ac635d8aa3a93e7b3ebbd55769886bc651d06b0cc53b0f63bce3c3e27d2604b",
 }
 _PRIVATE_IPS = (
     "0.", "10.", "127.", "169.254.", "224.", "239.", "255.",
@@ -116,6 +149,8 @@ def _filter_domains(domains: Iterable[str]) -> set[str]:
         d = d.lower().rstrip(".")
         if d in _NOISE_DOMAINS:
             continue
+        if d in _X509_OPENSSL_LABELS:
+            continue
         if any(d.endswith("." + n) for n in _NOISE_DOMAINS):
             continue
         if "." not in d:
@@ -147,10 +182,13 @@ def extract(text: str, drop_noise: bool = True) -> dict[str, set[str]]:
     ipv6 = {m for m in _IPV6.findall(t) if ":" in m and len(m) > 4}
     domain = set(_DOMAIN.findall(t))
     url = set(_URL.findall(t))
-    # Hashes are case-insensitive in practice; case-fold for dedup
+    # Hashes are case-insensitive in practice; case-fold for dedup.
+    # Drop well-known crypto library constants (curve generators, NIST primes)
+    # that look like real SHA-256 hashes but are fixed parameters from OpenSSL,
+    # Bitcoin's secp256k1, and similar libraries.
     md5 = {h.lower() for h in _MD5.findall(t)}
     sha1 = {h.lower() for h in _SHA1.findall(t)} - md5
-    sha256 = {h.lower() for h in _SHA256.findall(t)}
+    sha256 = {h.lower() for h in _SHA256.findall(t)} - _CRYPTO_CONSTANTS
     email = set(_EMAIL.findall(t))
     regkey = set(m.rstrip("\\") for m in _REGKEY.findall(t))
     winpath = set(_WINPATH.findall(t))

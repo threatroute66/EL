@@ -64,30 +64,40 @@ def _baseline_script() -> Path:
     raise BaselinerError("memory-baseliner not installed (see provisioning/optional-tools.txt)")
 
 
-def compare(mode: str, image: Path, baseline_json: Path, out_dir: Path,
+def _python() -> str:
+    """Memory-baseliner imports volatility3 — use the venv interpreter where vol3 lives."""
+    import sys
+    return sys.executable
+
+
+def compare(mode: str, image: Path, baseline: Path, out_dir: Path,
             timeout: int = 3600) -> BaselineRun:
     """Run a baseline comparison.
 
     mode: 'proc' | 'drv' | 'svc'
+    baseline: either a baseline JSON (loaded via --loadbaseline) or another
+              memory image (passed via -b for direct image-vs-image diff).
+              Detected by file extension: .json → JSON workflow, otherwise image.
     """
     if mode not in ("proc", "drv", "svc"):
         raise BaselinerError(f"unknown mode: {mode}")
     if not image.exists():
         raise BaselinerError(f"image not found: {image}")
-    if not baseline_json.exists():
-        raise BaselinerError(f"baseline JSON not found: {baseline_json}")
+    if not baseline.exists():
+        raise BaselinerError(f"baseline not found: {baseline}")
 
     out_dir.mkdir(parents=True, exist_ok=True)
     out_csv = out_dir / f"{mode}_baseline.csv"
     stderr_path = out_dir / f"baseliner_{mode}.stderr"
     script = _baseline_script()
-    if not shutil.which("python3"):
-        raise BaselinerError("python3 not on PATH")
 
-    cmd = ["python3", str(script), f"-{mode}",
-           "-i", str(image),
-           "--loadbaseline",
-           "--jsonbaseline", str(baseline_json),
+    if baseline.suffix.lower() == ".json":
+        baseline_args = ["--loadbaseline", "--jsonbaseline", str(baseline)]
+    else:
+        baseline_args = ["-b", str(baseline)]
+
+    cmd = [_python(), str(script), f"-{mode}",
+           "-i", str(image), *baseline_args,
            "-o", str(out_csv)]
     try:
         proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
@@ -96,6 +106,9 @@ def compare(mode: str, image: Path, baseline_json: Path, out_dir: Path,
         raise BaselinerError(f"baseliner {mode} timeout") from e
 
     stderr_path.write_text(proc.stderr or "")
+    if proc.stdout and not out_csv.exists():
+        # csababarta's tool sometimes writes to stdout instead of -o; capture either.
+        out_csv.write_text(proc.stdout)
 
     nb_count = 0
     if out_csv.exists():

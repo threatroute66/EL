@@ -209,11 +209,13 @@ def investigate(
     timeline: bool = typer.Option(False, "--timeline/--no-timeline",
                                   help="Run Plaso super-timeline (slow on real cases)"),
     baseline: str = typer.Option(None, "--baseline", "-b",
-                                 help="Path to a Memory Baseliner JSON for comparison"),
+                                 help="Path to a baseline for Memory Baseliner — either a "
+                                      "known-good memory image (.img/.raw/.mem) for direct "
+                                      "diff, or a pre-built baseline JSON"),
 ) -> None:
     """Run the EL coordinator end-to-end on an evidence file."""
     result = Coordinator(run_timeline=timeline,
-                         memory_baseline_json=baseline).investigate(input_path, case_id=case_id)
+                         memory_baseline=baseline).investigate(input_path, case_id=case_id)
     console.print(f"[bold]case[/bold]: {result.case_id}")
     console.print(f"[bold]case_dir[/bold]: {result.case_dir}")
     console.print(f"[bold]investigator[/bold]: {result.investigator}")

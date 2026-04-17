@@ -131,7 +131,8 @@ class MemoryForensicatorAgent(Agent):
         if family == "windows" and "windows.pslist.PsList" in runs and runs["windows.pslist.PsList"].rows:
             out.extend(self._process_anomalies(ctx, runs["windows.pslist.PsList"]))
 
-        baseline_path = ctx.shared.get("memory_baseline_json")
+        baseline_path = (ctx.shared.get("memory_baseline")
+                          or ctx.shared.get("memory_baseline_json"))
         if baseline_path:
             out.extend(self._run_baseline(ctx, Path(baseline_path)))
 

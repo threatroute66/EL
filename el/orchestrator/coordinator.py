@@ -77,13 +77,13 @@ class Coordinator:
     def __init__(self, run_timeline: bool = False,
                  timeline_l2t_timeout: int = 7200,
                  timeline_psort_timeout: int = 3600,
-                 memory_baseline_json: str | None = None):
+                 memory_baseline: str | None = None):
         self.state = State.INTAKE
         self.transitions: list[tuple[State, State]] = []
         self.run_timeline = run_timeline
         self.timeline_l2t_timeout = timeline_l2t_timeout
         self.timeline_psort_timeout = timeline_psort_timeout
-        self.memory_baseline_json = memory_baseline_json
+        self.memory_baseline = memory_baseline
         self.audit: AuditLog | None = None
 
     def _go(self, dst: State) -> None:
@@ -136,8 +136,8 @@ class Coordinator:
             input_path=Path(manifest.input_path),
             manifest=manifest.__dict__,
         )
-        if self.memory_baseline_json:
-            ctx.shared["memory_baseline_json"] = self.memory_baseline_json
+        if self.memory_baseline:
+            ctx.shared["memory_baseline"] = self.memory_baseline
 
         self._go(State.TRIAGE)
         self._run_agent(TriageAgent(), ctx)
