@@ -39,9 +39,11 @@ analysis/*
 provisioning/snapshots/snap-*/
 !provisioning/snapshots/.keep
 
-# --- Local-only Claude Code overrides ---
+# --- Local-only Claude Code overrides + harness state ---
 .claude/settings.local.json
 .claude/.credentials.json
+.claude/scheduled_tasks.lock
+.claude/*.lock
 
 # --- Defensive: forensic data must NEVER be committed ---
 # Memory images
