@@ -1,4 +1,4 @@
-# EL — Edmond Locard
+# EL — A tribute to Edmond Locard
 
 A multi-agent DFIR orchestrator for the SANS SIFT Workstation, built for
 the [SANS Find Evil 2026](https://findevil.devpost.com/) competition and
@@ -83,17 +83,18 @@ guess.**
 | Agent | Owns |
 |---|---|
 | `Triage` | First-touch: hash, file-magic, evidence-kind classification, vol3 banner OS detection, directory-shape recognition |
-| `MemoryForensicator` | Volatility 3 plugins (`pslist`, `psscan`, `pstree`, `cmdline`, `malfind`, `netstat`, `netscan`, `dlllist`, `svcscan`); psscan-pslist hidden-process diff; optional Memory Baseliner comparison |
-| `DiskForensicator` | Sleuth Kit (`mmls`, `fls`, `mactime`); EWF integrity verification; sector-size detection |
-| `WindowsArtifactAgent` | Extracted-artifacts directory pipeline (MFTECmd, RECmd-Kroll-batch, AmcacheParser, AppCompatCacheParser, PECmd, EvtxECmd, SrumECmd, SBECmd, JLECmd, LECmd, RBCmd) |
-| `NetworkAnalyst` | pcap parsing via scapy; flows, DNS, HTTP Hosts, TLS SNI, suspicious-port flagging |
+| `MemoryForensicator` | Volatility 3 plugins (`pslist`, `psscan`, `pstree`, `cmdline`, `malfind --dump`, `netstat`, `netscan`, `dlllist`, `svcscan`); psscan-pslist hidden-process diff; PE-header / process-anomaly detection; credential-access carve-out (lsass / winlogon / csrss); optional Memory Baseliner image-vs-image diff |
+| `DiskForensicator` | Sleuth Kit (`mmls`, `fls`, `mactime`); EWF integrity verification + `ewfmount` + per-partition (and no-partition fallback) walk; NTFS mount + artifact extraction; **disk anomaly scoring** (PsExec service binary, PyInstaller `_MEI` temp dirs, svchost/lsass outside System32, exe-in-Temp, non-MS scheduled tasks, mimikatz-named binaries, vssadmin shadow-copy deletion traces) |
+| `WindowsArtifactAgent` | Extracted-artifacts directory pipeline — auto-chained after DiskForensicator extracts: MFTECmd, RECmd-Kroll-batch, AmcacheParser, AppCompatCacheParser, PECmd, EvtxECmd, SrumECmd, SBECmd, JLECmd, LECmd, RBCmd |
+| `NetworkAnalyst` | pcap parsing via scapy: flows, DNS, HTTP Hosts + URIs + User-Agents, TLS SNI, suspicious-port flagging |
 | `LogAnalyst` | EvtxECmd → high-value Event ID extraction (4624, 4625, 4672, 4688, 4697, 4698, 4720, 4732, 4769, 4776, 1102, 7045) |
 | `CloudForensicator` | AWS CloudTrail JSON (offline) — high-value events: ConsoleLogin, AssumeRole, CreateAccessKey, PutBucketPolicy, etc. |
 | `EndpointAnalyst` | Velociraptor collection bundles (Pslist / Netstat / Autoruns artifacts) |
 | `TimelineSynthesist` | Plaso `log2timeline.py --parsers win10 --hashers md5,sha256 --timezone UTC` + `psort.py` + `pinfo.py` (opt-in via `--timeline`) |
 | `Correlator` | Kùzu graph queries — top destination IPs, cross-host shared processes, entity counts |
-| `ThreatHunter` | Auto-generates a per-case YARA file from extracted IOCs; sweeps the input + analysis dir |
-| `RedReviewer` | Rule-Based Challenger always runs; LLM challenger augments when `ANTHROPIC_API_KEY` is set |
+| `ThreatHunter` | Auto-generates a per-case YARA file from extracted IOCs; sweeps the input + analysis dir; uses `el hunt <case>` CLI for standalone re-sweeps |
+| `MalwareTriage` | Per-region `.dmp` strings extraction + 14-family fingerprint library (mimikatz / cobalt strike / metasploit / empire / darkcomet / njrat / remcos / agent tesla / hancitor / trickbot / qakbot / icedid / sliver / ip_lookup_chain). Also scans non-memory analysis text (pcap summaries, EVTX CSVs, fls bodyfiles) for the same fingerprints |
+| `RedReviewer` | Rule-Based Challenger always runs (Office-spawn-shell, JIT carve-out for credential targets, LOLBin, network-context, low-confidence corroboration, single-evidence); LLM challenger augments when `ANTHROPIC_API_KEY` is set |
 
 Plus the **ACH engine** (Heuer-style scoring; not a Claude agent — pure Python) which
 emits a ranked-hypothesis Finding and writes a per-case `ach_matrix.json`.
@@ -108,17 +109,21 @@ windows-artifacts, yara-hunting).
 
 | Skill | Wraps |
 |---|---|
-| `vol3` | Volatility 3 plugins; `--offline` opt-in to skip symbol-download hangs |
-| `sleuthkit` | `mmls`, `fls`, `mactime` (`-z UTC` default), `ewfinfo`, `ewfverify`, `img_stat`, `fsstat`, `tsk_recover` |
+| `vol3` | Volatility 3 plugins; `--offline` opt-in to skip symbol-download hangs; `--dump` integration |
+| `sleuthkit` | `mmls`, `fls`, `mactime` (`-z UTC` default), `ewfinfo`, `ewfverify`, `ewfmount -X allow_other`, `img_stat`, `fsstat`, `tsk_recover`, `mount_ntfs` (ro+norecovery), `extract_windows_artifacts` |
 | `ezt` | EZ Tools via `dotnet`: EvtxECmd (`--maps` default), MFTECmd (`--at` default), RECmd (`--bn Kroll_Batch.reb` default), AmcacheParser, AppCompatCacheParser, PECmd, SBECmd, JLECmd, LECmd, SrumECmd, RBCmd |
 | `plaso` | `log2timeline.py` with SKILL defaults (`--parsers win10 --hashers md5,sha256 --timezone UTC`), `psort.py`, `pinfo.py` |
-| `scapy_pcap` | pcap parsing in pure Python (no system tools needed) |
+| `scapy_pcap` | pcap parsing in pure Python — flows, DNS, HTTP Host/URI/User-Agent, TLS SNI |
 | `cloudtrail` | AWS CloudTrail JSON / JSONL parser; gzipped + multi-file directories supported |
 | `velociraptor` | Velociraptor JSONL collection parser; Pslist / Netstat / Autoruns / Prefetch / TaskScheduler |
-| `ioc_extract` | Regex extractor (IPv4, IPv6, domain, URL, MD5/SHA1/SHA256, email, registry key, Windows path); defang-aware; noise-filtered |
+| `ioc_extract` | Regex extractor (IPv4, IPv6, domain, URL, MD5/SHA1/SHA256, email, registry key, Windows path); defang-aware; noise-filtered (timestamps, version strings, X.509 OID labels, secp256k1/secp256r1 curve constants, file-extension TLDs, Windows internals) |
 | `yara_hunt` | `yara` wrapper + per-case rule generator from extracted IOCs |
-| `memory_baseliner` | Memory Baseliner `-proc/-drv/-svc` comparisons against a known-good baseline JSON |
-| `rule_challenger` | Deterministic adversarial-review rules baseline (Office-spawn-shell, malfind JIT, LOLBin, network-context, low-confidence corroboration, single-evidence) |
+| `dump_analysis` | Pure-Python ASCII + UTF-16LE strings extraction from memory dumps; structural fingerprints (MZ header, PE signature, NOP sleds) |
+| `memory_baseliner` | Memory Baseliner `-proc/-drv/-svc` comparisons; supports both image-vs-image (`-b <baseline.img>`) and JSON baseline workflows; auto-patched for vol3 ≥ 2.5 API |
+| `disk_anomaly` | 9 SKILL/MITRE-grounded path patterns matched against fls bodyfiles |
+| `rule_challenger` | Deterministic adversarial-review rules baseline; JIT carve-out for credential-access targets (lsass / winlogon / csrss) |
+| `seal` | Per-case sha256 manifest + `merkle_root` + `tar.gz` archive emission at coordinator-DONE |
+| `knowledge` | `~/.el/knowledge.sqlite` cross-case IOC + family-attribution store |
 
 ---
 
@@ -177,6 +182,14 @@ el ledger /opt/EL/cases/wkstn-01
 
 # Capture a host-state snapshot for chain of custody (any time)
 el provision-snapshot --label pre-incident
+
+# Verify a sealed case has not drifted since coordinator-DONE
+el seal-verify /opt/EL/cases/wkstn-01
+
+# Query the cross-case knowledge store (~/.el/knowledge.sqlite)
+el knowledge stats
+el knowledge lookup 8.8.8.8
+el knowledge lookup evil.example.com
 ```
 
 Each case workspace lives at `cases/<case_id>/`:
@@ -201,8 +214,37 @@ cases/<case_id>/
 │   ├── report.md              # human-readable report
 │   ├── findings.json          # machine-readable Findings dump
 │   └── stix-bundle.json       # STIX 2.1 (MISP-importable)
+├── seal.json                  # per-file sha256 manifest + merkle root + sealed_utc + el_git_rev
 └── raw/                       # working space
 ```
+
+A `cases/_archives/<case_id>-<TS>.tar.gz` archive of the entire case dir
+(seal.json embedded) is also written at coordinator-DONE for off-host
+retention. `el seal-verify <case_dir>` re-hashes everything and reports
+any drift.
+
+---
+
+## Cross-case institutional knowledge
+
+In addition to the per-case workspace, EL maintains a global
+`~/.el/knowledge.sqlite` store recording every IOC every case has ever
+extracted, with full provenance: `(value, ioc_type, case_id, observed_utc,
+agent, sealed)`. After IOC extraction in each new case, EL queries the
+store for prior observations from OTHER cases and emits suggestive
+`Cross-case overlap` Findings:
+
+> "Cross-case overlap: ipv4 `203.0.113.7` previously observed in case(s)
+> `wkstn-03`. Suggestive only — confidence stays 'low' because cross-case
+> overlap is context, not evidence for this case's hypotheses."
+
+These findings carry `confidence='low'` on purpose — they show the
+analyst when an indicator is being seen across investigations without
+auto-lifting any hypothesis. Forensic conclusions in case B must stand
+on case B's own findings; case A is context, not evidence. The store is
+updated atomically as part of every `el investigate` run; sealed cases
+flip `sealed=1` so the knowledge layer can distinguish provisional
+observations from hash-verified ones.
 
 ---
 
@@ -245,16 +287,26 @@ Three hard rules (Pydantic-enforced):
 
 ## Validated on real evidence
 
-The first end-to-end validation ran against a 3 GB Windows workstation
-memory image from the SANS Hackathon-2026 corpus:
+EL has been exercised end-to-end on the following real evidence types,
+with each case surfacing bugs that became permanent regression tests:
 
-- 17 findings emitted across 10 agents in 2m38s
-- All 9 vol3 plugins parsed cleanly (pslist=163, psscan=169, pstree=1, cmdline=163, netstat=74, netscan=139, dlllist=3254, svcscan=1309, malfind=0)
-- Hidden-process diff surfaced 2 PIDs (214668, 215928) — strong rootkit / unlinking indicator
-- Threat Hunter YARA sweep: 9 hits on the memory image + 33 hits in the analysis dir (cross-tool corroboration)
-- Adversarial review (rule-only mode): passed=1, challenged=15, unresolved=0
-- Leading hypothesis: **H_APT_ESPIONAGE** at +3 (gap=+2)
-- 2 MITRE ATT&CK techniques implicated: T1055 (Process Injection), T1071 (Application Layer Protocol)
+| Sample | Type | Size | Result |
+|---|---|---:|---|
+| SANS Hackathon-2026 wkstn | Win memory | 3 GB | H_APT_ESPIONAGE +3, 2 hidden processes detected |
+| SANS Hackathon-2026 dc | Win Server memory | 5 GB | Vol3 symbol mismatch surfaced as actionable; honest "insufficient" output (with our fix to score insufficient findings as neutral) |
+| 2020 Jimmy Wilson FTK image | E01 disk (NTFS) | 296 MB / 890 MB raw | Full chain: ewfmount → mmls → fls → mactime → mount + extract → WindowsArtifactAgent ran 4 EZ Tool parsers |
+| Charlie 2009 (XP-era) memory | MDD memory dump | 2 GB | H_APT_ESPIONAGE +19 (gap +9), credential-access carve-out flagged 10 RWX regions across lsass/winlogon/csrss; 28 dumped regions for offline RE |
+| FOR508 Stark Research Labs nrom | Paired memory + 9.7 GB E01 + baseline image | ~15 GB | Memory: H_APT_ESPIONAGE +25 with full attack chain via Memory Baseliner diff (PsExec → spinlock.exe Meterpreter, Mnemosynei386.sys driver, dllhost\svchost disguise). Disk: H_APT_ESPIONAGE +20 with 7 disk anomalies independently corroborating the memory finding |
+| Malware-Traffic-Analysis pcaps | Hancitor / Trickbot / Qakbot / Cobalt Strike | 5–40 MB each | Family fingerprint library attributes Hancitor (`/8/forum.php` URI) and Trickbot (gtag check-in pattern) directly from network traffic |
+
+Across these cases, EL surfaced 30+ bugs that are now locked in as
+regression tests — vol3 PATH inside venv subprocess, EVF vs EWF magic
+typo, FUSE-inside-FUSE mount target, IOC false-positives across 6
+distinct categories (timestamps, version strings, X.509 OID labels,
+crypto curve constants, file-extension TLDs, Windows internals),
+empty-pslist hidden-process false flag, ACH scoring tool-failure
+messages, Memory Baseliner vol3-API drift, no no-partition extraction,
+no disk-side hypothesis scoring.
 
 ---
 
@@ -285,12 +337,16 @@ memory image from the SANS Hackathon-2026 corpus:
 
 ## Status
 
-- 65 tests; `make test` runs them in under 10 seconds.
-- Validated on real Windows memory image; pcap, CloudTrail JSON, and
-  Velociraptor JSONL collections via end-to-end test fixtures.
-- Disk-image and EVTX paths are wired but not yet stress-tested on real
-  evidence — they emit `insufficient` findings on incompatible inputs
-  rather than crashing.
+- **109 tests; `make test` runs them in ~10 seconds.**
+- 13 specialist agents · 14 skill primitives · 15 case-level hypotheses
+  with deterministic scorers · 14 ATT&CK technique mappings · 14 malware
+  family fingerprints · 9 disk anomaly patterns
+- Validated end-to-end on real evidence across all six evidence types
+  (Windows memory, Windows DC memory, NTFS E01 disk, paired
+  memory+disk+baseline, malware-traffic pcaps, MDD-format XP memory)
+- All cases sealed (sha256 manifest + tar.gz archive + `seal-verify`
+  CLI); all IOCs recorded into `~/.el/knowledge.sqlite` for cross-case
+  retention.
 
 ## License
 
