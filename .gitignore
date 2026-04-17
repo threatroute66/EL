@@ -29,6 +29,7 @@ htmlcov/
 # --- EL case workspaces (per-case evidence + outputs) ---
 # Each case dir under cases/ is gitignored; cases/.keep lets the dir live
 cases/*/
+cases/_archives/
 !cases/.keep
 
 # --- EL ad-hoc analysis area ---

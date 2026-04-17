@@ -12,6 +12,8 @@ from pathlib import Path
 
 from el.audit import AuditLog
 from el.case_template import render as render_case_claude_md
+from el import knowledge as kb
+from el import seal as case_seal
 from el.agents.base import Agent, AgentContext
 from el.agents.cloud_forensicator import CloudForensicatorAgent
 from el.agents.correlator import CorrelatorAgent
@@ -93,6 +95,43 @@ class Coordinator:
         if self.audit:
             self.audit.info("state_transition", from_=self.state.value, to=dst.value)
         self.state = dst
+
+    def _emit_cross_case_findings(self, ctx: AgentContext,
+                                    prior: dict[str, list[dict]],
+                                    ioc_sets: dict) -> None:
+        """For each IOC seen previously in another case, write one Finding
+        per (value, prior_case) pair into the ledger. Confidence is 'low'
+        because cross-case overlap is suggestive context, not evidence
+        for any hypothesis in this case."""
+        from el.evidence.ledger import insert as ledger_insert
+        from el.schemas.finding import EvidenceItem, Finding
+        import hashlib
+        # Group prior observations by (value, ioc_type) to keep findings tidy
+        for value, observations in prior.items():
+            ioc_type = observations[0]["ioc_type"]
+            cases = sorted({o["case_id"] for o in observations})
+            ev = EvidenceItem(
+                tool="el.knowledge", version="0.1.0",
+                command=f"kb.lookup_iocs([{value}])",
+                output_sha256=hashlib.sha256(value.encode()).hexdigest(),
+                output_path=str(Path.home() / ".el" / "knowledge.sqlite"),
+                extracted_facts={
+                    "ioc_value": value,
+                    "ioc_type": ioc_type,
+                    "previously_seen_in_cases": cases,
+                    "first_seen_utc": min(o["observed_utc"] for o in observations),
+                },
+            )
+            f = Finding(
+                case_id=ctx.case_id, agent="knowledge_lookup",
+                claim=(f"Cross-case overlap: {ioc_type} `{value[:80]}` previously "
+                       f"observed in case(s) {', '.join(cases[:3])}"
+                       f"{' …' if len(cases) > 3 else ''}. "
+                       "Suggestive only — confidence stays 'low' because cross-case "
+                       "overlap is context, not evidence for this case's hypotheses."),
+                confidence="low", evidence=[ev],
+            )
+            ledger_insert(ctx.case_dir, f)
 
     def _run_agent(self, agent: Agent, ctx: AgentContext) -> None:
         if self.audit:
@@ -182,6 +221,30 @@ class Coordinator:
         iocs_pre = {k: sorted(v) for k, v in ioc_sets_pre.items() if v}
         (ctx.case_dir / "iocs.json").write_text(json.dumps(iocs_pre, indent=2))
 
+        # Cross-case knowledge lookup (Layer 3): for each IOC, query the
+        # global knowledge store for prior observations from OTHER cases.
+        # Emits SUGGESTIVE Findings (low confidence, informational) — does
+        # not lift hypotheses. Forensic conclusions stay grounded in this
+        # case's evidence.
+        all_values = [v for vs in iocs_pre.values() for v in vs]
+        try:
+            prior = kb.lookup_iocs(all_values, current_case_id=ctx.case_id)
+        except Exception as e:
+            prior = {}
+            if self.audit:
+                self.audit.warn("knowledge_lookup_failed", err=str(e))
+        if prior:
+            self._emit_cross_case_findings(ctx, prior, ioc_sets_pre)
+        # Always RECORD what this case extracted (write happens regardless of lookup outcome)
+        try:
+            new_rows = kb.record_iocs(ctx.case_id, "coordinator_post_pass", ioc_sets_pre)
+            if self.audit:
+                self.audit.info("knowledge_iocs_recorded", new_rows=new_rows,
+                                total_iocs=len(all_values))
+        except Exception as e:
+            if self.audit:
+                self.audit.error("knowledge_record_failed", err=str(e))
+
         self._run_agent(ThreatHunterAgent(), ctx)
 
         rows = list_findings(ctx.case_dir, case_id=ctx.case_id)
@@ -246,6 +309,21 @@ class Coordinator:
         except Exception as e:
             if self.audit:
                 self.audit.error("case_claude_md_render_failed", err=str(e))
+        # Seal the case at terminal state (Layer 2: chain-of-custody bundle).
+        # Marks knowledge-store rows for this case as sealed.
+        seal_manifest = None
+        if self.state == State.DONE:
+            try:
+                seal_manifest = case_seal.seal_case(ctx.case_dir, ctx.case_id, archive=True)
+                kb.mark_case_sealed(ctx.case_id)
+                if self.audit:
+                    self.audit.info("case_sealed",
+                                    merkle_root=seal_manifest["merkle_root"],
+                                    archive_path=seal_manifest.get("archive_path"))
+            except Exception as e:
+                if self.audit:
+                    self.audit.error("case_seal_failed", err=str(e))
+
         if self.audit:
             self.audit.info("case_complete", final_state=self.state.value,
                             leading_hypothesis=leader.hyp_id if leader else None,

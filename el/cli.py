@@ -89,6 +89,51 @@ def ledger_cmd(
     console.print(t)
 
 
+@app.command("seal-verify")
+def seal_verify_cmd(
+    case_dir: str = typer.Argument(..., help="Path to a sealed case directory"),
+) -> None:
+    """Re-hash a sealed case dir and confirm no drift since seal."""
+    from el.seal import verify_seal
+    ok, drift = verify_seal(Path(case_dir))
+    if ok:
+        console.print(f"[green]✓[/green] seal verified — no drift in {case_dir}")
+    else:
+        console.print(f"[red]✗[/red] seal drift detected in {case_dir}:")
+        for d in drift:
+            console.print(f"  - {d}")
+        raise typer.Exit(1)
+
+
+@app.command("knowledge")
+def knowledge_cmd(
+    action: str = typer.Argument(..., help="stats | lookup <value>"),
+    value: str = typer.Argument(None, help="IOC value (for lookup action)"),
+) -> None:
+    """Query the institutional knowledge store (~/.el/knowledge.sqlite)."""
+    from el import knowledge as kb
+    if action == "stats":
+        s = kb.stats()
+        console.print_json(json.dumps(s))
+        return
+    if action == "lookup":
+        if not value:
+            console.print("[red]lookup requires a value argument[/red]")
+            raise typer.Exit(2)
+        results = kb.lookup_iocs([value], current_case_id="__cli__")
+        if not results:
+            console.print(f"[yellow]no prior observations of {value}[/yellow]")
+            return
+        for v, observations in results.items():
+            console.print(f"[bold]{v}[/bold]")
+            for o in observations:
+                console.print(f"  - {o['observed_utc']} · case={o['case_id']} "
+                              f"· type={o['ioc_type']} · agent={o['agent']}")
+        return
+    console.print(f"[red]unknown action: {action}[/red]")
+    raise typer.Exit(2)
+
+
 @app.command("provision-snapshot")
 def provision_snapshot_cmd(
     label: str = typer.Option("manual", "--label", "-l",
