@@ -80,3 +80,6 @@ provisioning/snapshots/snap-*/
 # --- Editor / OS noise we don't want to track ---
 nohup.out
 *.pid
+
+# Memory Baseliner stray log (auto-written to cwd by csababarta/memory-baseliner)
+all.log
