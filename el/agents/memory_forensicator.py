@@ -29,12 +29,15 @@ WIN_PLUGINS = [
     "windows.psscan.PsScan",       # SKILL: pool-tag scan finds hidden + exited
     "windows.pstree.PsTree",
     "windows.cmdline.CmdLine",
-    "windows.malfind.Malfind",
     "windows.netstat.NetStat",     # SKILL: netstat = current state
     "windows.netscan.NetScan",     # SKILL: netscan = historical (pool-tag)
     "windows.dlllist.DllList",
     "windows.svcscan.SvcScan",
 ]
+
+# malfind runs separately with --dump so suspicious regions hit disk as files
+# (per memory-analysis SKILL: `windows.malfind --dump --output-dir ./exports/malfind/`)
+WIN_DUMP_PLUGINS = [("windows.malfind.Malfind", ["--dump"])]
 LIN_PLUGINS = [
     "linux.pslist.PsList",
     "linux.pstree.PsTree",
@@ -66,9 +69,14 @@ class MemoryForensicatorAgent(Agent):
         analysis.mkdir(parents=True, exist_ok=True)
 
         runs = {}
-        for plugin in plugins:
+        plugin_specs: list[tuple[str, list[str] | None]] = [(p, None) for p in plugins]
+        if family == "windows":
+            plugin_specs.extend(WIN_DUMP_PLUGINS)
+
+        for plugin, extra in plugin_specs:
             try:
-                r = vol3.run_plugin(ctx.input_path, plugin, analysis, timeout=900)
+                r = vol3.run_plugin(ctx.input_path, plugin, analysis,
+                                     extra_args=extra, timeout=900)
                 runs[plugin] = r
                 ev = r.as_evidence()
                 if r.rc == 0 and r.rows:
@@ -117,6 +125,11 @@ class MemoryForensicatorAgent(Agent):
                 ctx, runs["windows.pslist.PsList"], runs["windows.psscan.PsScan"]))
         if "windows.malfind.Malfind" in runs and runs["windows.malfind.Malfind"].rows:
             out.extend(self._flag_malfind(ctx, runs["windows.malfind.Malfind"]))
+            out.extend(self._flag_pe_headers(ctx, runs["windows.malfind.Malfind"]))
+            out.extend(self._report_dumped_regions(ctx, runs["windows.malfind.Malfind"]))
+
+        if family == "windows" and "windows.pslist.PsList" in runs and runs["windows.pslist.PsList"].rows:
+            out.extend(self._process_anomalies(ctx, runs["windows.pslist.PsList"]))
 
         baseline_path = ctx.shared.get("memory_baseline_json")
         if baseline_path:
@@ -255,6 +268,117 @@ class MemoryForensicatorAgent(Agent):
         "lsass.exe", "winlogon.exe", "services.exe", "wininit.exe",
         "csrss.exe", "smss.exe", "lsaiso.exe",
     }
+
+    def _flag_pe_headers(self, ctx: AgentContext, run: vol3.PluginRun) -> list[Finding]:
+        """Per memory-analysis SKILL: malfind Hexdump rows starting with MZ
+        are reflectively-loaded PE images not backed by a disk file — a
+        classic hollowing / injection indicator stronger than raw shellcode."""
+        mz_hits: list[dict] = []
+        for row in run.rows:
+            if not isinstance(row, dict):
+                continue
+            hexdump = (row.get("Hexdump") or "").strip()
+            # Hexdump starts with "4d 5a" (MZ) — a DOS/PE executable header
+            if hexdump[:5].lower().replace(" ", "").startswith("4d5a"):
+                mz_hits.append({
+                    "pid": row.get("PID"),
+                    "process": (row.get("Process") or "").lower(),
+                    "start_vpn": row.get("Start VPN") or row.get("StartVPN"),
+                })
+        if not mz_hits:
+            return []
+        procs = sorted({h["process"] for h in mz_hits})
+        ev = run.as_evidence({"pe_header_hits": mz_hits[:20]})
+        return [self.emit(ctx, Finding(
+            case_id=ctx.case_id, agent=self.name, confidence="high",
+            claim=(f"Reflectively-loaded PE image(s) detected — {len(mz_hits)} malfind region(s) "
+                   f"begin with MZ header in process(es): {', '.join(procs)}. "
+                   "Per memory-analysis SKILL: 'classic hollowing indicator'."),
+            evidence=[ev],
+            hypotheses_supported=["H_PROCESS_INJECTION", "H_PROCESS_HOLLOWING"],
+        ))]
+
+    def _report_dumped_regions(self, ctx: AgentContext, run: vol3.PluginRun) -> list[Finding]:
+        """Enumerate --dump outputs sitting next to the malfind JSON.
+        ThreatHunter then YARA-sweeps these as part of the analysis dir."""
+        dump_dir = run.stdout_path.parent
+        dumps = sorted(dump_dir.glob("pid.*.dmp")) + sorted(dump_dir.glob("*.vad.dmp"))
+        if not dumps:
+            return []
+        total_bytes = sum(p.stat().st_size for p in dumps)
+        ev = run.as_evidence({"dumped_files": [p.name for p in dumps[:20]],
+                               "total_bytes": total_bytes})
+        return [self.emit(ctx, Finding(
+            case_id=ctx.case_id, agent=self.name, confidence="high",
+            claim=(f"malfind --dump produced {len(dumps)} region file(s) "
+                   f"({total_bytes} bytes total) into {dump_dir.name}/ — "
+                   "ThreatHunter will YARA-sweep these alongside the analysis dir"),
+            evidence=[ev], hypotheses_supported=["H_PROCESS_INJECTION"],
+        ))]
+
+    def _process_anomalies(self, ctx: AgentContext, run: vol3.PluginRun) -> list[Finding]:
+        """SKILL-documented process anomalies from pslist:
+          - Orphaned: PPID not present in the process list (possible hollowing
+            or attacker-parent that has exited)
+          - Very short-lived: exited within 5 seconds of creation (atomic
+            actions or AV termination)
+        """
+        out: list[Finding] = []
+        rows = [r for r in run.rows if isinstance(r, dict)]
+        pids = {r.get("PID") for r in rows if r.get("PID") is not None}
+        ev = run.as_evidence({"phase": "process_anomaly_scan"})
+
+        # Orphaned: PPID not in the live PID set (but not 0 / 4, which are system)
+        orphans = []
+        for r in rows:
+            ppid = r.get("PPID")
+            if ppid in (None, 0, 4):
+                continue
+            if ppid not in pids:
+                orphans.append({"pid": r.get("PID"),
+                                "ppid": ppid,
+                                "name": (r.get("ImageFileName") or "").lower()})
+        if orphans:
+            names = sorted({o["name"] for o in orphans})
+            out.append(self.emit(ctx, Finding(
+                case_id=ctx.case_id, agent=self.name, confidence="medium",
+                claim=(f"Orphaned processes — {len(orphans)} PID(s) with PPID not in pslist: "
+                       f"{', '.join(names)}. Parent may have exited (benign) or never "
+                       "existed in linked-list walk (suspicious; possible hollowing)."),
+                evidence=[ev],
+                hypotheses_supported=["H_PROCESS_INJECTION"],
+            )))
+
+        # Very short-lived: exited in < 5 seconds
+        from datetime import datetime
+        short: list[dict] = []
+        for r in rows:
+            ct = r.get("CreateTime"); et = r.get("ExitTime")
+            if not ct or not et:
+                continue
+            try:
+                a = datetime.fromisoformat(ct.replace("Z", "+00:00"))
+                b = datetime.fromisoformat(et.replace("Z", "+00:00"))
+            except Exception:
+                continue
+            delta = (b - a).total_seconds()
+            if 0 < delta < 5.0:
+                short.append({"pid": r.get("PID"),
+                              "name": (r.get("ImageFileName") or "").lower(),
+                              "dt": delta})
+        if short:
+            # Filter noise: conhost.exe and consent.exe routinely short-lived
+            noisy = {"conhost.exe", "consent.exe", "backgroundtaskhost.exe"}
+            signal = [s for s in short if s["name"] not in noisy]
+            if signal:
+                names = sorted({s["name"] for s in signal})
+                out.append(self.emit(ctx, Finding(
+                    case_id=ctx.case_id, agent=self.name, confidence="low",
+                    claim=(f"Very short-lived process(es) (<5s exit): {len(signal)} — {', '.join(names)}. "
+                           "May be atomic actions, AV termination, or short exploit runs."),
+                    evidence=[ev],
+                )))
+        return out
 
     def _flag_malfind(self, ctx: AgentContext, run: vol3.PluginRun) -> list[Finding]:
         out: list[Finding] = []

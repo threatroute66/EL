@@ -99,7 +99,13 @@ def run_plugin(
     base = [_vol_executable(), "-q", "-r", "json"]
     if offline:
         base.append("--offline")
-    cmd = [*base, "-f", str(image), plugin, *(extra_args or [])]
+    # If --dump is in extra_args, plugins need -o <dir> to write dumped files to.
+    # We route them into the plugin's own out_dir so they're colocated with the
+    # JSON output.
+    dump_args: list[str] = []
+    if extra_args and "--dump" in extra_args:
+        dump_args = ["-o", str(out_dir)]
+    cmd = [*base, *dump_args, "-f", str(image), plugin, *(extra_args or [])]
     try:
         proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
     except subprocess.TimeoutExpired as e:

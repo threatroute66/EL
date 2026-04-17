@@ -31,6 +31,7 @@ RULE_MAP: dict[str, list[Technique]] = {
 
 HYPOTHESIS_MAP: dict[str, list[Technique]] = {
     "H_PROCESS_INJECTION": [("T1055", "Process Injection")],
+    "H_PROCESS_HOLLOWING": [("T1055.012", "Process Injection: Process Hollowing")],
     "H_INITIAL_ACCESS_DOC_MACRO": [
         ("T1566.001", "Phishing: Spearphishing Attachment"),
         ("T1204.002", "User Execution: Malicious File"),
