@@ -18,6 +18,7 @@ from el.agents.correlator import CorrelatorAgent
 from el.agents.disk_forensicator import DiskForensicatorAgent
 from el.agents.endpoint_analyst import EndpointAnalystAgent
 from el.agents.log_analyst import LogAnalystAgent
+from el.agents.malware_triage import MalwareTriageAgent
 from el.agents.windows_artifact import WindowsArtifactAgent
 from el.agents.memory_forensicator import MemoryForensicatorAgent
 from el.agents.network_analyst import NetworkAnalystAgent
@@ -147,6 +148,13 @@ class Coordinator:
         self.audit.info("investigator_selected", name=type(investigator).__name__,
                         evidence_kind=ctx.shared.get("evidence_kind"))
         self._run_agent(investigator, ctx)
+
+        # If MemoryForensicator (or another agent) dumped memory regions via
+        # `windows.malfind --dump`, chain MalwareTriageAgent to strings-extract
+        # and fingerprint-match them.
+        mem_dir = ctx.case_dir / "analysis" / "memory_forensicator"
+        if mem_dir.exists() and any(mem_dir.glob("*.dmp")):
+            self._run_agent(MalwareTriageAgent(), ctx)
 
         # If the primary investigator extracted Windows artifacts (DiskForensicator
         # on an NTFS partition), chain WindowsArtifactAgent against them.
