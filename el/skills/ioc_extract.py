@@ -58,9 +58,13 @@ _FILE_EXT_TLDS = {
     "doc", "docx", "xls", "xlsx", "ppt", "pptx", "pdf", "rtf", "odt",
     "zip", "gz", "tar", "bz2", "xz", "rar", "7z", "iso", "img",
     "e01", "l01", "ad1", "ewf", "vhd", "vhdx", "vmdk", "ova", "ovf",
-    "evtx", "etl", "wim", "reg", "lnk", "jpg", "jpeg", "png", "gif",
+    "evtx", "etl", "wim", "reg", "lnk", "jpg", "jpeg", "png", "gif", "htm",
+    # Not real TLDs but commonly appear in PageSpeed / CDN URL fragments
+    "ce", "skimlinks",
     "py", "pyc", "sh", "bat", "ps1", "vbs", "js", "cmd", "rb", "go",
     "ini", "conf", "cfg", "tmp", "bak", "old",
+    # Outlook / mail formats
+    "eml", "msg", "pst", "ost", "ics", "vcf",
     # Windows internals + Volatility plugin noise that surface as fake domains
     "drv", "pdb", "etl", "service", "ocx", "cpl", "msc", "mui",
     "cmdline", "dlllist", "malfind", "netscan", "netstat", "pslist",
@@ -85,7 +89,18 @@ _PRIVATE_IPS = (
 
 
 def _filter_ipv4(ips: Iterable[str]) -> set[str]:
-    return {ip for ip in ips if not any(ip.startswith(p) for p in _PRIVATE_IPS)}
+    out = set()
+    for ip in ips:
+        if any(ip.startswith(p) for p in _PRIVATE_IPS):
+            continue
+        # Drop version-number patterns: X.0.0.0 (e.g. "Software 3.0.0.0" from
+        # version banners). Real public IPs ending in .0.0.0 are technically
+        # valid but rarely appear as C2 indicators in practice.
+        octets = ip.split(".")
+        if len(octets) == 4 and octets[1:] == ["0", "0", "0"]:
+            continue
+        out.add(ip)
+    return out
 
 
 _WINDOWS_INTERNALS_PREFIXES = (
@@ -132,9 +147,10 @@ def extract(text: str, drop_noise: bool = True) -> dict[str, set[str]]:
     ipv6 = {m for m in _IPV6.findall(t) if ":" in m and len(m) > 4}
     domain = set(_DOMAIN.findall(t))
     url = set(_URL.findall(t))
-    md5 = set(_MD5.findall(t))
-    sha1 = set(_SHA1.findall(t)) - md5
-    sha256 = set(_SHA256.findall(t))
+    # Hashes are case-insensitive in practice; case-fold for dedup
+    md5 = {h.lower() for h in _MD5.findall(t)}
+    sha1 = {h.lower() for h in _SHA1.findall(t)} - md5
+    sha256 = {h.lower() for h in _SHA256.findall(t)}
     email = set(_EMAIL.findall(t))
     regkey = set(m.rstrip("\\") for m in _REGKEY.findall(t))
     winpath = set(_WINPATH.findall(t))

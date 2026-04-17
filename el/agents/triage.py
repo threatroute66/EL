@@ -33,7 +33,9 @@ MAGIC_HINTS = {
     b"PAGEDUMP": "windows full crash dump",
     b"PAGE": "windows page-truncated dump",
     b"\x53\x46\x53\x4d": "winmem (older format)",
-    b"EWF\x09\x0d\x0a\xff\x00": "EWF (E01)",
+    b"EVF\x09\x0d\x0a\xff\x00": "EWF (E01)",
+    b"LVF\x09\x0d\x0a\xff\x00": "EWF (L01 logical evidence)",
+    b"EVF2\r\n\x81\x00": "EWF v2 (Ex01)",
     b"ElfFile\x00": "EVTX (Windows Event Log)",
     b"regf": "Windows Registry hive",
 }

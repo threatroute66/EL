@@ -116,6 +116,79 @@ def fsstat(image: Path, out_dir: Path, offset: int | None = None,
     return _run("fsstat", image, args, out_dir, "fsstat", timeout)
 
 
+def ewfmount(image: Path, mount_point: Path, timeout: int = 60) -> Path:
+    """Mount an E01/EWF image to expose the raw disk stream.
+
+    Per sleuthkit SKILL: ewfmount creates a raw device file (typically named
+    'ewf1') inside the mount point. For multi-segment images, point this at
+    the first segment only — ewfmount auto-joins the rest.
+
+    Requires sudo. Returns the path to the raw device.
+    Caller is responsible for unmount via ewfumount().
+    """
+    mount_point.mkdir(parents=True, exist_ok=True)
+    # -X allow_other lets the unprivileged user read the FUSE-exposed raw
+    # device. Requires `user_allow_other` in /etc/fuse.conf (install.sh
+    # ensures this). Without it, non-root processes get ENOENT trying to
+    # access the mount even when permissions look right.
+    cmd = ["sudo", "ewfmount", "-X", "allow_other", str(image), str(mount_point)]
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+    except subprocess.TimeoutExpired as e:
+        raise SleuthkitError(f"ewfmount timeout: {e}") from e
+    if proc.returncode != 0:
+        raise SleuthkitError(f"ewfmount failed (rc={proc.returncode}): {proc.stderr or proc.stdout}")
+    raw = mount_point / "ewf1"
+    if not raw.exists():
+        existing = list(mount_point.iterdir())
+        raise SleuthkitError(f"ewfmount succeeded but no ewf1 device found; got: {existing}")
+    return raw
+
+
+def ewfumount(mount_point: Path, timeout: int = 30) -> None:
+    """Unmount an ewfmount-mounted image. Idempotent — silent on already-unmounted.
+    Also removes the (now-empty) mount directory."""
+    cmd = ["sudo", "fusermount", "-u", str(mount_point)]
+    try:
+        subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        pass
+    try:
+        if mount_point.exists() and not any(mount_point.iterdir()):
+            mount_point.rmdir()
+    except Exception:
+        pass
+
+
+def parse_mmls(mmls_output: str) -> list[dict]:
+    """Parse mmls stdout into list of {slot, start, end, length, description}.
+    Skips meta/unallocated rows. Returns dicts with int byte_offset assuming
+    512-byte sectors (caller should adjust for 4K via img_stat)."""
+    rows: list[dict] = []
+    for line in mmls_output.splitlines():
+        line = line.strip()
+        if not line or line.startswith("DOS Partition") or line.startswith("Units") \
+                or line.startswith("GPT Partition") or line.startswith("Slot") \
+                or line.startswith("Sector Size") or line.startswith("---"):
+            continue
+        parts = line.split(maxsplit=5)
+        if len(parts) < 6:
+            continue
+        slot, start, end, length = parts[1], parts[2], parts[3], parts[4]
+        desc = parts[5]
+        if "Unallocated" in desc or "Meta" in desc or "Primary Table" in desc:
+            continue
+        try:
+            start_sector = int(start)
+        except ValueError:
+            continue
+        rows.append({"slot": slot, "start_sector": start_sector,
+                     "end_sector": int(end) if end.isdigit() else 0,
+                     "length_sectors": int(length) if length.isdigit() else 0,
+                     "description": desc})
+    return rows
+
+
 def tsk_recover(image: Path, out_subdir: Path, mode: str = "alloc",
                 offset: int | None = None, timeout: int = 7200) -> TskRun:
     """SKILL: -a allocated only (default), -e everything (incl. unallocated)."""

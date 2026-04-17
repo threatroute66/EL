@@ -109,6 +109,11 @@ log "writing install diff to ${SNAP}/diff-${TS}.txt"
 } > "${SNAP}/diff-${TS}.txt"
 
 # --- Doctor -----------------------------------------------------------------
+log "ensuring user_allow_other is enabled in /etc/fuse.conf (needed for ewfmount -X allow_other)"
+if ! grep -q '^user_allow_other' /etc/fuse.conf 2>/dev/null; then
+    sudo sed -i 's/^#user_allow_other$/user_allow_other/' /etc/fuse.conf || true
+fi
+
 log "running doctor for verification"
 "${EL_DIR}/.venv/bin/el" doctor || true
 
