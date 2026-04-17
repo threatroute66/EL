@@ -147,6 +147,19 @@ class Coordinator:
         self.audit.info("investigator_selected", name=type(investigator).__name__,
                         evidence_kind=ctx.shared.get("evidence_kind"))
         self._run_agent(investigator, ctx)
+
+        # If the primary investigator extracted Windows artifacts (DiskForensicator
+        # on an NTFS partition), chain WindowsArtifactAgent against them.
+        if ctx.shared.get("artifacts_dir"):
+            artifacts_path = Path(ctx.shared["artifacts_dir"])
+            if artifacts_path.exists() and artifacts_path.is_dir():
+                artifact_ctx = AgentContext(
+                    case_id=ctx.case_id, case_dir=ctx.case_dir,
+                    input_path=artifacts_path, manifest=ctx.manifest,
+                    shared=ctx.shared,
+                )
+                self._run_agent(WindowsArtifactAgent(), artifact_ctx)
+
         if self.run_timeline:
             self._run_agent(TimelineSynthesistAgent(
                 log2timeline_timeout=self.timeline_l2t_timeout,

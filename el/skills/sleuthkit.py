@@ -145,6 +145,135 @@ def ewfmount(image: Path, mount_point: Path, timeout: int = 60) -> Path:
     return raw
 
 
+def mount_ntfs(raw_image: Path, offset_sectors: int, mount_point: Path,
+               sector_size: int = 512, timeout: int = 60) -> None:
+    """Read-only loopback-mount an NTFS partition from a raw disk stream.
+
+    Per sleuthkit SKILL: always pass ro,loop,offset,norecovery. norecovery
+    prevents NTFS journal replay (which would alter the on-disk state).
+    Requires sudo and ntfs-3g (present on SIFT).
+    """
+    mount_point.mkdir(parents=True, exist_ok=True)
+    offset_bytes = offset_sectors * sector_size
+    cmd = ["sudo", "mount", "-o",
+           f"ro,loop,offset={offset_bytes},norecovery",
+           str(raw_image), str(mount_point)]
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+    except subprocess.TimeoutExpired as e:
+        raise SleuthkitError(f"mount timeout: {e}") from e
+    if proc.returncode != 0:
+        raise SleuthkitError(f"NTFS mount failed (rc={proc.returncode}): "
+                             f"{(proc.stderr or proc.stdout).strip()[:300]}")
+
+
+def umount(mount_point: Path, timeout: int = 30) -> None:
+    """Unmount a kernel mount + clean up empty mount-point dir.
+    Idempotent — silent on already-unmounted."""
+    try:
+        subprocess.run(["sudo", "umount", str(mount_point)],
+                       capture_output=True, text=True, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        pass
+    try:
+        if mount_point.exists() and not any(mount_point.iterdir()):
+            mount_point.rmdir()
+    except Exception:
+        pass
+
+
+def _sudo_cp(src: Path, dst: Path) -> bool:
+    """Copy a file from a root-owned mount + chown back to current user.
+    Returns True on success, False otherwise. Silent on failure (caller
+    decides what to emit)."""
+    import os
+    try:
+        r1 = subprocess.run(["sudo", "cp", "--preserve=timestamps",
+                             str(src), str(dst)],
+                            capture_output=True, text=True, timeout=120)
+        if r1.returncode != 0:
+            return False
+        subprocess.run(["sudo", "chown", f"{os.getuid()}:{os.getgid()}",
+                        str(dst)], capture_output=True, text=True, timeout=30)
+        return True
+    except Exception:
+        return False
+
+
+def extract_windows_artifacts(mount_point: Path, exports_dir: Path) -> dict:
+    """Copy known Windows forensic artifacts from a read-only NTFS mount
+    into a structured exports directory ready for WindowsArtifactAgent.
+
+    Returns a dict of artifact_class → count for the caller to summarise.
+    """
+    out: dict[str, int] = {}
+
+    # Registry hives — Windows/System32/config/
+    config = mount_point / "Windows" / "System32" / "config"
+    if config.is_dir():
+        reg_dir = exports_dir / "registry"
+        reg_dir.mkdir(parents=True, exist_ok=True)
+        for hive_name in ("SYSTEM", "SOFTWARE", "SECURITY", "SAM", "DEFAULT"):
+            src = config / hive_name
+            if src.is_file() and _sudo_cp(src, reg_dir / hive_name):
+                pass
+        out["registry_hives"] = sum(1 for _ in reg_dir.iterdir() if _.is_file())
+
+    # Amcache.hve — Windows/AppCompat/Programs/
+    amcache = mount_point / "Windows" / "AppCompat" / "Programs" / "Amcache.hve"
+    if amcache.is_file():
+        reg_dir = exports_dir / "registry"
+        reg_dir.mkdir(parents=True, exist_ok=True)
+        if _sudo_cp(amcache, reg_dir / "Amcache.hve"):
+            out["amcache"] = 1
+
+    # Prefetch — Windows/Prefetch/*.pf
+    pf_src = mount_point / "Windows" / "Prefetch"
+    if pf_src.is_dir():
+        pf_dir = exports_dir / "Prefetch"
+        pf_dir.mkdir(parents=True, exist_ok=True)
+        for pf in pf_src.glob("*.pf"):
+            _sudo_cp(pf, pf_dir / pf.name)
+        out["prefetch_files"] = sum(1 for _ in pf_dir.glob("*.pf"))
+
+    # EVTX — Windows/System32/winevt/Logs/*.evtx
+    ev_src = mount_point / "Windows" / "System32" / "winevt" / "Logs"
+    if ev_src.is_dir():
+        ev_dir = exports_dir / "evtx"
+        ev_dir.mkdir(parents=True, exist_ok=True)
+        for ev in ev_src.glob("*.evtx"):
+            _sudo_cp(ev, ev_dir / ev.name)
+        out["evtx_files"] = sum(1 for _ in ev_dir.glob("*.evtx"))
+
+    # SRUM — Windows/System32/sru/SRUDB.dat
+    srudb = mount_point / "Windows" / "System32" / "sru" / "SRUDB.dat"
+    if srudb.is_file():
+        srum_dir = exports_dir / "srum"
+        srum_dir.mkdir(parents=True, exist_ok=True)
+        if _sudo_cp(srudb, srum_dir / "SRUDB.dat"):
+            out["srum"] = 1
+
+    # Per-user NTUSER.DAT — Users/<name>/NTUSER.DAT
+    users_dir = mount_point / "Users"
+    if users_dir.is_dir():
+        ntuser_dir = exports_dir / "registry"
+        ntuser_dir.mkdir(parents=True, exist_ok=True)
+        n = 0
+        for user_dir in users_dir.iterdir():
+            if not user_dir.is_dir():
+                continue
+            if user_dir.name in ("All Users", "Default", "Default User", "Public"):
+                continue
+            ntuser = user_dir / "NTUSER.DAT"
+            if ntuser.is_file():
+                if _sudo_cp(ntuser, ntuser_dir / f"NTUSER-{user_dir.name}.DAT"):
+                    n += 1
+        if n:
+            out["ntuser_hives"] = n
+
+    return out
+
+
 def ewfumount(mount_point: Path, timeout: int = 30) -> None:
     """Unmount an ewfmount-mounted image. Idempotent — silent on already-unmounted.
     Also removes the (now-empty) mount directory."""

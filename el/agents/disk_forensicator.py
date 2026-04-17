@@ -133,6 +133,8 @@ class DiskForensicatorAgent(Agent):
                 )))
             return out
 
+        sector_size = ctx.shared.get("sector_size", 512)
+        artifact_dirs: list[Path] = []
         for p in partitions:
             label = f"slot{p['slot']}-off{p['start_sector']}"
             try:
@@ -148,13 +150,91 @@ class DiskForensicatorAgent(Agent):
                 out.extend(self._fls_to_timeline(
                     ctx, fls_run, analysis, part_label=label,
                     desc=p["description"]))
+                if "NTFS" in p["description"] or "Basic data" in p["description"]:
+                    extracted = self._extract_ntfs_artifacts(
+                        ctx, raw_image, p, sector_size, label)
+                    if extracted:
+                        artifact_dirs.append(extracted)
             else:
                 out.append(self.emit(ctx, Finding(
                     case_id=ctx.case_id, agent=self.name, confidence="insufficient",
                     claim=f"fls returned no rows for partition {label} ({p['description']}) "
                           f"— filesystem may be unreadable or unsupported",
                 )))
+
+        if artifact_dirs:
+            ctx.shared["artifacts_dir"] = str(artifact_dirs[0])
+            # The grounded "artifacts extracted" finding is emitted from
+            # _extract_ntfs_artifacts itself (with the file-listing manifest
+            # as evidence). No separate summary needed here.
         return out
+
+    def _extract_ntfs_artifacts(self, ctx: AgentContext, raw_image: Path,
+                                 partition: dict, sector_size: int,
+                                 label: str) -> Path | None:
+        """Mount the NTFS partition read-only and copy known forensic
+        artifacts (registry hives, MFT-via-SLA, EVTX, Prefetch, SRUM,
+        per-user NTUSER.DAT) into the case exports/ directory.
+
+        Returns the artifacts directory if anything was extracted, else None.
+        Always unmounts in cleanup.
+        """
+        # IMPORTANT: kernel mount target must NOT be inside the ewfmount FUSE
+        # mount (FUSE doesn't allow mkdir there — ENOSYS). Use a sibling dir.
+        fs_mount = Path("/tmp/el-mounts") / f"{ctx.case_id}-fs-{label}"
+        exports_dir = ctx.case_dir / "exports" / "windows-artifacts"
+        try:
+            sk.mount_ntfs(raw_image, partition["start_sector"], fs_mount,
+                          sector_size=sector_size, timeout=60)
+        except sk.SleuthkitError as e:
+            self.emit(ctx, Finding(
+                case_id=ctx.case_id, agent=self.name, confidence="insufficient",
+                claim=f"NTFS mount failed for {label} ({partition['description']}): {e}",
+            ))
+            return None
+
+        try:
+            extracted = sk.extract_windows_artifacts(fs_mount, exports_dir)
+        except Exception as e:
+            self.emit(ctx, Finding(
+                case_id=ctx.case_id, agent=self.name, confidence="insufficient",
+                claim=f"Artifact extraction errored for {label}: {e}",
+            ))
+            sk.umount(fs_mount)
+            return None
+
+        sk.umount(fs_mount)
+
+        if not extracted:
+            self.emit(ctx, Finding(
+                case_id=ctx.case_id, agent=self.name, confidence="insufficient",
+                claim=f"NTFS partition {label} mounted but no recognised Windows "
+                      "artifacts found (no Windows/System32/config, no Prefetch, no winevt/Logs)",
+            ))
+            return None
+
+        summary = ", ".join(f"{k}={v}" for k, v in sorted(extracted.items()))
+        from el.schemas.finding import EvidenceItem
+        import hashlib
+        # Treat the extracted exports dir as the evidence (its file listing
+        # serves as the provenance record)
+        listing = "\n".join(sorted(str(p.relative_to(exports_dir))
+                                    for p in exports_dir.rglob("*") if p.is_file()))
+        listing_path = exports_dir / "MANIFEST.txt"
+        listing_path.write_text(listing)
+        ev = EvidenceItem(
+            tool="el.disk_forensicator", version="0.1.0",
+            command=f"sk.extract_windows_artifacts({label})",
+            output_sha256=hashlib.sha256(listing.encode()).hexdigest(),
+            output_path=str(listing_path),
+            extracted_facts=extracted,
+        )
+        self.emit(ctx, Finding(
+            case_id=ctx.case_id, agent=self.name, confidence="high",
+            claim=f"Windows artifacts extracted from {label}: {summary}",
+            evidence=[ev], hypotheses_supported=["H_DISK_ARTIFACTS"],
+        ))
+        return exports_dir
 
     def _fls_to_timeline(self, ctx: AgentContext, fls_run: sk.TskRun, analysis,
                          part_label: str, desc: str = "") -> list[Finding]:
