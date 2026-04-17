@@ -67,7 +67,15 @@ RULES: list[Rule] = [
     Rule(
         rule_id="MALFIND_JIT_FALSE_POSITIVE",
         description="malfind RWX regions can be legitimate JIT/CLR/V8 compilers",
-        matches=_claim_has("malfind"),
+        # Carve out credential-access targets: lsass/winlogon/services/csrss/
+        # wininit/smss do NOT run JIT-compiled code, so the JIT counter-
+        # explanation does not apply and this rule MUST NOT fire on them.
+        matches=lambda f: (_claim_has("malfind")(f)
+                           and "credential-access target" not in (f.claim or "").lower()
+                           and not any(p in (f.claim or "").lower()
+                                        for p in ("lsass.exe", "winlogon.exe",
+                                                   "services.exe", "csrss.exe",
+                                                   "wininit.exe", "smss.exe"))),
         counter_explanation=(
             "RWX/RX regions with no PE header are commonly produced by JIT runtimes "
             "(CLR, JScript, V8/Chromium, Java Hotspot, PyPy). Region presence alone is not injection."

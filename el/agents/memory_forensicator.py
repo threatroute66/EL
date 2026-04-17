@@ -251,12 +251,45 @@ class MemoryForensicatorAgent(Agent):
             )))
         return findings
 
+    CREDENTIAL_ACCESS_TARGETS = {
+        "lsass.exe", "winlogon.exe", "services.exe", "wininit.exe",
+        "csrss.exe", "smss.exe", "lsaiso.exe",
+    }
+
     def _flag_malfind(self, ctx: AgentContext, run: vol3.PluginRun) -> list[Finding]:
+        out: list[Finding] = []
         ev = run.as_evidence()
-        names = sorted({(r.get("Process") or "").lower() for r in run.rows if isinstance(r, dict)})
-        return [self.emit(ctx, Finding(
+        names = sorted({(r.get("Process") or "").lower()
+                        for r in run.rows if isinstance(r, dict)})
+        out.append(self.emit(ctx, Finding(
             case_id=ctx.case_id, agent=self.name,
-            claim=f"malfind flagged {len(run.rows)} region(s) across processes: {', '.join(filter(None, names))}",
+            claim=f"malfind flagged {len(run.rows)} region(s) across processes: "
+                  f"{', '.join(filter(None, names))}",
             confidence="high", evidence=[ev],
             hypotheses_supported=["H_PROCESS_INJECTION", "H_CODE_EXECUTION"],
-        ))]
+        )))
+
+        # Credential-access carve-out: RWX in a critical system process (lsass,
+        # winlogon, services, csrss, wininit, smss) is NOT explainable by JIT
+        # runtimes — these processes don't run managed code. A malfind hit
+        # here is high-signal for credential theft (mimikatz-class).
+        cred_hits: dict[str, int] = {}
+        for row in run.rows:
+            if not isinstance(row, dict):
+                continue
+            proc = (row.get("Process") or "").lower()
+            if proc in self.CREDENTIAL_ACCESS_TARGETS:
+                cred_hits[proc] = cred_hits.get(proc, 0) + 1
+
+        if cred_hits:
+            detail = ", ".join(f"{p}×{n}" for p, n in sorted(cred_hits.items()))
+            out.append(self.emit(ctx, Finding(
+                case_id=ctx.case_id, agent=self.name,
+                claim=f"Code-injection in credential-access target process(es): {detail}. "
+                      "These system processes do not run JIT-compiled code; RWX regions "
+                      "here are strong indicators of credential-dumping (mimikatz-class) "
+                      "or privilege-escalation malware.",
+                confidence="high", evidence=[ev],
+                hypotheses_supported=["H_CREDENTIAL_ACCESS", "H_PROCESS_INJECTION"],
+            )))
+        return out

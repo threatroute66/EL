@@ -40,6 +40,10 @@ HYPOTHESIS_MAP: dict[str, list[Technique]] = {
         ("T1071", "Application Layer Protocol"),
         ("T1571", "Non-Standard Port"),
     ],
+    "H_CREDENTIAL_ACCESS": [
+        ("T1003.001", "OS Credential Dumping: LSASS Memory"),
+        ("T1003", "OS Credential Dumping"),
+    ],
     "H_EID_4625": [("T1110", "Brute Force")],
     "H_EID_1102": [("T1070.001", "Indicator Removal: Clear Windows Event Logs")],
     "H_EID_4697": [("T1543.003", "Create or Modify System Process: Windows Service")],

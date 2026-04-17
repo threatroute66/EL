@@ -89,8 +89,19 @@ def _h_apt(f: Finding) -> int:
     if _has_tag("H_INITIAL_ACCESS_DOC_MACRO")(f): s += 1
     if _has_tag("H_C2_OR_REVERSE_SHELL")(f): s += 1
     if _has_tag("H_LIVING_OFF_THE_LAND")(f): s += 1
-    if _claim_contains("4624", "4672", "4769", "kerberos")(f):
+    if _has_tag("H_CREDENTIAL_ACCESS")(f): s += 3
+    if _claim_contains("4624", "4672", "4769", "kerberos",
+                        "credential-access target")(f):
         s += 1
+    return s
+
+
+def _h_credential_access(f: Finding) -> int:
+    s = 0
+    if _has_tag("H_CREDENTIAL_ACCESS")(f): s += 3
+    if _claim_contains("lsass", "credential-dumping", "mimikatz",
+                        "credential-access target")(f):
+        s += 2
     return s
 
 
@@ -199,6 +210,11 @@ HYPOTHESES: list[Hypothesis] = [
                "Cloud persistence / privilege establishment",
                "Attacker establishing persistence in cloud IAM (new keys, policies, MFA tampering).",
                _h_cloud_persistence),
+    Hypothesis("H_CREDENTIAL_ACCESS",
+               "Credential access / dumping",
+               "Malware or operator extracting credentials from system processes "
+               "(lsass memory, SAM hive, Kerberos tickets). Mimikatz-class activity.",
+               _h_credential_access),
 ]
 
 
