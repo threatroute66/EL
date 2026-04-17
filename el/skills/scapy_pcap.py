@@ -22,6 +22,8 @@ class PcapSummary:
     flows: dict[tuple[str, str, int, int, str], int] = field(default_factory=dict)
     dns_queries: list[str] = field(default_factory=list)
     http_hosts: list[str] = field(default_factory=list)
+    http_uris: list[str] = field(default_factory=list)
+    http_user_agents: list[str] = field(default_factory=list)
     tls_sni: list[str] = field(default_factory=list)
     suspicious_dports: Counter = field(default_factory=Counter)
 
@@ -36,9 +38,12 @@ class PcapSummary:
                 "flow_count": len(self.flows),
                 "dns_query_count": len(self.dns_queries),
                 "http_host_count": len(self.http_hosts),
+                "http_uri_count": len(self.http_uris),
                 "tls_sni_count": len(self.tls_sni),
                 "unique_dns": sorted(set(self.dns_queries))[:50],
                 "unique_hosts": sorted(set(self.http_hosts))[:50],
+                "unique_uris": sorted(set(self.http_uris))[:50],
+                "unique_user_agents": sorted(set(self.http_user_agents))[:30],
                 "unique_sni": sorted(set(self.tls_sni))[:50],
             },
         )
@@ -86,9 +91,20 @@ def summarize(pcap_path: Path, out_dir: Path) -> PcapSummary:
         if proto == "tcp" and (int(l4.dport) == 80 or int(l4.sport) == 80):
             payload = bytes(l4.payload)
             if payload[:4] in (b"GET ", b"POST", b"HEAD", b"PUT ", b"DELE"):
+                # First line: "<METHOD> <URI> HTTP/x.x"
+                first_eol = payload.find(b"\r\n")
+                if first_eol > 0:
+                    request_line = payload[:first_eol].decode(errors="ignore")
+                    parts = request_line.split(" ", 2)
+                    if len(parts) >= 2:
+                        summary.http_uris.append(parts[1])
                 for line in payload.split(b"\r\n"):
-                    if line.lower().startswith(b"host:"):
+                    low = line.lower()
+                    if low.startswith(b"host:"):
                         summary.http_hosts.append(line.split(b":", 1)[1].strip().decode(errors="ignore"))
+                    elif low.startswith(b"user-agent:"):
+                        summary.http_user_agents.append(
+                            line.split(b":", 1)[1].strip().decode(errors="ignore"))
         if TLS_OK:
             try:
                 from scapy.layers.tls.handshake import TLSClientHello as _CH
@@ -110,6 +126,8 @@ def summarize(pcap_path: Path, out_dir: Path) -> PcapSummary:
                   for k, v in sorted(summary.flows.items(), key=lambda x: -x[1])[:200]],
         "dns_queries": sorted(set(summary.dns_queries)),
         "http_hosts": sorted(set(summary.http_hosts)),
+        "http_uris": sorted(set(summary.http_uris)),
+        "http_user_agents": sorted(set(summary.http_user_agents)),
         "tls_sni": sorted(set(summary.tls_sni)),
         "suspicious_dport_hits": dict(summary.suspicious_dports),
     }

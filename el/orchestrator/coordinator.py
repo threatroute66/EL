@@ -149,12 +149,11 @@ class Coordinator:
                         evidence_kind=ctx.shared.get("evidence_kind"))
         self._run_agent(investigator, ctx)
 
-        # If MemoryForensicator (or another agent) dumped memory regions via
-        # `windows.malfind --dump`, chain MalwareTriageAgent to strings-extract
-        # and fingerprint-match them.
-        mem_dir = ctx.case_dir / "analysis" / "memory_forensicator"
-        if mem_dir.exists() and any(mem_dir.glob("*.dmp")):
-            self._run_agent(MalwareTriageAgent(), ctx)
+        # MalwareTriage covers two evidence pools: memory dumps (preferred)
+        # and text-extractable analysis outputs (pcap summaries, EVTX CSVs,
+        # fls bodyfiles). Always run — it'll emit insufficient if neither
+        # pool has anything to attribute.
+        self._run_agent(MalwareTriageAgent(), ctx)
 
         # If the primary investigator extracted Windows artifacts (DiskForensicator
         # on an NTFS partition), chain WindowsArtifactAgent against them.
