@@ -11,7 +11,7 @@ from pathlib import Path
 
 from el.agents.base import Agent, AgentContext
 from el.schemas.finding import Finding
-from el.skills import ezt
+from el.skills import ezt, hayabusa as hb
 
 
 HIGH_VALUE_EIDS = {
@@ -100,4 +100,59 @@ class LogAnalystAgent(Agent):
                 evidence=[ev],
                 hypotheses_supported=[f"H_EID_{eid}"],
             )))
+
+        # Hayabusa: Sigma rules → named ATT&CK techniques. Lifts LogAnalyst
+        # from "we counted EIDs" to "we matched named TTPs". Falls back
+        # silently if hayabusa isn't installed.
+        out.extend(self._run_hayabusa(ctx, ctx.input_path, analysis))
+        return out
+
+    def _run_hayabusa(self, ctx: AgentContext, target, analysis) -> list[Finding]:
+        out: list[Finding] = []
+        try:
+            r = hb.csv_timeline(target, analysis / "hayabusa", timeout=1800)
+        except hb.HayabusaError as e:
+            out.append(self.emit(ctx, Finding(
+                case_id=ctx.case_id, agent=self.name, confidence="insufficient",
+                claim=f"Hayabusa unavailable or failed: {e}",
+            )))
+            return out
+        if r.detection_count == 0:
+            out.append(self.emit(ctx, Finding(
+                case_id=ctx.case_id, agent=self.name, confidence="low",
+                claim=f"Hayabusa Sigma sweep: 0 detections — neither corroborates nor refutes",
+                evidence=[r.as_evidence()],
+            )))
+            return out
+        # Map ATT&CK technique IDs to hypothesis tags (same scheme as capa)
+        tags: list[str] = []
+        for tid in r.attack_techniques:
+            if tid.startswith("T1055"):
+                tags.append("H_PROCESS_INJECTION")
+            elif tid.startswith("T1003"):
+                tags.append("H_CREDENTIAL_ACCESS")
+            elif tid.startswith("T1059") or tid.startswith("T1218"):
+                tags.append("H_LIVING_OFF_THE_LAND")
+            elif tid.startswith("T1543") or tid.startswith("T1547"):
+                tags.append("H_PERSISTENCE_SERVICE")
+            elif tid.startswith("T1053"):
+                tags.append("H_PERSISTENCE_SCHEDULED_TASK")
+            elif tid.startswith("T1021") or tid.startswith("T1569"):
+                tags.append("H_LATERAL_MOVEMENT")
+            elif tid.startswith("T1486"):
+                tags.append("H_RANSOMWARE")
+            elif tid.startswith("T1110"):
+                tags.append("H_BRUTE_FORCE")
+        tags = sorted(set(tags))
+        sev_summary = ", ".join(f"{k}={v}" for k, v in sorted(r.severity_counts.items()))
+        top_rules = ", ".join(name for name, _ in
+                              sorted(r.rule_hits.items(), key=lambda kv: -kv[1])[:3])
+        out.append(self.emit(ctx, Finding(
+            case_id=ctx.case_id, agent=self.name, confidence="high",
+            claim=(f"Hayabusa Sigma sweep: {r.detection_count} detection(s); "
+                   f"{len(r.attack_techniques)} unique ATT&CK technique(s). "
+                   f"Severity: {sev_summary}. Top rules: {top_rules}"),
+            evidence=[r.as_evidence()],
+            hypotheses_supported=tags,
+        )))
         return out

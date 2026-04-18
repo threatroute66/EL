@@ -117,11 +117,16 @@ RULES: list[Rule] = [
     ),
     Rule(
         rule_id="LOW_CONFIDENCE_NEEDS_CORROBORATION",
-        description="Any 'low' confidence finding requires at least one corroborating source before SYNTHESIZE",
-        matches=lambda f: f.confidence == "low",
+        description="A low-confidence finding that POINTS at a hypothesis needs corroboration",
+        # Only fire when the low finding has hypothesis tags (i.e. it's
+        # claiming something about case-level attribution). Routine triage
+        # observations like "Input has no recognised magic header" carry no
+        # tags and shouldn't be challenged for corroboration.
+        matches=lambda f: f.confidence == "low" and bool(f.hypotheses_supported),
         counter_explanation=(
-            "A single low-confidence signal is not actionable. EL requires at least one "
-            "independent corroborating artifact from a different agent or evidence source."
+            "A single low-confidence signal pointing at a hypothesis is not actionable. "
+            "EL requires at least one independent corroborating artifact from a different "
+            "agent or evidence source."
         ),
         disconfirming_checklist=[
             "Identify a second, independent evidence source (different host, different artifact class, different tool) that supports or refutes this claim",
@@ -129,15 +134,29 @@ RULES: list[Rule] = [
     ),
     Rule(
         rule_id="NO_EVIDENCE_NO_CLAIM",
-        description="Findings claiming 'high' but with single evidence item should be re-checked",
-        matches=lambda f: f.confidence == "high" and len(f.evidence) <= 1,
+        description="High-confidence ATTRIBUTION findings with a single evidence item need a second source",
+        # Fire only on attribution-shaped claims (a strong assertion that a
+        # specific actor/family/technique is present). Generic plugin-output
+        # findings ("X plugin parsed N rows") don't claim attribution and
+        # legitimately have only the plugin output as evidence — challenging
+        # them produces 250 noise events per sampled 50 cases (audit Apr-2026).
+        matches=lambda f: (
+            f.confidence == "high" and len(f.evidence) <= 1
+            and any(kw in (f.claim or "").lower() for kw in (
+                "attribut", "identified as", "indicates", "fingerprint",
+                "leading hypothesis", "confirms", "credential-dumping",
+                "process injection", "memory-region attribution",
+            ))
+        ),
         counter_explanation=(
-            "A single tool's output is not corroboration. Tool bugs, parser quirks, or stale "
-            "symbol tables can produce confident-looking but spurious results."
+            "An attribution-strength claim deserves a second source. A single tool's output "
+            "(parser, plugin, or library) can produce confident-looking-but-spurious results "
+            "via bugs, stale symbols, or version drift."
         ),
         disconfirming_checklist=[
-            "Re-run the same plugin with a different symbol set or tool version",
-            "Cross-check with a different plugin/tool that observes the same artifact (e.g. pslist vs pstree vs psscan)",
+            "Re-run the originating plugin/tool with a different version or ruleset",
+            "Cross-check with a different tool that observes the same artifact "
+            "(e.g. capa + family-fingerprint + ssdeep similarity, or pslist + psscan + pstree)",
         ],
     ),
 ]
