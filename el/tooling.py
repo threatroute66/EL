@@ -95,6 +95,9 @@ def probe_ezt(dll: str, subdir: str | None = None) -> ToolStatus:
 
 
 def survey() -> list[ToolStatus]:
+    import sys
+    capa_bin = str(Path(sys.executable).parent / "capa")
+    floss_bin = str(Path(sys.executable).parent / "floss")
     return [
         probe_volatility3(),
         probe_memory_baseliner(),
@@ -109,6 +112,15 @@ def survey() -> list[ToolStatus]:
         probe_simple("zeek", ["--version"]),
         probe_simple("suricata", ["-V"]),
         probe_simple("tshark", ["-v"]),
+        probe_simple("foremost", ["-V"]),
+        probe_simple("photorec"),
+        probe_simple("ssdeep", ["-V"]),
+        probe_simple("hashdeep", ["-V"]),
+        probe_simple("exiftool", ["-ver"]),
+        probe_simple("hayabusa", ["help"]),
+        probe_simple("chainsaw", ["--version"]),
+        _probe_path(capa_bin, "capa", ["--version"]),
+        _probe_path(floss_bin, "floss", ["--version"]),
         probe_simple("dotnet", ["--list-runtimes"]),
         probe_ezt("EvtxECmd.dll", "EvtxeCmd"),
         probe_ezt("MFTECmd.dll"),
@@ -116,3 +128,18 @@ def survey() -> list[ToolStatus]:
         probe_ezt("PECmd.dll"),
         probe_ezt("AmcacheParser.dll"),
     ]
+
+
+def _probe_path(path: str, name: str, version_args: list[str] | None = None) -> ToolStatus:
+    """Probe an absolute path (for venv-installed binaries like capa / floss)."""
+    if not Path(path).is_file():
+        return ToolStatus(name, None, None, False)
+    version = ""
+    if version_args:
+        rc, out, err = _run([path, *version_args])
+        text = out or err
+        for line in text.splitlines():
+            if line.strip():
+                version = line.strip()
+                break
+    return ToolStatus(name, [path], version or "present", True)

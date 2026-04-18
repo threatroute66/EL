@@ -1,2 +1,9 @@
 yara
 gh
+tshark
+suricata
+foremost
+ssdeep
+hashdeep
+testdisk
+libimage-exiftool-perl
