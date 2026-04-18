@@ -10,7 +10,7 @@ import hashlib
 from el.agents.base import Agent, AgentContext
 from el.evidence.graph import open_graph
 from el.schemas.finding import Finding
-from el.skills import scapy_pcap
+from el.skills import network_extra as nx, scapy_pcap
 
 
 def _esc(s: str) -> str:
@@ -81,4 +81,51 @@ class NetworkAnalystAgent(Agent):
                 claim=f"Graph population partially failed: {e}", evidence=[ev],
             )))
 
+        # Suricata IDS: replay the pcap with the system ruleset and surface
+        # named alerts. Falls back silently if Suricata isn't installed.
+        out.extend(self._run_suricata(ctx, analysis))
+        return out
+
+    def _run_suricata(self, ctx: AgentContext, analysis) -> list[Finding]:
+        out: list[Finding] = []
+        try:
+            r = nx.replay_pcap(ctx.input_path, analysis / "suricata", timeout=1800)
+        except nx.SuricataError as e:
+            out.append(self.emit(ctx, Finding(
+                case_id=ctx.case_id, agent=self.name, confidence="insufficient",
+                claim=f"Suricata unavailable or failed: {e}",
+            )))
+            return out
+        if r.alert_count == 0:
+            out.append(self.emit(ctx, Finding(
+                case_id=ctx.case_id, agent=self.name, confidence="low",
+                claim="Suricata replay: 0 alerts — neither corroborates nor refutes "
+                      "(rules may not cover the traffic, or capture has no malicious flows)",
+                evidence=[r.as_evidence()],
+            )))
+            return out
+        # Pick out malware-family signatures and classify
+        tags: list[str] = []
+        for sig, _ in r.sig_hits.items():
+            sl = sig.lower()
+            if any(fam in sl for fam in ("trojan", "trickbot", "qakbot", "emotet",
+                                          "hancitor", "icedid", "bazarloader",
+                                          "remcos", "njrat", "ransomware",
+                                          "cobalt strike", "meterpreter", "metasploit")):
+                tags.append("H_C2_OR_REVERSE_SHELL")
+                tags.append("H_OPPORTUNISTIC_COMMODITY")
+            if "exploit" in sl or "et exploit" in sl:
+                tags.append("H_C2_OR_REVERSE_SHELL")
+            if "scan" in sl or "policy" in sl:
+                pass  # don't lift on policy / scan noise
+        tags = sorted(set(tags))
+        top = ", ".join(s for s, _ in
+                        sorted(r.sig_hits.items(), key=lambda kv: -kv[1])[:3])
+        out.append(self.emit(ctx, Finding(
+            case_id=ctx.case_id, agent=self.name, confidence="high",
+            claim=(f"Suricata IDS: {r.alert_count} alert(s) across "
+                   f"{len(r.sig_hits)} unique signature(s). Top: {top}"),
+            evidence=[r.as_evidence()],
+            hypotheses_supported=tags,
+        )))
         return out

@@ -10,7 +10,7 @@ from pathlib import Path
 
 from el.agents.base import Agent, AgentContext
 from el.schemas.finding import EvidenceItem, Finding
-from el.skills import disk_anomaly, sleuthkit as sk
+from el.skills import bulk_extractor as be_skill, disk_anomaly, sleuthkit as sk
 
 
 class DiskForensicatorAgent(Agent):
@@ -177,6 +177,48 @@ class DiskForensicatorAgent(Agent):
             # The grounded "artifacts extracted" finding is emitted from
             # _extract_ntfs_artifacts itself (with the file-listing manifest
             # as evidence). No separate summary needed here.
+
+        # bulk_extractor: feature-class carving across the raw stream.
+        # Cheap supplement to fls + WindowsArtifactAgent — picks up
+        # emails / URLs / domains / IPv4 / CCN / BTC from unallocated
+        # space and slack that the FS walk misses.
+        out.extend(self._run_bulk_extractor(ctx, raw_image, analysis))
+        return out
+
+    def _run_bulk_extractor(self, ctx: AgentContext, raw_image,
+                             analysis) -> list[Finding]:
+        out: list[Finding] = []
+        be_dir = analysis / "bulk_extractor"
+        try:
+            r = be_skill.scan(raw_image, be_dir,
+                              features=["email", "url", "domain", "ip",
+                                         "ccn", "json"],
+                              threads=4, timeout=3600)
+        except be_skill.BulkExtractorError as e:
+            out.append(self.emit(ctx, Finding(
+                case_id=ctx.case_id, agent=self.name, confidence="insufficient",
+                claim=f"bulk_extractor unavailable or failed: {e}",
+            )))
+            return out
+        feats = r.features()
+        if not feats:
+            out.append(self.emit(ctx, Finding(
+                case_id=ctx.case_id, agent=self.name, confidence="low",
+                claim=f"bulk_extractor swept {raw_image.name}: no feature hits "
+                      "(image may be small, encrypted, or unallocated-poor)",
+                evidence=[r.as_evidence()],
+            )))
+            return out
+        total = sum(feats.values())
+        summary = ", ".join(f"{k}={v}" for k, v in
+                             sorted(feats.items(), key=lambda kv: -kv[1])[:8])
+        out.append(self.emit(ctx, Finding(
+            case_id=ctx.case_id, agent=self.name, confidence="high",
+            claim=f"bulk_extractor carved {total} feature(s) across "
+                  f"{len(feats)} class(es): {summary}",
+            evidence=[r.as_evidence()],
+            hypotheses_supported=["H_DISK_ARTIFACTS"],
+        )))
         return out
 
     def _extract_ntfs_artifacts(self, ctx: AgentContext, raw_image: Path,
