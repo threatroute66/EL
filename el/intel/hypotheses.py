@@ -164,10 +164,16 @@ def _h_cloud_persistence(f: Finding) -> int:
 
 
 def _h_c2_beaconing(f: Finding) -> int:
+    """Only lift on EXPLICIT C2-shaped tags or strongly-typed keywords.
+    Earlier version keyword-matched 'tcp'/'udp' which lifted H_C2 on every
+    pcap (network_analyst's 'Parsed N packets' claim mentions both). That
+    saturated 95% of corpus runs at +4. The keyword set below is restricted
+    to terms that only appear in actual C2-shaped findings (suspicious port,
+    beacon, periodic check-in patterns)."""
     s = 0
     if _has_tag("H_C2_OR_REVERSE_SHELL")(f): s += 3
-    if _claim_contains("netscan", "connection", "tcp", "udp", "beacon", "sni",
-                       "destination port")(f):
+    if _claim_contains("suspicious destination ports", "beacon",
+                        "periodic check-in", "c2 channel")(f):
         s += 1
     return s
 

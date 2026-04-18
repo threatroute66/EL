@@ -48,6 +48,15 @@ def score_findings(findings: list[Finding]) -> tuple[list[HypothesisRow], list[F
         if f.confidence == "insufficient":
             f.ach_score_delta = {}
             continue
+        # Tier-3 cross-case overlap findings are SUGGESTIVE, not load-bearing.
+        # The contract (CLAUDE.md "Three knowledge layers") requires they
+        # not influence ACH scoring — case B's hypothesis must stand on
+        # case B's own evidence; case A is context only. Earlier the
+        # `confidence='low'` shielding was insufficient because keyword
+        # matches in the cross-case claim text leaked into ACH deltas.
+        if f.agent == "knowledge_lookup":
+            f.ach_score_delta = {}
+            continue
         deltas: dict[str, int] = {}
         for h in HYPOTHESES:
             d = h.score(f)

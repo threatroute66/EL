@@ -46,8 +46,13 @@ class CorrelatorAgent(Agent):
                 notes.append(f"top destination IPs by flow count: {top_dst}")
                 claim = (f"Top destination IP by flows: {top_dst[0]['addr']} "
                          f"({top_dst[0]['flows']} flow(s))")
+                # No C2 tag — "most common destination IP" is statistical,
+                # not C2 evidence. The IOC catalog + cross-case overlap
+                # already capture which IPs are interesting; tagging this
+                # H_C2_OR_REVERSE_SHELL falsely lifts the C2 hypothesis on
+                # every pcap (proven by the 265-case corpus stress test).
                 out.append(self._emit_correlation(ctx, claim, "medium",
-                                                  ["H_C2_OR_REVERSE_SHELL"], report_path))
+                                                  [], report_path))
         except Exception as e:
             notes.append(f"top-dst query failed: {e}")
 

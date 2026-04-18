@@ -86,3 +86,4 @@ nohup.out
 
 # Memory Baseliner stray log (auto-written to cwd by csababarta/memory-baseliner)
 all.log
+.lock
