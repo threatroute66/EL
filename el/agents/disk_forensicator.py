@@ -10,7 +10,7 @@ from pathlib import Path
 
 from el.agents.base import Agent, AgentContext
 from el.schemas.finding import EvidenceItem, Finding
-from el.skills import bulk_extractor as be_skill, disk_anomaly, sleuthkit as sk
+from el.skills import bulk_extractor as be_skill, disk_anomaly, exiftool as exif_skill, sleuthkit as sk
 
 
 class DiskForensicatorAgent(Agent):
@@ -183,6 +183,11 @@ class DiskForensicatorAgent(Agent):
         # emails / URLs / domains / IPv4 / CCN / BTC from unallocated
         # space and slack that the FS walk misses.
         out.extend(self._run_bulk_extractor(ctx, raw_image, analysis))
+        # exiftool: metadata sweep across extracted Windows artifacts to
+        # surface authoring fingerprints (Office Author, PDF Producer,
+        # camera serial, GPS) that suggest data origin / transfer paths.
+        if artifact_dirs:
+            out.extend(self._run_exiftool(ctx, artifact_dirs[0]))
         return out
 
     def _run_bulk_extractor(self, ctx: AgentContext, raw_image,
@@ -219,6 +224,86 @@ class DiskForensicatorAgent(Agent):
             evidence=[r.as_evidence()],
             hypotheses_supported=["H_DISK_ARTIFACTS"],
         )))
+        return out
+
+    def _run_exiftool(self, ctx: AgentContext, target_dir: Path) -> list[Finding]:
+        out: list[Finding] = []
+        try:
+            metas = exif_skill.metadata_dir(target_dir, max_files=500,
+                                             timeout=600)
+        except exif_skill.ExifError as e:
+            out.append(self.emit(ctx, Finding(
+                case_id=ctx.case_id, agent=self.name, confidence="insufficient",
+                claim=f"exiftool unavailable or failed on {target_dir.name}: {e}",
+            )))
+            return out
+        if not metas:
+            return out
+
+        # Aggregate authorship fingerprints across all files
+        from collections import Counter
+        authors: Counter = Counter()
+        producers: Counter = Counter()
+        gps_files: list[str] = []
+        camera_serials: Counter = Counter()
+        for path, m in metas.items():
+            for k in ("Author", "Creator", "LastModifiedBy"):
+                v = m.get(k)
+                if v and isinstance(v, str):
+                    authors[v.strip()] += 1
+            for k in ("Producer", "CreatorTool", "Software"):
+                v = m.get(k)
+                if v and isinstance(v, str):
+                    producers[v.strip()] += 1
+            if m.get("GPSPosition") or m.get("GPSLatitude"):
+                gps_files.append(path)
+            v = m.get("SerialNumber") or m.get("CameraSerialNumber")
+            if v:
+                camera_serials[str(v).strip()] += 1
+
+        import hashlib
+        from el.schemas.finding import EvidenceItem
+        # Persist a compact JSON summary as the evidence record
+        import json
+        summary_path = (ctx.case_dir / "analysis" / self.name /
+                         "exiftool-summary.json")
+        summary_path.parent.mkdir(parents=True, exist_ok=True)
+        summary_payload = {
+            "files_scanned": len(metas),
+            "authors": dict(authors.most_common(20)),
+            "producers": dict(producers.most_common(20)),
+            "camera_serials": dict(camera_serials.most_common(10)),
+            "gps_files": gps_files[:20],
+        }
+        summary_path.write_text(json.dumps(summary_payload, indent=2))
+        ev = EvidenceItem(
+            tool="exiftool", version="present",
+            command=f"exiftool -j -r {target_dir}",
+            output_sha256=hashlib.sha256(
+                summary_path.read_bytes()).hexdigest(),
+            output_path=str(summary_path),
+            extracted_facts=summary_payload,
+        )
+        out.append(self.emit(ctx, Finding(
+            case_id=ctx.case_id, agent=self.name, confidence="high",
+            claim=f"exiftool sweep of {target_dir.name}: {len(metas)} file(s); "
+                  f"{len(authors)} unique author(s), {len(producers)} unique "
+                  f"producer(s), {len(gps_files)} file(s) with GPS",
+            evidence=[ev], hypotheses_supported=["H_DISK_ARTIFACTS"],
+        )))
+
+        # If any single author/producer dominates, that's an attribution
+        # signal — surface as a separate finding so it can corroborate
+        # other agents' authorship hypotheses.
+        if authors:
+            top_author, top_n = authors.most_common(1)[0]
+            if top_n >= 3:
+                out.append(self.emit(ctx, Finding(
+                    case_id=ctx.case_id, agent=self.name, confidence="medium",
+                    claim=f"exiftool: dominant document author/creator "
+                          f"'{top_author}' across {top_n} file(s)",
+                    evidence=[ev],
+                )))
         return out
 
     def _extract_ntfs_artifacts(self, ctx: AgentContext, raw_image: Path,

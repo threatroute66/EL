@@ -10,7 +10,7 @@ import hashlib
 from el.agents.base import Agent, AgentContext
 from el.evidence.graph import open_graph
 from el.schemas.finding import Finding
-from el.skills import network_extra as nx, scapy_pcap
+from el.skills import network_extra as nx, scapy_pcap, zeek as zeek_skill
 
 
 def _esc(s: str) -> str:
@@ -84,6 +84,12 @@ class NetworkAnalystAgent(Agent):
         # Suricata IDS: replay the pcap with the system ruleset and surface
         # named alerts. Falls back silently if Suricata isn't installed.
         out.extend(self._run_suricata(ctx, analysis))
+        # Zeek: behavioural per-protocol logs (conn/http/dns/ssl/x509/notice).
+        # Cross-checks scapy_pcap's protocol parse and surfaces things scapy
+        # misses (full HTTP URI, x509 cert chains, weird/notice records).
+        out.extend(self._run_zeek(ctx, analysis))
+        # tshark: deeper HTTP+TLS extraction (full URIs, cert subjects).
+        out.extend(self._run_tshark(ctx, analysis))
         return out
 
     def _run_suricata(self, ctx: AgentContext, analysis) -> list[Finding]:
@@ -127,5 +133,122 @@ class NetworkAnalystAgent(Agent):
                    f"{len(r.sig_hits)} unique signature(s). Top: {top}"),
             evidence=[r.as_evidence()],
             hypotheses_supported=tags,
+        )))
+        return out
+
+    # ----- Zeek -----
+
+    _ZEEK_C2_FAMILIES = (
+        "trickbot", "qakbot", "emotet", "hancitor", "icedid",
+        "bazarloader", "remcos", "njrat", "agent tesla", "agent_tesla",
+        "cobaltstrike", "cobalt strike", "meterpreter", "metasploit",
+        "sliver", "empire",
+    )
+
+    def _run_zeek(self, ctx: AgentContext, analysis) -> list[Finding]:
+        out: list[Finding] = []
+        try:
+            r = zeek_skill.replay_pcap(ctx.input_path, analysis / "zeek",
+                                        timeout=1800)
+        except zeek_skill.ZeekError as e:
+            out.append(self.emit(ctx, Finding(
+                case_id=ctx.case_id, agent=self.name, confidence="insufficient",
+                claim=f"Zeek unavailable or failed: {e}",
+            )))
+            return out
+
+        rows = r.summary or {}
+        if not rows:
+            out.append(self.emit(ctx, Finding(
+                case_id=ctx.case_id, agent=self.name, confidence="low",
+                claim="Zeek produced no logs — pcap may be empty or unreadable",
+                evidence=[r.as_evidence()],
+            )))
+            return out
+
+        breakdown = ", ".join(f"{k}={v}" for k, v in
+                               sorted(rows.items(), key=lambda kv: -kv[1])[:8] if v)
+        out.append(self.emit(ctx, Finding(
+            case_id=ctx.case_id, agent=self.name, confidence="high",
+            claim=f"Zeek replay: {len(rows)} log type(s) emitted. {breakdown}",
+            evidence=[r.as_evidence()],
+            hypotheses_supported=["H_NETWORK_TRAFFIC_OBSERVED"],
+        )))
+
+        # Notice.log captures Zeek's behavioural anomaly notes (scan,
+        # SSL::Invalid_Server_Cert, Weird::*). Surface them as a separate
+        # finding so the rule-challenger can scrutinise them.
+        notices = r.notable.get("notices") or []
+        if notices:
+            out.append(self.emit(ctx, Finding(
+                case_id=ctx.case_id, agent=self.name, confidence="medium",
+                claim=f"Zeek notices: {', '.join(notices[:5])}"
+                      f"{' …' if len(notices) > 5 else ''}",
+                evidence=[r.as_evidence()],
+            )))
+
+        # x509 cert subjects + JA3 fingerprints can flag malware-family C2
+        # by known-bad fingerprints in the future. For now just surface
+        # the count.
+        ja3 = r.notable.get("ja3") or []
+        if ja3:
+            out.append(self.emit(ctx, Finding(
+                case_id=ctx.case_id, agent=self.name, confidence="low",
+                claim=f"Zeek captured {len(ja3)} unique JA3 client fingerprint(s) "
+                      "(blocklist-comparable)",
+                evidence=[r.as_evidence()],
+            )))
+
+        # Family-name heuristic across HTTP user-agents + cert subjects +
+        # DNS queries. If a known C2 family name leaks into any of these,
+        # corroborates suricata + scapy heuristics.
+        haystack = " ".join((r.notable.get("http_user_agents") or []) +
+                            (r.notable.get("cert_subjects") or []) +
+                            (r.notable.get("dns_queries") or [])).lower()
+        for fam in self._ZEEK_C2_FAMILIES:
+            if fam in haystack:
+                out.append(self.emit(ctx, Finding(
+                    case_id=ctx.case_id, agent=self.name, confidence="high",
+                    claim=f"Zeek surfaced known C2-family marker '{fam}' in "
+                          "HTTP UA / TLS cert subject / DNS query",
+                    evidence=[r.as_evidence()],
+                    hypotheses_supported=["H_C2_OR_REVERSE_SHELL",
+                                           "H_OPPORTUNISTIC_COMMODITY"],
+                )))
+                break
+        return out
+
+    # ----- tshark -----
+
+    def _run_tshark(self, ctx: AgentContext, analysis) -> list[Finding]:
+        out: list[Finding] = []
+        try:
+            r = nx.extract_http_tls(ctx.input_path, analysis / "tshark",
+                                     timeout=600)
+        except nx.TsharkError as e:
+            out.append(self.emit(ctx, Finding(
+                case_id=ctx.case_id, agent=self.name, confidence="insufficient",
+                claim=f"tshark unavailable or failed: {e}",
+            )))
+            return out
+
+        counts = {k: len(v) for k, v in r.fields.items() if v}
+        if not counts:
+            out.append(self.emit(ctx, Finding(
+                case_id=ctx.case_id, agent=self.name, confidence="low",
+                claim="tshark extracted no HTTP/TLS fields — pcap may be "
+                      "fully encrypted or non-web",
+                evidence=[r.as_evidence()],
+            )))
+            return out
+
+        breakdown = ", ".join(f"{k.split('.')[-1]}={v}"
+                               for k, v in sorted(counts.items(),
+                                                   key=lambda kv: -kv[1]))
+        out.append(self.emit(ctx, Finding(
+            case_id=ctx.case_id, agent=self.name, confidence="high",
+            claim=f"tshark HTTP/TLS sweep: {breakdown}",
+            evidence=[r.as_evidence()],
+            hypotheses_supported=["H_NETWORK_TRAFFIC_OBSERVED"],
         )))
         return out
