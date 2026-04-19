@@ -83,9 +83,19 @@ def _h_commodity(f: Finding) -> int:
 
 
 def _h_ransomware(f: Finding) -> int:
+    # threat_hunter's YARA-sweep claim always echoes the input filename
+    # (e.g. "YARA sweep of 2016-12-09-Locky-ransomware.pcap: …"). That
+    # filename comes from the pcap corpus and often contains ground-truth
+    # labels like "ransomware" — scoring on it leaks the label. Similarly
+    # triage's "Input identified as X" claim can include the filename.
+    # Exclude these agents from keyword scoring; they emit specific tags
+    # (H_IOC_CORROBORATED etc.) that score through other paths.
+    if f.agent in ("threat_hunter", "triage"):
+        return 0
     s = 0
     if _claim_contains("vssadmin", "shadowcopy", "shadows /all", "delete shadows",
-                       "wbadmin", ".lock", ".enc", "readme", "ransom",
+                       "wbadmin", ".lock", ".enc", "readme",
+                       "ransom note", "ransom demand", "ransomware.",
                        "encrypt", "chacha", "rsa public")(f):
         s += 3
     if _has_tag("H_INITIAL_ACCESS_DOC_MACRO")(f): s += 1
