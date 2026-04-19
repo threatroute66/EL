@@ -251,4 +251,103 @@ class NetworkAnalystAgent(Agent):
             evidence=[r.as_evidence()],
             hypotheses_supported=["H_NETWORK_TRAFFIC_OBSERVED"],
         )))
+
+        # Behavioural triage over the hosts + SNIs we just extracted.
+        # Shape-agnostic — fires on characteristics that don't depend on
+        # a specific malware family's URL regex (PR-E).
+        out.extend(self._url_triage(ctx, r, analysis))
+        return out
+
+    # ----- behavioural URL triage -----
+
+    def _url_triage(self, ctx: AgentContext, tshark_run, analysis) -> list[Finding]:
+        """Apply url_triage detectors to the HTTP hosts + TLS SNIs extracted
+        by tshark. Two detectors:
+          - suspicious_tld: per-host classification by TLD risk bucket
+            (abuse / newgen / ddns / mixed)
+          - disposable_subdomain_cluster: parents serving ≥3 high-entropy
+            random-looking subdomains (classic EK landing pattern)
+        """
+        from collections import Counter as _Counter
+        from el.skills import url_triage as ut
+        out: list[Finding] = []
+
+        hosts = set()
+        for key in ("http.host", "tls.handshake.extensions_server_name"):
+            for v in tshark_run.fields.get(key, []) or []:
+                v = v.strip()
+                if v:
+                    hosts.add(v)
+        if not hosts:
+            return out
+
+        # --- Suspicious TLDs ---
+        by_cat: dict[str, list[tuple[str, str]]] = {}
+        for h in sorted(hosts):
+            is_sus, info = ut.suspicious_tld(h)
+            if is_sus and info is not None:
+                cat, hit = info
+                by_cat.setdefault(cat, []).append((h, hit))
+
+        if by_cat:
+            # One finding per risk category so ACH scoring isn't dominated
+            # by "newgen" when an actual "abuse" or "ddns" is also present.
+            for cat in ("abuse", "ddns", "newgen", "mixed"):
+                if cat not in by_cat:
+                    continue
+                entries = by_cat[cat]
+                sample = ", ".join(h for h, _ in entries[:5])
+                more = f" (+{len(entries)-5} more)" if len(entries) > 5 else ""
+                conf, hyps = {
+                    "abuse":  ("medium", ["H_C2_OR_REVERSE_SHELL",
+                                          "H_OPPORTUNISTIC_COMMODITY"]),
+                    "ddns":   ("medium", ["H_C2_OR_REVERSE_SHELL",
+                                          "H_OPPORTUNISTIC_COMMODITY"]),
+                    "newgen": ("low",    []),
+                    "mixed":  ("low",    []),
+                }[cat]
+                out.append(self.emit(ctx, Finding(
+                    case_id=ctx.case_id, agent=self.name, confidence=conf,
+                    claim=(f"Suspicious-TLD traffic ({cat}): "
+                           f"{len(entries)} host(s) under risky TLDs/parents. "
+                           f"Sample: {sample}{more}. "
+                           f"Bucket rationale: {ut.__doc__.splitlines()[8].strip() if cat == 'abuse' else cat}"),
+                    evidence=[tshark_run.as_evidence(facts={
+                        "tld_category": cat,
+                        "host_count": len(entries),
+                        "sample_hosts": [h for h, _ in entries[:20]],
+                    })],
+                    hypotheses_supported=hyps,
+                )))
+
+        # --- Disposable-subdomain clusters ---
+        clusters = ut.disposable_subdomain_cluster(sorted(hosts))
+        if clusters:
+            # One finding covering all clusters; the extracted_facts
+            # field carries the full parent→hosts mapping for the
+            # analyst to pivot on.
+            parents = sorted(clusters.keys())
+            total_hosts = sum(len(v) for v in clusters.values())
+            sample_lines = []
+            for p in parents[:3]:
+                samples = clusters[p][:3]
+                sample_lines.append(f"{p} → {', '.join(samples)}"
+                                    + (" …" if len(clusters[p]) > 3 else ""))
+            out.append(self.emit(ctx, Finding(
+                case_id=ctx.case_id, agent=self.name, confidence="medium",
+                claim=(f"Disposable-subdomain cluster(s): {len(parents)} "
+                       f"parent(s) each serving ≥3 high-entropy random "
+                       f"subdomains ({total_hosts} total). "
+                       f"Classic EK/landing-page evasion pattern. "
+                       f"Sample: {' | '.join(sample_lines)}"),
+                evidence=[tshark_run.as_evidence(facts={
+                    "disposable_clusters": {
+                        p: clusters[p][:20] for p in parents
+                    },
+                    "cluster_count": len(parents),
+                    "total_hosts": total_hosts,
+                })],
+                hypotheses_supported=["H_C2_OR_REVERSE_SHELL",
+                                       "H_OPPORTUNISTIC_COMMODITY"],
+            )))
         return out
