@@ -15,6 +15,29 @@ from el.evidence.graph import open_graph
 from el.schemas.finding import EvidenceItem, Finding
 
 
+# RFC1918 / loopback / link-local / multicast prefixes — any IP starting
+# with one of these is an internal or non-routable address. We keep them
+# in a separate top-destination line so the analyst sees them without
+# letting an internal victim host bury the real C2 destination.
+_INTERNAL_IPV4_PREFIXES = (
+    "10.",
+    "127.",
+    "169.254.",
+    "172.16.", "172.17.", "172.18.", "172.19.",
+    "172.20.", "172.21.", "172.22.", "172.23.",
+    "172.24.", "172.25.", "172.26.", "172.27.",
+    "172.28.", "172.29.", "172.30.", "172.31.",
+    "192.168.",
+    "224.",           # multicast
+    "255.",           # broadcast
+    "0.",             # 0.0.0.0/8
+)
+
+
+def _is_internal_ipv4(addr: str) -> bool:
+    return any(addr.startswith(p) for p in _INTERNAL_IPV4_PREFIXES)
+
+
 class CorrelatorAgent(Agent):
     name = "correlator"
 
@@ -43,16 +66,38 @@ class CorrelatorAgent(Agent):
                 row = r.get_next()
                 top_dst.append({"addr": row[0], "flows": row[1]})
             if top_dst:
+                # Split internal (RFC1918/loopback/link-local/multicast) from
+                # external. On a typical pcap the "top destination by flows"
+                # is an RFC1918 victim host receiving response traffic — if
+                # we report that as THE top destination, the real external
+                # C2 gets buried. Surface both: external first (what the
+                # analyst usually wants), then internal as secondary. See
+                # batch-1 corpus signal: 18/18 cases had an RFC1918 at the
+                # top before this split.
+                external = [d for d in top_dst if not _is_internal_ipv4(d["addr"])]
+                internal = [d for d in top_dst if _is_internal_ipv4(d["addr"])]
+
                 notes.append(f"top destination IPs by flow count: {top_dst}")
-                claim = (f"Top destination IP by flows: {top_dst[0]['addr']} "
-                         f"({top_dst[0]['flows']} flow(s))")
-                # No C2 tag — "most common destination IP" is statistical,
-                # not C2 evidence. The IOC catalog + cross-case overlap
-                # already capture which IPs are interesting; tagging this
-                # H_C2_OR_REVERSE_SHELL falsely lifts the C2 hypothesis on
-                # every pcap (proven by the 265-case corpus stress test).
-                out.append(self._emit_correlation(ctx, claim, "medium",
-                                                  [], report_path))
+
+                if external:
+                    claim = (f"Top external destination IP by flows: "
+                             f"{external[0]['addr']} ({external[0]['flows']} flow(s))")
+                    if internal:
+                        claim += (f". Internal top: {internal[0]['addr']} "
+                                  f"({internal[0]['flows']} flow(s)) — likely "
+                                  f"the victim host receiving response traffic")
+                    out.append(self._emit_correlation(
+                        ctx, claim, "medium", [], report_path))
+                elif internal:
+                    # Pcap contained only internal traffic — note it but
+                    # don't pretend we found a C2 destination.
+                    claim = (f"All observed destination IPs are internal "
+                             f"(RFC1918 / loopback). Top: "
+                             f"{internal[0]['addr']} "
+                             f"({internal[0]['flows']} flow(s)). No external "
+                             f"destination surfaced from flows.")
+                    out.append(self._emit_correlation(
+                        ctx, claim, "low", [], report_path))
         except Exception as e:
             notes.append(f"top-dst query failed: {e}")
 
