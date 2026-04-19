@@ -300,6 +300,47 @@ _FS_PATH_FILENAMES = {
 _FS_PATH_PATTERNS = ("fls_", "mactime_")  # e.g. fls_o63.txt, mactime_part1.csv
 
 
+# Paths that MUST NOT be re-scanned for IOCs. These are downstream outputs
+# of EL itself (ACH matrix, report markdown, STIX bundle, YARA rules) or
+# global state (the knowledge DB). Re-scanning them creates a feedback
+# loop where the case's own upstream output becomes input for the next
+# pass, amplifying every extraction anomaly.
+#
+# Observed degradation (pre-fix): Cool EK (560 KB pcap) produced a 229 MB
+# iocs.json in ~40 s because the 98 MB global knowledge.sqlite and a 12 MB
+# ach_matrix.json were re-parsed as text on every post-red-reviewer pass.
+_SKIP_FILENAMES = {
+    "ach_matrix.json",        # ACH engine's own matrix (downstream)
+    "knowledge.sqlite",       # global cross-case store (binary, Layer-3)
+    "stix-bundle.json",       # STIX output (downstream)
+    "report.md",              # report markdown (downstream)
+    "transitions.json",       # coordinator state log
+    "manifest.json",          # intake manifest
+    "seal.json",              # case seal manifest
+    "iocs.json",              # our own output from the previous pass
+    "CLAUDE.md",              # per-case auto-gen doc
+    "case_iocs.yar",          # threat_hunter's auto-generated rules
+}
+# Directory names — any path UNDER these (relative to case dir) is skipped.
+_SKIP_PARENT_DIRS = {
+    "reports",                # case_dir/reports/
+    "_archives",              # cases/_archives/
+}
+# Magic-byte prefixes for binary formats that regex-scanning produces only
+# junk from. Also guards against someone pointing extract_from_paths at a
+# case archive or raw image accidentally.
+_BINARY_MAGICS = (
+    b"SQLite format 3\x00",   # sqlite3
+    b"\x1f\x8b",              # gzip
+    b"PK\x03\x04",            # zip / .tar.gz sidecar
+    b"KUZU ",                 # Kùzu graph db
+)
+# Size cap — any evidence path bigger than this is skipped. Real textual
+# evidence (tshark JSON, EVTX CSV, bulk_extractor output) stays well under
+# this. 10 MB is a loose bound.
+_MAX_EVIDENCE_BYTES = 10 * 1024 * 1024
+
+
 def _source_kind_for(path: Path) -> str | None:
     """Classify a path for IOC extraction. Returns a source_kind string
     suitable for extract()'s argument. None = no restriction (legacy)."""
@@ -312,12 +353,47 @@ def _source_kind_for(path: Path) -> str | None:
     return None
 
 
+def _should_skip_path(path: Path) -> tuple[bool, str]:
+    """Return (skip, reason). Cheap checks first."""
+    name = path.name
+    if name in _SKIP_FILENAMES:
+        return True, f"downstream output ({name})"
+    for parent in path.parents:
+        if parent.name in _SKIP_PARENT_DIRS:
+            return True, f"under skipped dir ({parent.name})"
+    try:
+        st = path.stat()
+    except OSError:
+        return True, "stat failed"
+    if st.st_size > _MAX_EVIDENCE_BYTES:
+        return True, f"size > {_MAX_EVIDENCE_BYTES} bytes ({st.st_size})"
+    if st.st_size == 0:
+        return True, "empty"
+    # Binary magic sniff
+    try:
+        with path.open("rb") as f:
+            head = f.read(16)
+        for magic in _BINARY_MAGICS:
+            if head.startswith(magic):
+                return True, f"binary ({magic!r})"
+    except OSError:
+        return True, "read failed"
+    return False, ""
+
+
 def extract_from_paths(paths: Iterable[str | Path]) -> dict[str, set[str]]:
     """Read each path, pick an appropriate source_kind, union the IOCs.
 
     Paths are read at most once — duplicates in the input are deduplicated
     before extraction to avoid re-scanning large bodyfiles N times (observed:
     27-finding run × several refs to mactime.txt blew past 9 min in STIX).
+
+    Downstream EL outputs (ach_matrix.json, knowledge.sqlite, stix-bundle.json,
+    report.md, the global knowledge DB, files > 10 MB, binary formats) are
+    skipped — re-scanning them produces a feedback loop where the case's
+    own output becomes input for the next pass, amplifying every extraction
+    anomaly (observed: Cool EK produced a 229 MB iocs.json with 40 k
+    hallucinated URLs because a 98 MB knowledge.sqlite was re-scanned).
     """
     merged: dict[str, set[str]] = {}
     seen_paths: set[Path] = set()
@@ -326,6 +402,9 @@ def extract_from_paths(paths: Iterable[str | Path]) -> dict[str, set[str]]:
         if pth in seen_paths:
             continue
         seen_paths.add(pth)
+        skip, _reason = _should_skip_path(pth)
+        if skip:
+            continue
         try:
             text = pth.read_text(errors="ignore")
         except Exception:
