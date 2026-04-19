@@ -18,6 +18,7 @@ from el.agents.base import Agent, AgentContext
 from el.agents.cloud_forensicator import CloudForensicatorAgent
 from el.agents.correlator import CorrelatorAgent
 from el.agents.disk_forensicator import DiskForensicatorAgent
+from el.agents.email_forensicator import EmailForensicatorAgent
 from el.agents.endpoint_analyst import EndpointAnalystAgent
 from el.agents.log_analyst import LogAnalystAgent
 from el.agents.malware_triage import MalwareTriageAgent
@@ -205,6 +206,20 @@ class Coordinator:
                     shared=ctx.shared,
                 )
                 self._run_agent(WindowsArtifactAgent(), artifact_ctx)
+
+                # If PSTs were also extracted (extract_windows_artifacts
+                # drops them under exports/windows-artifacts/mail/), triage
+                # the mailbox for display-name spoofing + sensitive-
+                # attachment-to-external patterns. Skipped silently when
+                # no mail/ subdir exists.
+                mail_dir = artifacts_path / "mail"
+                if mail_dir.is_dir() and any(mail_dir.iterdir()):
+                    mail_ctx = AgentContext(
+                        case_id=ctx.case_id, case_dir=ctx.case_dir,
+                        input_path=mail_dir, manifest=ctx.manifest,
+                        shared=ctx.shared,
+                    )
+                    self._run_agent(EmailForensicatorAgent(), mail_ctx)
 
         if self.run_timeline:
             self._run_agent(TimelineSynthesistAgent(

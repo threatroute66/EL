@@ -309,16 +309,22 @@ def extract_windows_artifacts(mount_point: Path, exports_dir: Path) -> dict:
         if _sudo_cp(srudb, srum_dir / "SRUDB.dat"):
             out["srum"] = 1
 
-    # Per-user NTUSER.DAT. Profile root:
-    #   XP/2003: <mount>/Documents and Settings/<name>/NTUSER.DAT
-    #   Vista+ : <mount>/Users/<name>/NTUSER.DAT
+    # Per-user NTUSER.DAT + per-user Outlook PSTs. Profile root:
+    #   XP/2003: <mount>/Documents and Settings/<name>/...
+    #   Vista+ : <mount>/Users/<name>/...
+    # Outlook PST search paths (case-insensitive):
+    #   XP    : <user>/Local Settings/Application Data/Microsoft/Outlook/*.pst
+    #   Win7+ : <user>/AppData/Local/Microsoft/Outlook/*.pst
+    #           <user>/Documents/Outlook Files/*.pst
     users_root = (_child_ci(mount_point, "Users")
                   or _child_ci(mount_point, "Documents and Settings"))
     skip_profiles = {"all users", "default", "default user", "public",
                      "localservice", "networkservice", "systemprofile"}
     if users_root and users_root.is_dir():
         reg_dir.mkdir(parents=True, exist_ok=True)
-        n = 0
+        pst_dir = exports_dir / "mail"
+        n_ntuser = 0
+        n_pst = 0
         for user_dir in users_root.iterdir():
             if not user_dir.is_dir():
                 continue
@@ -327,9 +333,30 @@ def extract_windows_artifacts(mount_point: Path, exports_dir: Path) -> dict:
             ntuser = _child_ci(user_dir, "NTUSER.DAT")
             if ntuser and ntuser.is_file():
                 if _sudo_cp(ntuser, reg_dir / f"NTUSER-{user_dir.name}.DAT"):
-                    n += 1
-        if n:
-            out["ntuser_hives"] = n
+                    n_ntuser += 1
+            # PST hunt — try each of the three known Outlook data paths
+            outlook_dirs = [
+                _resolve_ci(user_dir, "Local Settings", "Application Data",
+                            "Microsoft", "Outlook"),
+                _resolve_ci(user_dir, "AppData", "Local", "Microsoft", "Outlook"),
+                _resolve_ci(user_dir, "Documents", "Outlook Files"),
+            ]
+            for od in outlook_dirs:
+                if not (od and od.is_dir()):
+                    continue
+                for item in od.iterdir():
+                    if not item.is_file():
+                        continue
+                    if item.suffix.lower() not in (".pst", ".ost"):
+                        continue
+                    pst_dir.mkdir(parents=True, exist_ok=True)
+                    dst = pst_dir / f"{user_dir.name}--{item.name}"
+                    if _sudo_cp(item, dst):
+                        n_pst += 1
+        if n_ntuser:
+            out["ntuser_hives"] = n_ntuser
+        if n_pst:
+            out["outlook_pst"] = n_pst
 
     return out
 
