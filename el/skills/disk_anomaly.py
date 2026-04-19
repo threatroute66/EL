@@ -61,15 +61,19 @@ PATTERNS: list[PathPattern] = [
     PathPattern(
         pattern_id="SVCHOST_OUTSIDE_SYSTEM32",
         description="svchost.exe in a path that is NOT Windows/System32/ — disguise pattern (legitimate svchost only lives in System32)",
-        # Match svchost.exe whose parent dir is NOT exactly System32
-        regex=re.compile(rf"{_S}({_NS}+){_S}svchost\.exe\b", re.I),
+        # Match svchost.exe whose parent dir is NOT exactly System32.
+        # Anchor the `.exe` tail with "end of path segment" rather than \b
+        # so Prefetch filenames like SVCHOST.EXE-3530F672.pf don't match.
+        regex=re.compile(
+            rf"{_S}({_NS}+){_S}svchost\.exe(?=[|\s]|$)", re.I),
         hypotheses=["H_LIVING_OFF_THE_LAND", "H_PROCESS_INJECTION"],
         attack_techniques=[("T1036.005", "Masquerading: Match Legitimate Name or Location")],
     ),
     PathPattern(
         pattern_id="LSASS_OUTSIDE_SYSTEM32",
         description="lsass.exe in a path that is NOT Windows/System32/ — disguise of credential subsystem",
-        regex=re.compile(rf"{_S}({_NS}+){_S}lsass\.exe\b", re.I),
+        regex=re.compile(
+            rf"{_S}({_NS}+){_S}lsass\.exe(?=[|\s]|$)", re.I),
         hypotheses=["H_CREDENTIAL_ACCESS", "H_PROCESS_INJECTION"],
         attack_techniques=[("T1036.005", "Masquerading: Match Legitimate Name or Location")],
     ),
@@ -78,13 +82,17 @@ PATTERNS: list[PathPattern] = [
         description="Executable in user-writable Temp directory — common dropper pattern",
         regex=re.compile(
             rf"{_S}(?:Temp|AppData{_S}Local{_S}Temp){_S}{_NS}+\."
-            r"(?:exe|dll|scr|bat|ps1|hta|js|vbs)\b", re.I),
+            r"(?:exe|dll|scr|bat|ps1|hta|js|vbs)(?=[|\s]|$)", re.I),
         hypotheses=["H_OPPORTUNISTIC_COMMODITY"],
         attack_techniques=[("T1059", "Command and Scripting Interpreter")],
     ),
     PathPattern(
         pattern_id="SCHEDULED_TASK_NONMS",
         description="Windows/Tasks/ entry with a non-Microsoft task name — possible scheduled-task persistence",
+        # Narrowed from match-everything in Tasks/: require a .job file
+        # (XP/7 at-jobs) OR a file with no extension but a non-stock name.
+        # Stock Windows files in Tasks/ (desktop.ini, SA.DAT) are excluded
+        # via _post_filter.
         regex=re.compile(rf"{_S}Windows{_S}Tasks{_S}(?!Microsoft)[A-Za-z0-9_.-]+", re.I),
         hypotheses=["H_PERSISTENCE_SCHEDULED_TASK"],
         attack_techniques=[("T1053.005", "Scheduled Task/Job: Scheduled Task")],
@@ -107,9 +115,19 @@ PATTERNS: list[PathPattern] = [
     ),
     PathPattern(
         pattern_id="VSSADMIN_DELETE_SHADOWS_TRACE",
-        description="vssadmin / wbadmin shadowcopy strings — ransomware shadow-copy deletion tooling on disk",
+        description="Shadow-copy deletion command strings — ransomware / anti-forensic inhibit-recovery pattern",
+        # Narrowed: was also matching the mere EXISTENCE of vssadmin.exe
+        # or wbadmin.exe anywhere on disk — these are Windows built-ins
+        # present on every host. Real signal is a command-line-shaped
+        # trace (prefetch execution string, PowerShell transcript, etc.),
+        # not the binary's presence. Keep only the command-shape alternates.
         regex=re.compile(
-            rf"(?:{_S}(?:vssadmin|wbadmin)\.exe\b|shadowcopy.*delete|delete\s+shadows)",
+            r"(?:"
+            r"vssadmin(?:\.exe)?\s+delete\s+shadows"
+            r"|wbadmin(?:\.exe)?\s+delete\s+(?:catalog|backup|systemstate)"
+            r"|shadowcopy[^|\n]{0,40}delete"
+            r"|delete\s+shadows\s*/all"
+            r")",
             re.I),
         hypotheses=["H_RANSOMWARE"],
         attack_techniques=[("T1490", "Inhibit System Recovery")],
@@ -117,20 +135,94 @@ PATTERNS: list[PathPattern] = [
 ]
 
 
-# Post-filter for SVCHOST_OUTSIDE_SYSTEM32 / LSASS_OUTSIDE_SYSTEM32: my regex
-# captures the parent directory; we reject the match if the parent is exactly
-# "System32" (legitimate location).
-_LEGIT_PARENTS = {"system32"}
+# Direct-parent directory names (case-insensitive) that hold legitimate
+# svchost.exe / lsass.exe copies. These are NOT masquerade — they're
+# standard Windows component stores placed by install / service-pack /
+# file-protection / side-by-side.
+#
+# The regex for SVCHOST_/LSASS_OUTSIDE_SYSTEM32 captures the direct parent
+# in group(1); we reject only when that SPECIFIC parent is in this set.
+# A nested path like Windows/System32/dllhost/svchost.exe (parent =
+# "dllhost", grandparent = "System32") is STILL flagged because the
+# immediate parent is suspicious even if the ancestor tree is legit.
+_LEGIT_PARENT_DIRS = {
+    "system32",                    # legitimate runtime location
+    "syswow64",                    # 32-bit-on-64-bit legitimate location
+    "dllcache",                    # Windows File Protection cache (XP/2003)
+    "i386",                        # install image source (matches on
+    "amd64",                       # <win>/ServicePackFiles/i386/lsass.exe)
+}
+
+# Ancestor-tree fragments (any path segment anywhere in the snippet)
+# that indicate a known Windows backup / cache area. Unlike the
+# direct-parent list, these disqualify the whole subtree: e.g. anything
+# under $NtServicePackUninstall$/ is SP rollback backup, anything under
+# winsxs/ is side-by-side, etc.
+_LEGIT_ANCESTOR_FRAGMENTS = (
+    "servicepackfiles",            # SP install cache
+    "ntservicepackuninstall",      # SP rollback backup
+    "winsxs",                      # Win7+ side-by-side assembly store
+    "$hf_mig$",                    # hotfix migration backup
+)
+
+# Installer-temp paths. MSI/InstallShield/VMware/etc. extract to
+# dirs like Temp/00006b1c/, Temp/_IS<letters>/, Temp/{GUID}/,
+# Temp/Installer<N>/. Executables landing there are benign installer
+# unpacks — very common, very noisy. Filter by looking for a path
+# segment that follows the Temp/AppData/Local/Temp/ prefix and matches
+# a known installer shape.
+_INSTALLER_TEMP_SEGMENT = re.compile(
+    r"(?i)(?:temp|appdata[/\\]local[/\\]temp)[/\\]"
+    r"(?:"
+    r"[0-9a-f]{6,}"                # MSI hex dir (e.g. 00006b1c)
+    r"|_is[a-z0-9]+"               # InstallShield _ISxxxxx
+    r"|\{[0-9a-f-]{8,}\}"          # {GUID} or {partial guid}
+    r"|installer[0-9]*"            # Installer*
+    r"|msi[0-9a-z]{2,}\.tmp"       # msi*.tmp extract
+    r")[/\\]"
+)
+
+# Extract the DIRECT parent dir name for an svchost/lsass match.
+# Operates on the match snippet (which may or may not contain the full
+# captured group, depending on scan_text's context window). Looks for
+# the pattern "<sep><PARENT><sep>svchost.exe" and returns PARENT.
+_SVCHOST_LSASS_PARENT = re.compile(
+    r"[/\\]([^/\\]+)[/\\](?:svchost|lsass)\.exe", re.I)
+
+
+# Stock filenames that always live under Windows/Tasks/ on a clean
+# Windows install — desktop preferences + the task scheduler's own
+# state file. Not persistence artifacts.
+_STOCK_TASKS_FILES = {"desktop.ini", "sa.dat"}
 
 
 def _post_filter(pattern_id: str, snippet: str) -> bool:
     """Return True if the match should be kept, False if it's a known legit case."""
+    s = snippet.lower()
     if pattern_id in ("SVCHOST_OUTSIDE_SYSTEM32", "LSASS_OUTSIDE_SYSTEM32"):
-        s = snippet.lower()
-        # If the path segment immediately before svchost/lsass is "system32", drop it
-        for term in ("system32/svchost", "system32\\svchost",
-                     "system32/lsass", "system32\\lsass"):
-            if term in s:
+        # Direct-parent check: reject if immediate parent dir is one of
+        # the legitimate runtime/install locations.
+        m = _SVCHOST_LSASS_PARENT.search(s)
+        if m and m.group(1).lower() in _LEGIT_PARENT_DIRS:
+            return False
+        # Ancestor-tree check: reject if the path passes through a known
+        # backup / SP-cache / side-by-side area.
+        for frag in _LEGIT_ANCESTOR_FRAGMENTS:
+            if frag in s:
+                return False
+    if pattern_id == "EXE_IN_TEMP":
+        # MSI / InstallShield / VMware-Tools installer unpacks land in
+        # Temp/<hex>/, Temp/_IS*/, Temp/{GUID}/ etc. Real droppers don't
+        # use these structured subdirs — an .exe directly in Temp/ is still
+        # flagged, but known installer shapes are excluded.
+        if _INSTALLER_TEMP_SEGMENT.search(s):
+            return False
+    if pattern_id == "SCHEDULED_TASK_NONMS":
+        # desktop.ini / SA.DAT are stock Windows files — desktop folder
+        # preferences + the task-scheduler service's own data file. Every
+        # clean Windows install has them; they are not persistence.
+        for stock in _STOCK_TASKS_FILES:
+            if f"/tasks/{stock}" in s or f"\\tasks\\{stock}" in s:
                 return False
     return True
 
