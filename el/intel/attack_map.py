@@ -55,6 +55,11 @@ HYPOTHESIS_MAP: dict[str, list[Technique]] = {
     "H_PERSISTENCE_SERVICE": [
         ("T1543.003", "Create or Modify System Process: Windows Service"),
     ],
+    "H_INSIDER_EMAIL_EXFIL": [
+        ("T1048.003", "Exfiltration Over Unencrypted Non-C2 Protocol"),
+        ("T1534", "Internal Spearphishing"),
+        ("T1566.002", "Phishing: Spearphishing Link"),
+    ],
     "H_EID_4625": [("T1110", "Brute Force")],
     "H_EID_1102": [("T1070.001", "Indicator Removal: Clear Windows Event Logs")],
     "H_EID_4697": [("T1543.003", "Create or Modify System Process: Windows Service")],

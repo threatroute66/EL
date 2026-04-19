@@ -179,10 +179,8 @@ class EmailForensicatorAgent(Agent):
                     # Display-name/SMTP mismatch is the forensic fingerprint
                     # of both insider exfil (impersonator inside the company)
                     # and classic BEC (external attacker with spoofed header).
-                    # PR-8 will add H_INSIDER_EMAIL_EXFIL as a dedicated
-                    # hypothesis; for now we lift the closest existing ones.
+                    "H_INSIDER_EMAIL_EXFIL",
                     "H_BEC_ACCOUNT_TAKEOVER",
-                    "H_INSIDER_DATA_EXFIL",
                 ],
             )))
         return out
@@ -244,7 +242,7 @@ class EmailForensicatorAgent(Agent):
                        f"Attachment-filename keyword + external domain → "
                        f"data-exfil-via-email candidate."),
                 evidence=[ev],
-                hypotheses_supported=["H_INSIDER_DATA_EXFIL"],
+                hypotheses_supported=["H_INSIDER_EMAIL_EXFIL"],
             )))
         elif bulk_attachments:
             # Bulk attachment to external without the sensitive-keyword

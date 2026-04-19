@@ -158,7 +158,7 @@ def test_sensitive_attachment_to_consumer_webmail_high(tmp_path, monkeypatch):
     assert sens, "expected sensitive-attachment-exfil finding"
     f = sens[0]
     assert f.confidence == "high"
-    assert "H_INSIDER_DATA_EXFIL" in f.hypotheses_supported
+    assert "H_INSIDER_EMAIL_EXFIL" in f.hypotheses_supported
     assert "tuckgorge@gmail.com" in f.claim
     assert "m57plan.xlsx" in f.claim
 

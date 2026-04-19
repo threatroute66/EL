@@ -55,7 +55,7 @@ def _h_benign(f: Finding) -> int:
                 "H_INITIAL_ACCESS_DOC_MACRO", "H_LIVING_OFF_THE_LAND",
                 "H_BEC_ACCOUNT_TAKEOVER", "H_CLOUD_PERSISTENCE",
                 "H_BRUTE_FORCE", "H_LATERAL_MOVEMENT", "H_ROOTKIT",
-                "H_PERSISTENCE_SERVICE"):
+                "H_PERSISTENCE_SERVICE", "H_INSIDER_EMAIL_EXFIL"):
         if tag in f.hypotheses_supported:
             s -= 3
     if _claim_contains("createaccesskey", "putbucketpolicy", "failed console",
@@ -108,11 +108,42 @@ def _h_credential_access(f: Finding) -> int:
     return s
 
 
+def _h_insider_email_exfil(f: Finding) -> int:
+    """Insider / compromised-account exfiltration via EMAIL. Distinct from
+    the broader H_INSIDER_DATA_EXFIL (USB / staging / archiver) because
+    email-exfil leaves very different evidence: mailbox artefacts, display-
+    name spoofing, sensitive-attachment-to-external patterns. Separating
+    the two lets ACH rank them independently — M57-Jean-shaped cases
+    (pretexting email + confidential attachment to external webmail) can
+    surface above generic "insider" or "APT" without keyword collision."""
+    s = 0
+    if _has_tag("H_INSIDER_EMAIL_EXFIL")(f):
+        s += 3
+    # Two narrow claim fingerprints from EmailForensicatorAgent:
+    if _claim_contains("display-name/smtp mismatch")(f):
+        s += 3
+    if _claim_contains("sensitive attachment → external recipient",
+                       "sensitive attachment -> external recipient")(f):
+        s += 3
+    # Bulk mail to a consumer webmail is weak corroboration (can also be
+    # benign "send myself a copy" behaviour).
+    if _claim_contains("external-recipient bulk attachment")(f):
+        s += 1
+    return s
+
+
 def _h_insider(f: Finding) -> int:
     s = 0
     if _claim_contains("usb", "removable", "robocopy", "7-zip", "rar.exe",
                        "stage", "exfil", "uploaded")(f):
         s += 3
+    # An email-exfil finding is also evidence for the generic insider
+    # hypothesis, just weaker than for H_INSIDER_EMAIL_EXFIL itself —
+    # keeps the two hypotheses ranked together when both apply.
+    if (_has_tag("H_INSIDER_EMAIL_EXFIL")(f)
+            or _claim_contains("display-name/smtp mismatch",
+                               "sensitive attachment → external recipient")(f)):
+        s += 1
     if _claim_contains("4624", "logon", "4672")(f):
         s += 1
     return s
@@ -197,8 +228,14 @@ HYPOTHESES: list[Hypothesis] = [
                _h_apt),
     Hypothesis("H_INSIDER_DATA_EXFIL",
                "Insider data exfiltration",
-               "Authorised user staging and removing data.",
+               "Authorised user staging and removing data (USB / archiver / upload).",
                _h_insider),
+    Hypothesis("H_INSIDER_EMAIL_EXFIL",
+               "Insider / pretext exfiltration via email",
+               "Mailbox evidence of spoofed-display-name or sensitive-attachment "
+               "exfiltration to an external recipient. Distinct from the broader "
+               "insider hypothesis because the evidence shape is email-specific.",
+               _h_insider_email_exfil),
     Hypothesis("H_SUPPLY_CHAIN",
                "Supply-chain / trusted-vendor compromise",
                "Compromised software update, signed binary, or vendor channel.",
