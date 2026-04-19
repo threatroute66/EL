@@ -224,6 +224,67 @@ class NetworkAnalystAgent(Agent):
         # Findings with their own hypothesis lift.
         out.extend(self._run_network_anomaly(ctx, analysis / "zeek",
                                               r.as_evidence()))
+
+        # PR-M: surface the specific Zeek log classes the SANS poster
+        # calls out — weird (protocol anomalies), signatures (Zeek's
+        # own sig hits), software (UA/Server/MIME fingerprints), known_
+        # services + file SHA256s. Each gets its own Finding so the
+        # analyst can pivot without re-opening the raw logs.
+        weird_names = r.notable.get("weird_names") or []
+        # Zeek fires 'above_hole_data_without_any_acks', 'inappropriate_FIN'
+        # and similar on every noisy capture. Require ≥10 distinct names
+        # (not just rows) before surfacing as a dedicated finding.
+        if len(weird_names) >= 10:
+            sample = ", ".join(weird_names[:5])
+            out.append(self.emit(ctx, Finding(
+                case_id=ctx.case_id, agent=self.name, confidence="medium",
+                claim=(f"Zeek weird.log: {len(weird_names)} distinct "
+                       f"protocol-violation name(s). Samples: {sample}"
+                       f"{' …' if len(weird_names) > 5 else ''}. "
+                       f"Protocol anomalies frequently accompany evasion "
+                       f"(malformed HTTP headers, TLS fragmentation, "
+                       f"unknown command codes)."),
+                evidence=[r.as_evidence()],
+                hypotheses_supported=["H_C2_OR_REVERSE_SHELL"],
+            )))
+        sig_ids = r.notable.get("signature_ids") or []
+        if sig_ids:
+            sample = ", ".join(sig_ids[:5])
+            out.append(self.emit(ctx, Finding(
+                case_id=ctx.case_id, agent=self.name, confidence="high",
+                claim=(f"Zeek signatures.log matched {len(sig_ids)} "
+                       f"signature(s). Samples: {sample}"
+                       f"{' …' if len(sig_ids) > 5 else ''}. "
+                       f"Zeek's native signature engine fired — verify "
+                       f"the rule IDs against the loaded signature set."),
+                evidence=[r.as_evidence()],
+                hypotheses_supported=["H_C2_OR_REVERSE_SHELL",
+                                       "H_OPPORTUNISTIC_COMMODITY"],
+            )))
+        software_names = r.notable.get("software_names") or []
+        if software_names:
+            # Informational — helps the analyst know what's on the wire
+            sample = ", ".join(software_names[:8])
+            out.append(self.emit(ctx, Finding(
+                case_id=ctx.case_id, agent=self.name, confidence="low",
+                claim=(f"Zeek software.log identified "
+                       f"{len(software_names)} unique software "
+                       f"fingerprint(s) on the wire. Samples: {sample}"
+                       f"{' …' if len(software_names) > 8 else ''}."),
+                evidence=[r.as_evidence()],
+            )))
+        file_sha = r.notable.get("file_sha256") or []
+        if file_sha:
+            # Raise a low-confidence finding so the hashes land in the
+            # IOC catalog; cross-case knowledge lookup might connect
+            # them to prior cases.
+            out.append(self.emit(ctx, Finding(
+                case_id=ctx.case_id, agent=self.name, confidence="low",
+                claim=(f"Zeek files.log captured {len(file_sha)} "
+                       f"unique SHA-256 file hash(es) from the wire. "
+                       f"These are pivot points for cross-case lookup."),
+                evidence=[r.as_evidence()],
+            )))
         return out
 
     def _run_network_anomaly(self, ctx: AgentContext, zeek_dir,

@@ -147,6 +147,39 @@ def replay_pcap(pcap: Path, out_dir: Path, timeout: int = 1800) -> ZeekRun:
     notice_log = out_dir / "notice.log"
     if notice_log.exists():
         notable["notices"] = sorted(set(_extract_column(notice_log, "note", 50)))
+    # PR-M: surface the additional Zeek logs the SANS Network Forensics
+    # poster calls out — each is a distinct DFIR signal that the agent
+    # can turn into its own finding.
+    weird_log = out_dir / "weird.log"
+    if weird_log.exists():
+        notable["weird_names"] = sorted(set(
+            _extract_column(weird_log, "name", 100)))
+    sig_log = out_dir / "signatures.log"
+    if sig_log.exists():
+        notable["signature_ids"] = sorted(set(
+            _extract_column(sig_log, "sig_id", 50)))
+        notable["signature_notes"] = sorted(set(
+            _extract_column(sig_log, "note", 50)))
+    software_log = out_dir / "software.log"
+    if software_log.exists():
+        notable["software_names"] = sorted(set(
+            _extract_column(software_log, "name", 100)))
+        notable["software_hosts"] = sorted(set(
+            _extract_column(software_log, "host", 50)))
+    kh_log = out_dir / "known_hosts.log"
+    if kh_log.exists():
+        notable["known_hosts"] = sorted(set(
+            _extract_column(kh_log, "host", 200)))
+    ks_log = out_dir / "known_services.log"
+    if ks_log.exists():
+        notable["known_services"] = sorted(set(
+            _extract_column(ks_log, "service", 100)))
+    files_log = out_dir / "files.log"
+    if files_log.exists():
+        notable["file_mime_types"] = sorted(set(
+            _extract_column(files_log, "mime_type", 100)))
+        notable["file_sha256"] = sorted(set(
+            _extract_column(files_log, "sha256", 200)))
 
     return ZeekRun(pcap=pcap, out_dir=out_dir, rc=proc.returncode,
                    log_files=logs, summary=summary, notable=notable,
