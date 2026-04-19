@@ -90,7 +90,35 @@ _NOISE_DOMAINS = {
     "net.tcp", "net.pipe", "net.msmq",
     "mscorlib.dll", "system.runtime",
     "www.openssl.org",
+    # Protocol/parser field names that regex sees as <word>.<word> "domains".
+    # Observed in Zeek/tshark JSON outputs on every pcap case in batch-1.
+    "http.host", "http.request", "http.response", "http.method", "http.uri",
+    "http.user_agent", "http.referer", "http.cookie", "http.status",
+    "tls.handshake", "tls.record", "tls.server_name", "tls.certificate",
+    "tls.version", "tls.cipher",
+    "dns.query", "dns.response", "dns.answer", "dns.qry",
+    "tcp.port", "tcp.flags", "tcp.seq", "tcp.ack", "tcp.srcport", "tcp.dstport",
+    "udp.port", "udp.srcport", "udp.dstport",
+    "ip.src", "ip.dst", "ip.addr", "ip.proto", "ip.ttl",
+    "ssl.handshake", "ssl.record",
+    "x509sat.printablestring", "x509sat.utf8string", "x509sat.ia5string",
+    "x509ce.keyusage", "x509ce.extkeyusage", "x509ce.basicconstraints",
+    "x509af.algorithm", "x509af.signature",
+    "pkix1explicit.rdnsequence",
+    # Windows/Akamai CDN "domains" that surface from binary strings but
+    # carry no investigative value (they're part of Windows Update's
+    # delivery network).
+    "winhttp.winhttprequest",
 }
+# Additional suffixes that indicate a fake "domain" extracted from a
+# protocol field path like "http.request.method" — drop anything whose
+# first label is one of these (Zeek/tshark namespace prefixes).
+_NOISE_DOMAIN_PREFIXES = (
+    "http.", "https.", "tls.", "ssl.", "dns.", "tcp.", "udp.",
+    "ip.", "ipv4.", "ipv6.", "eth.", "icmp.",
+    "x509sat.", "x509ce.", "x509af.", "x509ocsp.", "x509ext.",
+    "pkix1.", "pkix1explicit.", "pkix1implicit.",
+)
 
 # X.509 / OpenSSL OID-name strings that the regex sees as `<word>.<word>`
 # domains. From real OpenSSL-bearing memory dumps (nrom-01).
@@ -163,6 +191,8 @@ def _filter_domains(domains: Iterable[str]) -> set[str]:
         if d in _X509_OPENSSL_LABELS:
             continue
         if any(d.endswith("." + n) for n in _NOISE_DOMAINS):
+            continue
+        if any(d.startswith(p) for p in _NOISE_DOMAIN_PREFIXES):
             continue
         if "." not in d:
             continue
