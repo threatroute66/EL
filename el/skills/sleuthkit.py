@@ -200,73 +200,133 @@ def _sudo_cp(src: Path, dst: Path) -> bool:
         return False
 
 
+def _child_ci(parent: Path, name: str) -> Path | None:
+    """Case-insensitive child lookup. NTFS images preserve the case that
+    Windows wrote (XP wrote `WINDOWS/`, Win7+ writes `Windows/`), and
+    Linux NTFS-3g exposes that literal case. Python `Path / "Windows"` is
+    case-sensitive on Linux, so we iterdir and match by lowercase name.
+    Returns the actual Path (preserving real case) or None.
+    """
+    if not parent.is_dir():
+        return None
+    target = name.lower()
+    try:
+        for entry in parent.iterdir():
+            if entry.name.lower() == target:
+                return entry
+    except (PermissionError, OSError):
+        return None
+    return None
+
+
+def _resolve_ci(root: Path, *segments: str) -> Path | None:
+    """Walk a path case-insensitively. Returns the resolved path (preserving
+    the filesystem's actual case) or None if any segment is missing."""
+    cur = root
+    for seg in segments:
+        cur = _child_ci(cur, seg)
+        if cur is None:
+            return None
+    return cur
+
+
 def extract_windows_artifacts(mount_point: Path, exports_dir: Path) -> dict:
     """Copy known Windows forensic artifacts from a read-only NTFS mount
     into a structured exports directory ready for WindowsArtifactAgent.
 
+    Handles XP (`WINDOWS/`, `Documents and Settings/`, classic `.evt`) and
+    Vista+/Win7/10/11 (`Windows/`, `Users/`, `.evtx`) layouts via
+    case-insensitive path resolution. Artifacts that only exist on post-XP
+    Windows (Amcache.hve, SRUDB.dat) are probed and silently skipped when
+    absent rather than short-circuiting the whole extraction.
+
     Returns a dict of artifact_class → count for the caller to summarise.
     """
     out: dict[str, int] = {}
+    reg_dir = exports_dir / "registry"
 
-    # Registry hives — Windows/System32/config/
-    config = mount_point / "Windows" / "System32" / "config"
-    if config.is_dir():
-        reg_dir = exports_dir / "registry"
+    # Find the Windows root: XP-style WINDOWS, modern Windows, or NT4/2000 winnt.
+    win_root = (_child_ci(mount_point, "Windows")
+                or _child_ci(mount_point, "WINNT"))
+    sys32 = _child_ci(win_root, "System32") if win_root else None
+
+    # Registry hives — <win>/System32/config/{SYSTEM,SOFTWARE,SECURITY,SAM,DEFAULT}
+    config = _child_ci(sys32, "config") if sys32 else None
+    if config and config.is_dir():
         reg_dir.mkdir(parents=True, exist_ok=True)
         for hive_name in ("SYSTEM", "SOFTWARE", "SECURITY", "SAM", "DEFAULT"):
-            src = config / hive_name
-            if src.is_file() and _sudo_cp(src, reg_dir / hive_name):
-                pass
+            src = _child_ci(config, hive_name)
+            if src and src.is_file():
+                _sudo_cp(src, reg_dir / hive_name)
         out["registry_hives"] = sum(1 for _ in reg_dir.iterdir() if _.is_file())
 
-    # Amcache.hve — Windows/AppCompat/Programs/
-    amcache = mount_point / "Windows" / "AppCompat" / "Programs" / "Amcache.hve"
-    if amcache.is_file():
-        reg_dir = exports_dir / "registry"
+    # Amcache.hve — Win7+ only, lives at <win>/AppCompat/Programs/Amcache.hve
+    amcache = _resolve_ci(win_root, "AppCompat", "Programs", "Amcache.hve") if win_root else None
+    if amcache and amcache.is_file():
         reg_dir.mkdir(parents=True, exist_ok=True)
         if _sudo_cp(amcache, reg_dir / "Amcache.hve"):
             out["amcache"] = 1
 
-    # Prefetch — Windows/Prefetch/*.pf
-    pf_src = mount_point / "Windows" / "Prefetch"
-    if pf_src.is_dir():
+    # Prefetch — <win>/Prefetch/*.pf (both XP and post-XP, disabled by default on servers)
+    pf_src = _child_ci(win_root, "Prefetch") if win_root else None
+    if pf_src and pf_src.is_dir():
         pf_dir = exports_dir / "Prefetch"
         pf_dir.mkdir(parents=True, exist_ok=True)
-        for pf in pf_src.glob("*.pf"):
-            _sudo_cp(pf, pf_dir / pf.name)
-        out["prefetch_files"] = sum(1 for _ in pf_dir.glob("*.pf"))
+        for pf in pf_src.iterdir():
+            if pf.is_file() and pf.suffix.lower() == ".pf":
+                _sudo_cp(pf, pf_dir / pf.name)
+        out["prefetch_files"] = sum(1 for p in pf_dir.iterdir() if p.suffix.lower() == ".pf")
 
-    # EVTX — Windows/System32/winevt/Logs/*.evtx
-    ev_src = mount_point / "Windows" / "System32" / "winevt" / "Logs"
-    if ev_src.is_dir():
+    # Event logs:
+    #   XP/2003: <win>/system32/config/{AppEvent,SecEvent,SysEvent}.Evt  (classic)
+    #   Vista+ : <win>/System32/winevt/Logs/*.evtx
+    # Keep them in separate dirs so the downstream parser can pick the
+    # right tool (EvtxECmd for .evtx; evtparser/python-evtx for .evt).
+    ev_modern = _resolve_ci(sys32, "winevt", "Logs") if sys32 else None
+    if ev_modern and ev_modern.is_dir():
         ev_dir = exports_dir / "evtx"
         ev_dir.mkdir(parents=True, exist_ok=True)
-        for ev in ev_src.glob("*.evtx"):
-            _sudo_cp(ev, ev_dir / ev.name)
-        out["evtx_files"] = sum(1 for _ in ev_dir.glob("*.evtx"))
+        for ev in ev_modern.iterdir():
+            if ev.is_file() and ev.suffix.lower() == ".evtx":
+                _sudo_cp(ev, ev_dir / ev.name)
+        out["evtx_files"] = sum(1 for p in ev_dir.iterdir() if p.suffix.lower() == ".evtx")
+    if config and config.is_dir():
+        evt_dir = exports_dir / "evt"
+        copied = 0
+        for ev in config.iterdir():
+            if ev.is_file() and ev.suffix.lower() == ".evt":
+                evt_dir.mkdir(parents=True, exist_ok=True)
+                if _sudo_cp(ev, evt_dir / ev.name):
+                    copied += 1
+        if copied:
+            out["evt_files"] = copied
 
-    # SRUM — Windows/System32/sru/SRUDB.dat
-    srudb = mount_point / "Windows" / "System32" / "sru" / "SRUDB.dat"
-    if srudb.is_file():
+    # SRUM — Win8+ only, at <win>/System32/sru/SRUDB.dat
+    srudb = _resolve_ci(sys32, "sru", "SRUDB.dat") if sys32 else None
+    if srudb and srudb.is_file():
         srum_dir = exports_dir / "srum"
         srum_dir.mkdir(parents=True, exist_ok=True)
         if _sudo_cp(srudb, srum_dir / "SRUDB.dat"):
             out["srum"] = 1
 
-    # Per-user NTUSER.DAT — Users/<name>/NTUSER.DAT
-    users_dir = mount_point / "Users"
-    if users_dir.is_dir():
-        ntuser_dir = exports_dir / "registry"
-        ntuser_dir.mkdir(parents=True, exist_ok=True)
+    # Per-user NTUSER.DAT. Profile root:
+    #   XP/2003: <mount>/Documents and Settings/<name>/NTUSER.DAT
+    #   Vista+ : <mount>/Users/<name>/NTUSER.DAT
+    users_root = (_child_ci(mount_point, "Users")
+                  or _child_ci(mount_point, "Documents and Settings"))
+    skip_profiles = {"all users", "default", "default user", "public",
+                     "localservice", "networkservice", "systemprofile"}
+    if users_root and users_root.is_dir():
+        reg_dir.mkdir(parents=True, exist_ok=True)
         n = 0
-        for user_dir in users_dir.iterdir():
+        for user_dir in users_root.iterdir():
             if not user_dir.is_dir():
                 continue
-            if user_dir.name in ("All Users", "Default", "Default User", "Public"):
+            if user_dir.name.lower() in skip_profiles:
                 continue
-            ntuser = user_dir / "NTUSER.DAT"
-            if ntuser.is_file():
-                if _sudo_cp(ntuser, ntuser_dir / f"NTUSER-{user_dir.name}.DAT"):
+            ntuser = _child_ci(user_dir, "NTUSER.DAT")
+            if ntuser and ntuser.is_file():
+                if _sudo_cp(ntuser, reg_dir / f"NTUSER-{user_dir.name}.DAT"):
                     n += 1
         if n:
             out["ntuser_hives"] = n
