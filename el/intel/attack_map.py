@@ -60,11 +60,75 @@ HYPOTHESIS_MAP: dict[str, list[Technique]] = {
         ("T1534", "Internal Spearphishing"),
         ("T1566.002", "Phishing: Spearphishing Link"),
     ],
-    "H_EID_4625": [("T1110", "Brute Force")],
-    "H_EID_1102": [("T1070.001", "Indicator Removal: Clear Windows Event Logs")],
-    "H_EID_4697": [("T1543.003", "Create or Modify System Process: Windows Service")],
-    "H_EID_4698": [("T1053.005", "Scheduled Task/Job: Scheduled Task")],
+    # Windows Event ID → ATT&CK technique mappings. These tags are
+    # emitted by LateralMovementAnalyst (PR-G) and any future detector
+    # that walks chainsaw/hayabusa output. Expanded in PR-P to cover
+    # the Hunt-Evil + Windows Forensics "Account Usage" + lateral-
+    # movement destination-side EID matrix.
+    #
+    # Authentication + logon
+    "H_EID_4624": [("T1078", "Valid Accounts")],                       # Successful logon (subtyped by LogonType)
+    "H_EID_4625": [("T1110", "Brute Force")],                           # Failed logon
+    "H_EID_4634": [("T1078", "Valid Accounts")],                       # Logoff (context)
+    "H_EID_4648": [("T1078", "Valid Accounts")],                       # Explicit-cred logon (RunAs)
+    "H_EID_4672": [("T1078", "Valid Accounts"),                        # Special privileges (admin)
+                    ("T1548.002", "Abuse Elevation: Bypass UAC")],
+    # Kerberos auth (domain controllers)
+    "H_EID_4768": [("T1558.003", "Steal/Forge Kerberos Tickets: Kerberoasting")],  # TGT
+    "H_EID_4769": [("T1558.003", "Steal/Forge Kerberos Tickets: Kerberoasting")],  # Service ticket
+    "H_EID_4776": [("T1110", "Brute Force")],                           # NTLM auth
+    # Account management (T1136 create, T1098 modify, T1531 impact)
     "H_EID_4720": [("T1136.001", "Create Account: Local Account")],
+    "H_EID_4722": [("T1098", "Account Manipulation")],                 # account enabled
+    "H_EID_4725": [("T1531", "Account Access Removal")],                # account disabled
+    "H_EID_4726": [("T1531", "Account Access Removal")],                # account deleted
+    "H_EID_4728": [("T1098.007", "Account Manipulation: Group Membership")],  # global group member added
+    "H_EID_4732": [("T1098.007", "Account Manipulation: Group Membership")],  # local group member added
+    "H_EID_4740": [("T1110", "Brute Force")],                           # account locked out
+    "H_EID_4756": [("T1098.007", "Account Manipulation: Group Membership")],  # universal group member added
+    # Process execution (requires "Audit Process Tracking" enabled)
+    "H_EID_4688": [("T1059", "Command and Scripting Interpreter")],
+    # Scheduled tasks (T1053.005)
+    "H_EID_4698": [("T1053.005", "Scheduled Task/Job: Scheduled Task")],   # task created
+    "H_EID_4699": [("T1053.005", "Scheduled Task/Job: Scheduled Task"),
+                    ("T1070", "Indicator Removal")],                       # task deleted
+    "H_EID_4700": [("T1053.005", "Scheduled Task/Job: Scheduled Task")],   # task enabled
+    "H_EID_4701": [("T1053.005", "Scheduled Task/Job: Scheduled Task")],   # task disabled
+    "H_EID_4702": [("T1053.005", "Scheduled Task/Job: Scheduled Task")],   # task updated
+    # Services (T1543.003)
+    "H_EID_4697": [("T1543.003", "Create or Modify System Process: Windows Service")],
+    "H_EID_7034": [("T1489", "Service Stop")],                          # service crashed
+    "H_EID_7035": [("T1569.002", "System Services: Service Execution")],
+    "H_EID_7036": [("T1569.002", "System Services: Service Execution")],
+    "H_EID_7040": [("T1543.003", "Create or Modify System Process: Windows Service")],
+    "H_EID_7045": [("T1543.003", "Create or Modify System Process: Windows Service"),
+                    ("T1569.002", "System Services: Service Execution")],
+    # File shares + object access
+    "H_EID_5140": [("T1021.002", "Remote Services: SMB/Windows Admin Shares")],  # share access
+    "H_EID_5145": [("T1021.002", "Remote Services: SMB/Windows Admin Shares")],  # share file access
+    # Anti-forensic
+    "H_EID_1102": [("T1070.001", "Indicator Removal: Clear Windows Event Logs")],
+    "H_EID_104":  [("T1070.001", "Indicator Removal: Clear Windows Event Logs")],   # System log cleared
+    # PowerShell
+    "H_EID_4103": [("T1059.001", "Command and Scripting Interpreter: PowerShell")],   # module logging
+    "H_EID_4104": [("T1059.001", "Command and Scripting Interpreter: PowerShell")],   # script block
+    "H_EID_400":  [("T1059.001", "Command and Scripting Interpreter: PowerShell")],
+    "H_EID_403":  [("T1059.001", "Command and Scripting Interpreter: PowerShell")],
+    "H_EID_800":  [("T1059.001", "Command and Scripting Interpreter: PowerShell")],
+    # WinRM
+    "H_EID_91":   [("T1021.006", "Remote Services: Windows Remote Management")],
+    "H_EID_168":  [("T1021.006", "Remote Services: Windows Remote Management")],
+    # WMI
+    "H_EID_5857": [("T1047", "Windows Management Instrumentation")],
+    "H_EID_5860": [("T1546.003", "Event Triggered Execution: WMI Event Subscription")],
+    "H_EID_5861": [("T1546.003", "Event Triggered Execution: WMI Event Subscription")],
+    # RDP
+    "H_EID_1149": [("T1021.001", "Remote Services: Remote Desktop Protocol")],
+    "H_EID_4778": [("T1021.001", "Remote Services: Remote Desktop Protocol")],
+    "H_EID_4779": [("T1021.001", "Remote Services: Remote Desktop Protocol")],
+    "H_EID_21":   [("T1021.001", "Remote Services: Remote Desktop Protocol")],
+    "H_EID_22":   [("T1021.001", "Remote Services: Remote Desktop Protocol")],
+    "H_EID_25":   [("T1021.001", "Remote Services: Remote Desktop Protocol")],
 }
 
 

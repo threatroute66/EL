@@ -55,7 +55,12 @@ def _h_benign(f: Finding) -> int:
                 "H_INITIAL_ACCESS_DOC_MACRO", "H_LIVING_OFF_THE_LAND",
                 "H_BEC_ACCOUNT_TAKEOVER", "H_CLOUD_PERSISTENCE",
                 "H_BRUTE_FORCE", "H_LATERAL_MOVEMENT", "H_ROOTKIT",
-                "H_PERSISTENCE_SERVICE", "H_INSIDER_EMAIL_EXFIL"):
+                "H_PERSISTENCE_SERVICE", "H_INSIDER_EMAIL_EXFIL",
+                # PR-P: log-clearing + WMI event-consumer registration +
+                # RDP-session EIDs are almost never benign in the DFIR
+                # context.
+                "H_EID_1102", "H_EID_104",
+                "H_EID_5860", "H_EID_5861"):
         if tag in f.hypotheses_supported:
             s -= 3
     if _claim_contains("createaccesskey", "putbucketpolicy", "failed console",
@@ -98,6 +103,14 @@ def _h_apt(f: Finding) -> int:
     if _has_tag("H_LATERAL_MOVEMENT")(f): s += 2
     if _has_tag("H_PERSISTENCE_SCHEDULED_TASK")(f): s += 1
     if _has_tag("H_PERSISTENCE_SERVICE")(f): s += 1
+    # PR-P: admin-logon + explicit-cred-use + Kerberos ticket requests
+    # are APT fingerprints when chained with the above; weak alone.
+    if _has_tag("H_EID_4672")(f): s += 1     # admin privileges assigned
+    if _has_tag("H_EID_4648")(f): s += 1     # explicit-cred logon (RunAs)
+    if _has_tag("H_EID_4769")(f): s += 1     # service ticket
+    # Log-clearing is a core APT/intrusion signature
+    if _has_tag("H_EID_1102")(f): s += 2
+    if _has_tag("H_EID_104")(f):  s += 2
     if _claim_contains("4624", "4672", "4769", "kerberos",
                         "credential-access target")(f):
         s += 1
@@ -181,6 +194,11 @@ def _h_brute_force(f: Finding) -> int:
     s = 0
     if _has_tag("H_BRUTE_FORCE")(f):
         s += 3
+    # PR-P: tag-based brute-force lift (H_EID_* set by LM agent + future
+    # chainsaw integration). 4625 (failed logon) / 4776 (NTLM failure) /
+    # 4740 (account lockout) all point at brute force or spray.
+    for tag in ("H_EID_4625", "H_EID_4776", "H_EID_4740"):
+        if _has_tag(tag)(f): s += 2
     if _claim_contains("4625", "logon_failed", "failed console logins",
                        "many failed", "kerberos pre-auth")(f):
         s += 2
@@ -270,15 +288,32 @@ HYPOTHESES: list[Hypothesis] = [
                "Lateral movement",
                "Operator pivoting between hosts via PsExec, WMIC, RDP, SSH, "
                "or admin-share file copy.",
-               lambda f: 3 if "H_LATERAL_MOVEMENT" in f.hypotheses_supported else 0),
+               # PR-P: lift on H_LATERAL_MOVEMENT OR the EID tags that point
+               # directly at remote-access / remote-exec techniques.
+               lambda f: (3 if "H_LATERAL_MOVEMENT" in f.hypotheses_supported
+                          else (2 if any(t in f.hypotheses_supported for t in (
+                              "H_EID_5140", "H_EID_5145",    # admin-share
+                              "H_EID_1149", "H_EID_4778",    # RDP
+                              "H_EID_91", "H_EID_168",        # WinRM/PS-remoting
+                              "H_EID_7045",                    # service install
+                          )) else 0))),
     Hypothesis("H_PERSISTENCE_SCHEDULED_TASK",
                "Persistence via scheduled task",
                "Attacker-installed scheduled task surviving reboot.",
-               lambda f: 3 if "H_PERSISTENCE_SCHEDULED_TASK" in f.hypotheses_supported else 0),
+               lambda f: (3 if "H_PERSISTENCE_SCHEDULED_TASK" in f.hypotheses_supported
+                          # PR-P: task-creation audit events add corroboration
+                          else (2 if any(t in f.hypotheses_supported for t in (
+                              "H_EID_4698", "H_EID_4702",
+                          )) else 0))),
     Hypothesis("H_PERSISTENCE_SERVICE",
                "Persistence via service",
                "Attacker-installed Windows service surviving reboot.",
-               lambda f: 3 if "H_PERSISTENCE_SERVICE" in f.hypotheses_supported else 0),
+               lambda f: (3 if "H_PERSISTENCE_SERVICE" in f.hypotheses_supported
+                          # PR-P: service-install events (7045 remote,
+                          # 4697 subscription-audited) add corroboration
+                          else (2 if ("H_EID_7045" in f.hypotheses_supported
+                                       or "H_EID_4697" in f.hypotheses_supported)
+                                else 0))),
 ]
 
 
