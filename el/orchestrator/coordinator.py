@@ -21,6 +21,7 @@ from el.agents.browser_forensicator import BrowserForensicatorAgent
 from el.agents.disk_forensicator import DiskForensicatorAgent
 from el.agents.email_forensicator import EmailForensicatorAgent
 from el.agents.endpoint_analyst import EndpointAnalystAgent
+from el.agents.execution_corroborator import ExecutionCorroboratorAgent
 from el.agents.lateral_movement_analyst import LateralMovementAnalystAgent
 from el.agents.log_analyst import LogAnalystAgent
 from el.agents.malware_triage import MalwareTriageAgent
@@ -214,6 +215,10 @@ class Coordinator:
                 # Agent itself short-circuits with 'insufficient' if the
                 # CSV is missing, so always safe to run here.
                 self._run_agent(LateralMovementAnalystAgent(), ctx)
+                # Execution-artifact correlator — cross-references
+                # Shimcache/Prefetch/Amcache/UserAssist CSVs to corroborate
+                # which binaries actually ran. Same short-circuit pattern.
+                self._run_agent(ExecutionCorroboratorAgent(), ctx)
 
                 # If PSTs were also extracted (extract_windows_artifacts
                 # drops them under exports/windows-artifacts/mail/), triage
