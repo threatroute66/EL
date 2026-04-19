@@ -35,7 +35,9 @@ def test_bulk_extractor_emits_finding_with_feature_counts(isolated, monkeypatch)
                       feature_files=[], command=["bulk_extractor"])
     monkeypatch.setattr(fake, "features", lambda: {"email": 12, "url": 30, "ip": 5})
     monkeypatch.setattr(be, "scan",
-                        lambda target, out_dir, features=None, threads=4, timeout=3600: fake)
+                        lambda target, out_dir,
+                               enable_scanners=None, disable_scanners=None,
+                               threads=4, timeout=3600: fake)
 
     findings = DiskForensicatorAgent()._run_bulk_extractor(ctx, src, isolated)
     assert len(findings) == 1

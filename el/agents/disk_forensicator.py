@@ -195,9 +195,16 @@ class DiskForensicatorAgent(Agent):
         out: list[Finding] = []
         be_dir = analysis / "bulk_extractor"
         try:
+            # Leave `enable_scanners=None` to run BE's full default scanner
+            # set (email, net, accts, httplogs, evtx, winprefetch, winlnk,
+            # winpe, exif, pdf, json, sqlite, ntfs*, zip/gzip/rar). Explicitly
+            # enable `outlook` — default-off — so we also carve Outlook PST
+            # fragments from unallocated space (critical for email-exfil cases
+            # like M57-Jean). The .features() summary below picks up whatever
+            # feature files land in be_dir regardless of which scanner wrote
+            # them, so nothing downstream needs tuning.
             r = be_skill.scan(raw_image, be_dir,
-                              features=["email", "url", "domain", "ip",
-                                         "ccn", "json"],
+                              enable_scanners=["outlook"],
                               threads=4, timeout=3600)
         except be_skill.BulkExtractorError as e:
             out.append(self.emit(ctx, Finding(

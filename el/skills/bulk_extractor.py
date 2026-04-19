@@ -81,12 +81,43 @@ def _version() -> str:
         return "present"
 
 
+# Valid bulk_extractor scanner names (from `bulk_extractor -h`). Feature
+# categories in output files (url.txt, domain.txt, ip.txt, ccn.txt, …) are
+# produced BY scanners — they are NOT scanner names themselves. Passing a
+# feature-category string to `-e` makes bulk_extractor exit with
+# "Invalid scanner name" before producing any output, so we validate.
+VALID_SCANNERS: frozenset[str] = frozenset({
+    # default-on
+    "accts", "aes", "base64", "elf", "email", "evtx", "exif", "find",
+    "gps", "gzip", "hiberfile", "httplogs", "json", "kml", "msxml", "net",
+    "ntfsindx", "ntfslogfile", "ntfsmft", "ntfsusn", "pdf", "rar", "sqlite",
+    "utmp", "vcard", "windirs", "winlnk", "winpe", "winprefetch", "zip",
+    # default-off (must be explicitly enabled)
+    "base16", "facebook", "outlook", "sceadan", "wordlist", "xor",
+})
+
+
 def scan(target: Path, out_dir: Path,
-         features: list[str] | None = None,
+         enable_scanners: list[str] | None = None,
+         disable_scanners: list[str] | None = None,
          threads: int = 4, timeout: int = 7200) -> BulkRun:
-    """Run bulk_extractor against target. If features=None, runs the default
-    scanner set (all enabled). Pass e.g. ['email','url','domain','ccn','btc']
-    to restrict. The output dir must be empty (bulk_extractor refuses otherwise)."""
+    """Run bulk_extractor against target.
+
+    `enable_scanners` forwards to `-e <name>` (enables a default-off scanner
+    or explicitly enables an already-on one). `disable_scanners` forwards to
+    `-x <name>`. Names are validated against VALID_SCANNERS — if you want a
+    particular feature category (url, domain, ip, ccn), enable the scanner
+    that PRODUCES it (email, net, accts) rather than the category name.
+
+    With both args empty, bulk_extractor runs its full default scanner set,
+    which already covers the common DFIR haul (email/domain/url, net/ip,
+    accts/ccn/pii, httplogs, evtx, winprefetch, winlnk, winpe, exif, pdf,
+    json, sqlite, ntfs*, zip/gzip/rar). Default-off scanners worth enabling
+    explicitly: `outlook` (PST carving), `base16`/`xor`/`wordlist` (special
+    cases).
+
+    The output dir must be empty (bulk_extractor refuses to overwrite).
+    """
     target = Path(target)
     if not target.exists():
         raise BulkExtractorError(f"target not found: {target}")
@@ -96,10 +127,26 @@ def scan(target: Path, out_dir: Path,
                                  "(bulk_extractor refuses to overwrite)")
     out_dir.mkdir(parents=True, exist_ok=True)
 
+    for name in (enable_scanners or []):
+        if name not in VALID_SCANNERS:
+            raise BulkExtractorError(
+                f"invalid bulk_extractor scanner name: {name!r}. "
+                f"Valid scanners: {sorted(VALID_SCANNERS)}. "
+                "Feature categories like 'url'/'domain'/'ip'/'ccn' are NOT "
+                "scanner names — enable the scanner that emits them "
+                "(email for url/domain, net for ip, accts for ccn)."
+            )
+    for name in (disable_scanners or []):
+        if name not in VALID_SCANNERS:
+            raise BulkExtractorError(
+                f"invalid bulk_extractor scanner name: {name!r}"
+            )
+
     cmd = [_bin(), "-o", str(out_dir), "-j", str(threads)]
-    if features:
-        for fclass in features:
-            cmd += ["-e", fclass]
+    for name in (enable_scanners or []):
+        cmd += ["-e", name]
+    for name in (disable_scanners or []):
+        cmd += ["-x", name]
     cmd.append(str(target))
 
     try:
