@@ -17,6 +17,7 @@ from el import seal as case_seal
 from el.agents.base import Agent, AgentContext
 from el.agents.cloud_forensicator import CloudForensicatorAgent
 from el.agents.correlator import CorrelatorAgent
+from el.agents.browser_forensicator import BrowserForensicatorAgent
 from el.agents.disk_forensicator import DiskForensicatorAgent
 from el.agents.email_forensicator import EmailForensicatorAgent
 from el.agents.endpoint_analyst import EndpointAnalystAgent
@@ -220,6 +221,18 @@ class Coordinator:
                         shared=ctx.shared,
                     )
                     self._run_agent(EmailForensicatorAgent(), mail_ctx)
+
+                # Firefox profiles (and later IE index.dat) land under
+                # exports/windows-artifacts/browser/. Triage browser
+                # history for anon-share / forum-post / webmail destinations.
+                browser_dir = artifacts_path / "browser"
+                if browser_dir.is_dir() and any(browser_dir.rglob("places.sqlite")):
+                    browser_ctx = AgentContext(
+                        case_id=ctx.case_id, case_dir=ctx.case_dir,
+                        input_path=browser_dir, manifest=ctx.manifest,
+                        shared=ctx.shared,
+                    )
+                    self._run_agent(BrowserForensicatorAgent(), browser_ctx)
 
         if self.run_timeline:
             self._run_agent(TimelineSynthesistAgent(

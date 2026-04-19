@@ -309,13 +309,17 @@ def extract_windows_artifacts(mount_point: Path, exports_dir: Path) -> dict:
         if _sudo_cp(srudb, srum_dir / "SRUDB.dat"):
             out["srum"] = 1
 
-    # Per-user NTUSER.DAT + per-user Outlook PSTs. Profile root:
+    # Per-user artifacts: NTUSER.DAT + Outlook PSTs + Firefox profiles.
+    # Profile root:
     #   XP/2003: <mount>/Documents and Settings/<name>/...
     #   Vista+ : <mount>/Users/<name>/...
     # Outlook PST search paths (case-insensitive):
     #   XP    : <user>/Local Settings/Application Data/Microsoft/Outlook/*.pst
     #   Win7+ : <user>/AppData/Local/Microsoft/Outlook/*.pst
     #           <user>/Documents/Outlook Files/*.pst
+    # Firefox profile search paths:
+    #   XP    : <user>/Application Data/Mozilla/Firefox/Profiles/<prof>/places.sqlite
+    #   Win7+ : <user>/AppData/Roaming/Mozilla/Firefox/Profiles/<prof>/places.sqlite
     users_root = (_child_ci(mount_point, "Users")
                   or _child_ci(mount_point, "Documents and Settings"))
     skip_profiles = {"all users", "default", "default user", "public",
@@ -323,8 +327,10 @@ def extract_windows_artifacts(mount_point: Path, exports_dir: Path) -> dict:
     if users_root and users_root.is_dir():
         reg_dir.mkdir(parents=True, exist_ok=True)
         pst_dir = exports_dir / "mail"
+        firefox_dir = exports_dir / "browser" / "firefox"
         n_ntuser = 0
         n_pst = 0
+        n_firefox = 0
         for user_dir in users_root.iterdir():
             if not user_dir.is_dir():
                 continue
@@ -353,10 +359,31 @@ def extract_windows_artifacts(mount_point: Path, exports_dir: Path) -> dict:
                     dst = pst_dir / f"{user_dir.name}--{item.name}"
                     if _sudo_cp(item, dst):
                         n_pst += 1
+            # Firefox Profiles/*/places.sqlite hunt
+            ff_root_candidates = [
+                _resolve_ci(user_dir, "Application Data", "Mozilla",
+                            "Firefox", "Profiles"),
+                _resolve_ci(user_dir, "AppData", "Roaming", "Mozilla",
+                            "Firefox", "Profiles"),
+            ]
+            for ff_root in ff_root_candidates:
+                if not (ff_root and ff_root.is_dir()):
+                    continue
+                for prof in ff_root.iterdir():
+                    if not prof.is_dir():
+                        continue
+                    places = _child_ci(prof, "places.sqlite")
+                    if places and places.is_file():
+                        dst_dir = firefox_dir / f"{user_dir.name}--{prof.name}"
+                        dst_dir.mkdir(parents=True, exist_ok=True)
+                        if _sudo_cp(places, dst_dir / "places.sqlite"):
+                            n_firefox += 1
         if n_ntuser:
             out["ntuser_hives"] = n_ntuser
         if n_pst:
             out["outlook_pst"] = n_pst
+        if n_firefox:
+            out["firefox_profiles"] = n_firefox
 
     return out
 

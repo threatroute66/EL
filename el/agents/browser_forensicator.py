@@ -1,0 +1,177 @@
+"""Browser Forensicator — triage browser history for exfil + pretexting
+destinations.
+
+Consumes a directory of extracted browser profiles (disk_forensicator
+copies Firefox profiles into exports/windows-artifacts/browser/firefox/
+<profile>/places.sqlite). Parses each places.sqlite and emits findings
+on destination shapes that matter for DFIR:
+
+  1. POST-SHAPE forum/board destination  (/viewtopic.php?, /post/,
+     /submit, /upload)  → often used for anonymous data drops
+  2. File-upload / pastebin / anonymous-share services  (pastebin,
+     file.io, transfer.sh, anonfiles, mega.nz, etc.)
+  3. Consumer webmail  (gmail.com, mail.yahoo, outlook.com, protonmail)
+
+All three are suggestive — a visit alone is not proof — but they
+narrow investigator focus materially on insider-exfil-shaped cases.
+"""
+from __future__ import annotations
+
+import re
+from pathlib import Path
+from urllib.parse import urlparse
+
+from el.agents.base import Agent, AgentContext
+from el.schemas.finding import EvidenceItem, Finding
+from el.skills import browser
+
+
+# URL shapes that are exfil-adjacent in casework. We match against the
+# URL path+query, not the domain — a generic domain with these shapes
+# is still a signal (forum boards and paste sites use many domains).
+_FORUM_UPLOAD_PATH = re.compile(
+    r"/(?:viewtopic|showthread|thread|post|upload|submit|newpost|newtopic|"
+    r"forum|attachment|file/upload)\b",
+    re.IGNORECASE,
+)
+_ANON_SHARE_HOSTS = {
+    "pastebin.com", "paste.ee", "ghostbin.co", "hastebin.com",
+    "file.io", "transfer.sh", "wetransfer.com", "we.tl",
+    "anonfiles.com", "bayfiles.com", "mega.nz", "mega.co.nz",
+    "mediafire.com", "sendspace.com", "zippyshare.com",
+    "dropfiles.net", "uploadfiles.io", "filebin.net",
+    "0x0.st", "catbox.moe", "files.catbox.moe",
+}
+_CONSUMER_WEBMAIL_HOSTS = {
+    "mail.google.com", "gmail.com",
+    "mail.yahoo.com", "login.yahoo.com",
+    "outlook.live.com", "mail.live.com", "hotmail.com",
+    "mail.proton.me", "mail.protonmail.com", "protonmail.com",
+    "mail.aol.com", "mail.gmx.com", "mail.tutanota.com",
+    "icloud.com",
+}
+
+
+def _host(url: str) -> str:
+    try:
+        return urlparse(url).hostname.lower() if urlparse(url).hostname else ""
+    except Exception:
+        return ""
+
+
+class BrowserForensicatorAgent(Agent):
+    name = "browser_forensicator"
+
+    def run(self, ctx: AgentContext) -> list[Finding]:
+        out: list[Finding] = []
+        analysis = ctx.case_dir / "analysis" / self.name
+        analysis.mkdir(parents=True, exist_ok=True)
+
+        root = Path(ctx.input_path)
+        if not root.is_dir():
+            return [self.emit(ctx, Finding(
+                case_id=ctx.case_id, agent=self.name, confidence="insufficient",
+                claim=f"BrowserForensicator expects a directory input; got {root}",
+            ))]
+
+        # Firefox profiles: any places.sqlite anywhere under root.
+        places = sorted(p for p in root.rglob("places.sqlite") if p.is_file())
+        if not places:
+            return [self.emit(ctx, Finding(
+                case_id=ctx.case_id, agent=self.name, confidence="insufficient",
+                claim=f"No Firefox places.sqlite files under {root}",
+            ))]
+
+        for p in places:
+            out.extend(self._triage_places(ctx, p))
+        return out
+
+    def _triage_places(self, ctx: AgentContext, places_sqlite: Path) -> list[Finding]:
+        out: list[Finding] = []
+        try:
+            run = browser.firefox_places(places_sqlite)
+        except browser.BrowserError as e:
+            return [self.emit(ctx, Finding(
+                case_id=ctx.case_id, agent=self.name, confidence="insufficient",
+                claim=f"firefox_places failed on {places_sqlite}: {e}",
+            ))]
+        if run.error:
+            return [self.emit(ctx, Finding(
+                case_id=ctx.case_id, agent=self.name, confidence="insufficient",
+                claim=f"Firefox history schema read error on {places_sqlite}: {run.error}",
+            ))]
+
+        # Volume finding
+        out.append(self.emit(ctx, Finding(
+            case_id=ctx.case_id, agent=self.name, confidence="high",
+            claim=(f"Firefox history parsed ({places_sqlite.name}): "
+                   f"{len(run.visits)} URL(s) in places.sqlite"),
+            evidence=[run.as_evidence()],
+            hypotheses_supported=["H_BROWSER_HISTORY_PARSED"],
+        )))
+
+        # Bucket by category
+        forum_hits: list[browser.Visit] = []
+        share_hits: list[browser.Visit] = []
+        webmail_hits: list[browser.Visit] = []
+        for v in run.visits:
+            host = _host(v.url)
+            if not host:
+                continue
+            if host in _ANON_SHARE_HOSTS or any(
+                    host.endswith("." + h) for h in _ANON_SHARE_HOSTS):
+                share_hits.append(v)
+            elif host in _CONSUMER_WEBMAIL_HOSTS or any(
+                    host.endswith("." + h) for h in _CONSUMER_WEBMAIL_HOSTS):
+                webmail_hits.append(v)
+            elif _FORUM_UPLOAD_PATH.search(urlparse(v.url).path or ""):
+                forum_hits.append(v)
+
+        if share_hits:
+            sample = [v.url for v in share_hits[:5]]
+            ev = run.as_evidence(facts={"category": "anon_share",
+                                        "url_count": len(share_hits),
+                                        "sample_urls": sample})
+            out.append(self.emit(ctx, Finding(
+                case_id=ctx.case_id, agent=self.name, confidence="medium",
+                claim=(f"Browser history → anonymous file-share / pastebin "
+                       f"destination(s) ({places_sqlite.name}): "
+                       f"{len(share_hits)} visit(s). Hosts: "
+                       f"{', '.join(sorted({_host(v.url) for v in share_hits}))[:200]}. "
+                       f"Upload-capable external destination."),
+                evidence=[ev],
+                hypotheses_supported=["H_INSIDER_DATA_EXFIL"],
+            )))
+
+        if forum_hits:
+            hosts = sorted({_host(v.url) for v in forum_hits})
+            sample = [v.url for v in forum_hits[:5]]
+            ev = run.as_evidence(facts={"category": "forum_upload",
+                                        "url_count": len(forum_hits),
+                                        "sample_urls": sample})
+            out.append(self.emit(ctx, Finding(
+                case_id=ctx.case_id, agent=self.name, confidence="medium",
+                claim=(f"Browser history → forum / board post-shape URL(s) "
+                       f"({places_sqlite.name}): {len(forum_hits)} visit(s). "
+                       f"Hosts: {', '.join(hosts)[:200]}. Post/upload-capable "
+                       f"external destination — pivot via URL list."),
+                evidence=[ev],
+                hypotheses_supported=["H_INSIDER_DATA_EXFIL"],
+            )))
+
+        if webmail_hits:
+            hosts = sorted({_host(v.url) for v in webmail_hits})
+            sample = [v.url for v in webmail_hits[:5]]
+            ev = run.as_evidence(facts={"category": "consumer_webmail",
+                                        "url_count": len(webmail_hits),
+                                        "sample_urls": sample})
+            out.append(self.emit(ctx, Finding(
+                case_id=ctx.case_id, agent=self.name, confidence="low",
+                claim=(f"Browser history → consumer-webmail access "
+                       f"({places_sqlite.name}): {len(webmail_hits)} visit(s) "
+                       f"across {len(hosts)} host(s) ({', '.join(hosts)[:200]}). "
+                       f"Informational — confirms a personal-mail channel "
+                       f"was available on the device."),
+                evidence=[ev],
+            )))
+        return out
