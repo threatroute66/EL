@@ -21,6 +21,7 @@ from el.agents.browser_forensicator import BrowserForensicatorAgent
 from el.agents.disk_forensicator import DiskForensicatorAgent
 from el.agents.email_forensicator import EmailForensicatorAgent
 from el.agents.endpoint_analyst import EndpointAnalystAgent
+from el.agents.lateral_movement_analyst import LateralMovementAnalystAgent
 from el.agents.log_analyst import LogAnalystAgent
 from el.agents.malware_triage import MalwareTriageAgent
 from el.agents.windows_artifact import WindowsArtifactAgent
@@ -207,6 +208,12 @@ class Coordinator:
                     shared=ctx.shared,
                 )
                 self._run_agent(WindowsArtifactAgent(), artifact_ctx)
+
+                # If WindowsArtifactAgent produced an EvtxECmd CSV, chain
+                # LateralMovementAnalyst (Hunt-Evil 7-technique detector).
+                # Agent itself short-circuits with 'insufficient' if the
+                # CSV is missing, so always safe to run here.
+                self._run_agent(LateralMovementAnalystAgent(), ctx)
 
                 # If PSTs were also extracted (extract_windows_artifacts
                 # drops them under exports/windows-artifacts/mail/), triage
