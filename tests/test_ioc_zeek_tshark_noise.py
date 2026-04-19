@@ -11,6 +11,8 @@ picked up because the _DOMAIN regex greedily matches any
 Fix locks them out via _NOISE_DOMAINS (exact matches) and
 _NOISE_DOMAIN_PREFIXES (protocol namespace prefixes like "http.").
 """
+import pytest
+
 from el.skills.ioc_extract import extract
 
 
@@ -77,3 +79,25 @@ def test_real_protocol_looking_fqdns_still_match():
     d = _domains("visit evil.example.com and api.example.org for payload")
     assert "evil.example.com" in d
     assert "api.example.org" in d
+
+
+# ---------------------------------------------------------------------------
+# Batch-2 follow-on: URL path basenames extracted as "domains"
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("basename", [
+    "c.php", "r.php", "search.php", "news.php", "go1.php", "index.php",
+    "style.php", "click.php",
+    "click.aspx", "view.aspx",
+    "process.cgi", "mail.pl", "track.jsp", "submit.do",
+    "index.shtml",
+])
+def test_server_side_script_basenames_not_emitted_as_domains(basename):
+    """URL paths like http://evil.com/c.php get the regex picking up
+    `c.php` as a domain. Observed in batch-2 of the pcap corpus
+    (23 occurrences across cases). The file-extension filter now covers
+    php/aspx/jsp/cgi/etc."""
+    text = f"GET /{basename} HTTP/1.1 Host: evil.example.com"
+    d = _domains(text)
+    assert basename not in d
+    assert "evil.example.com" in d

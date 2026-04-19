@@ -74,6 +74,13 @@ _FILE_EXT_TLDS = {
     "ce", "skimlinks",
     "py", "pyc", "sh", "bat", "ps1", "vbs", "js", "cmd", "rb", "go",
     "ini", "conf", "cfg", "tmp", "bak", "old",
+    # Server-side web scripting filenames — URL path basenames like
+    # c.php, r.php, click.aspx, search.jsp turn into "<c>.<php>" domains
+    # and flood the cross-case overlap noise. Observed in batch-2.
+    "php", "php3", "php4", "php5", "phtml",
+    "asp", "aspx", "ashx", "asmx",
+    "cgi", "pl", "cfm", "jsp", "jspx", "do", "action",
+    "shtml", "shtm",
     # Outlook / mail formats
     "eml", "msg", "pst", "ost", "ics", "vcf",
     # Windows internals + Volatility plugin noise that surface as fake domains
