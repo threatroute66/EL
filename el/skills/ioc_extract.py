@@ -58,7 +58,18 @@ _FILE_EXT_TLDS = {
     "doc", "docx", "xls", "xlsx", "ppt", "pptx", "pdf", "rtf", "odt",
     "zip", "gz", "tar", "bz2", "xz", "rar", "7z", "iso", "img",
     "e01", "l01", "ad1", "ewf", "vhd", "vhdx", "vmdk", "ova", "ovf",
-    "evtx", "etl", "wim", "reg", "lnk", "jpg", "jpeg", "png", "gif", "htm",
+    "evtx", "etl", "wim", "reg", "lnk", "jpg", "jpeg", "png", "gif", "htm", "html",
+    # Web assets — these slipped through on M57-Jean's fls bodyfile as
+    # "domains" (default.css, style.css, index.html, etc.)
+    "css", "scss", "less", "sass", "svg", "webp", "ico", "bmp", "tiff", "tif",
+    "woff", "woff2", "ttf", "eot", "otf",
+    "mp3", "mp4", "wav", "avi", "mov", "webm", "flv", "ogg", "m4a", "m4v",
+    "map",           # source maps (foo.js.map)
+    "md", "rst",
+    "swp", "swo",    # vim swap files
+    "class", "jar", "war",
+    "srt", "vtt",    # captions
+    "db", "db3", "sqlite", "sqlite3", "cache", "dat",
     # Not real TLDs but commonly appear in PageSpeed / CDN URL fragments
     "ce", "skimlinks",
     "py", "pyc", "sh", "bat", "ps1", "vbs", "js", "cmd", "rb", "go",
@@ -173,11 +184,50 @@ def _filter_domains(domains: Iterable[str]) -> set[str]:
     return out
 
 
-def extract(text: str, drop_noise: bool = True) -> dict[str, set[str]]:
+_EMPTY_IOCS = {k: set() for k in ("ipv4", "ipv6", "domain", "url", "md5", "sha1",
+                                   "sha256", "email", "regkey", "winpath")}
+
+
+def extract(text: str, drop_noise: bool = True,
+            source_kind: str | None = None) -> dict[str, set[str]]:
+    """Extract IOCs from arbitrary text.
+
+    `source_kind` restricts which IOC classes are attempted based on the
+    source type — avoids the class of FP where a file-path listing gets
+    every `foo.css` / `foo.html` / `foo.ini` basename emitted as a
+    "domain". Known kinds:
+
+        "fs_paths"  — fls bodyfiles, mactime CSVs. Path listings contain
+                       plenty of filename.extension shapes but vanishingly
+                       few real FQDNs/URLs/emails. We skip domain, url,
+                       email regex entirely and keep hashes + ipv4/ipv6
+                       + registry keys + win paths.
+        "network"   — pcap/HTTP/DNS extracts. Full IOC set.
+        "log"       — EVTX/syslog/log text. Full IOC set.
+        None        — legacy behaviour: full IOC set.
+    """
     if not text:
-        return {k: set() for k in ("ipv4", "ipv6", "domain", "url", "md5", "sha1",
-                                    "sha256", "email", "regkey", "winpath")}
+        return {k: set() for k in _EMPTY_IOCS}
     t = refang(text)
+
+    if source_kind == "fs_paths":
+        # Filesystem path listings: only extract indicator classes that
+        # genuinely appear in them. Domains/URLs/emails here are almost
+        # entirely filename-extension or path-fragment FPs.
+        ipv4 = set(_IPV4.findall(t))
+        ipv6 = {m for m in _IPV6.findall(t) if ":" in m and len(m) > 4}
+        md5 = {h.lower() for h in _MD5.findall(t)}
+        sha1 = {h.lower() for h in _SHA1.findall(t)} - md5
+        sha256 = {h.lower() for h in _SHA256.findall(t)} - _CRYPTO_CONSTANTS
+        regkey = set(m.rstrip("\\") for m in _REGKEY.findall(t))
+        winpath = set(_WINPATH.findall(t))
+        if drop_noise:
+            ipv4 = _filter_ipv4(ipv4)
+            sha1 = sha1 - {h for h in sha1 if len(h) != 40}
+        return {"ipv4": ipv4, "ipv6": ipv6, "domain": set(), "url": set(),
+                "md5": md5, "sha1": sha1, "sha256": sha256, "email": set(),
+                "regkey": regkey, "winpath": winpath}
+
     ipv4 = set(_IPV4.findall(t))
     ipv6 = {m for m in _IPV6.findall(t) if ":" in m and len(m) > 4}
     domain = set(_DOMAIN.findall(t))
@@ -204,13 +254,46 @@ def extract(text: str, drop_noise: bool = True) -> dict[str, set[str]]:
             "regkey": regkey, "winpath": winpath}
 
 
+# Path shapes that are exclusively filesystem path listings — for these we
+# want to apply source_kind="fs_paths" so domain/url/email regex are skipped.
+_FS_PATH_FILENAMES = {
+    "fls.txt", "mactime.txt", "mactime.csv",
+    "directory-listing.txt",  # triage's directory inventory
+}
+_FS_PATH_PATTERNS = ("fls_", "mactime_")  # e.g. fls_o63.txt, mactime_part1.csv
+
+
+def _source_kind_for(path: Path) -> str | None:
+    """Classify a path for IOC extraction. Returns a source_kind string
+    suitable for extract()'s argument. None = no restriction (legacy)."""
+    name = path.name.lower()
+    if name in _FS_PATH_FILENAMES:
+        return "fs_paths"
+    for pat in _FS_PATH_PATTERNS:
+        if name.startswith(pat):
+            return "fs_paths"
+    return None
+
+
 def extract_from_paths(paths: Iterable[str | Path]) -> dict[str, set[str]]:
+    """Read each path, pick an appropriate source_kind, union the IOCs.
+
+    Paths are read at most once — duplicates in the input are deduplicated
+    before extraction to avoid re-scanning large bodyfiles N times (observed:
+    27-finding run × several refs to mactime.txt blew past 9 min in STIX).
+    """
     merged: dict[str, set[str]] = {}
+    seen_paths: set[Path] = set()
     for p in paths:
+        pth = Path(p)
+        if pth in seen_paths:
+            continue
+        seen_paths.add(pth)
         try:
-            text = Path(p).read_text(errors="ignore")
+            text = pth.read_text(errors="ignore")
         except Exception:
             continue
-        for k, v in extract(text).items():
+        kind = _source_kind_for(pth)
+        for k, v in extract(text, source_kind=kind).items():
             merged.setdefault(k, set()).update(v)
     return merged
