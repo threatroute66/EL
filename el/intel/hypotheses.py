@@ -66,6 +66,11 @@ def _h_benign(f: Finding) -> int:
 
 def _h_commodity(f: Finding) -> int:
     s = 0
+    # Direct lift — a family-triage finding tagged H_OPPORTUNISTIC_COMMODITY
+    # IS evidence for the commodity hypothesis. Missing this meant EK /
+    # botnet attributions added 0 to the commodity score, and every
+    # 2014-era EK pcap in batch-1 ended with ACH tied at 0.
+    if _has_tag("H_OPPORTUNISTIC_COMMODITY")(f): s += 3
     if _has_tag("H_PROCESS_INJECTION")(f): s += 1
     if _has_tag("H_LIVING_OFF_THE_LAND")(f): s += 1
     if _has_tag("H_C2_OR_REVERSE_SHELL")(f): s += 1
