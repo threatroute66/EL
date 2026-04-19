@@ -12,7 +12,7 @@ from pathlib import Path
 from el.agents.base import Agent, AgentContext
 from el.evidence.graph import open_graph
 from el.schemas.finding import Finding
-from el.skills import memory_baseliner, vol3
+from el.skills import memory_baseliner, process_profile, vol3
 
 
 SUSPICIOUS_PARENTS = {
@@ -130,6 +130,12 @@ class MemoryForensicatorAgent(Agent):
 
         if family == "windows" and "windows.pslist.PsList" in runs and runs["windows.pslist.PsList"].rows:
             out.extend(self._process_anomalies(ctx, runs["windows.pslist.PsList"]))
+            # PR-H: Hunt-Evil "Know Normal" expected-profile matrix
+            # (parent + count checks for the 12 core Windows processes).
+            # Orthogonal to _process_anomalies (which checks orphans +
+            # short-lived) — every anomaly class fires its own finding.
+            out.extend(self._hunt_evil_process_matrix(
+                ctx, runs["windows.pslist.PsList"]))
 
         baseline_path = (ctx.shared.get("memory_baseline")
                           or ctx.shared.get("memory_baseline_json"))
@@ -379,6 +385,49 @@ class MemoryForensicatorAgent(Agent):
                            "May be atomic actions, AV termination, or short exploit runs."),
                     evidence=[ev],
                 )))
+        return out
+
+    def _hunt_evil_process_matrix(self, ctx: AgentContext,
+                                    run: vol3.PluginRun) -> list[Finding]:
+        """PR-H: per Hunt Evil page 1, check the 12 core Windows processes
+        against their expected (parent, count) profile. Emits one Finding
+        per anomaly class, with confidence escalated for lsass.exe / core
+        singletons because a masquerade there is unambiguous.
+        """
+        out: list[Finding] = []
+        rows = [r for r in run.rows if isinstance(r, dict)]
+        if not rows:
+            return out
+
+        anomalies = process_profile.analyze(rows)
+        if not anomalies:
+            return out
+
+        ev = run.as_evidence({"phase": "hunt_evil_process_matrix",
+                              "anomaly_count": len(anomalies)})
+        for a in anomalies:
+            # Credential-access core processes (lsass/wininit/services/csrss)
+            # masqueraded or duplicated is an unambiguous high-confidence
+            # finding. svchost-and-friends with wrong parent can legitimately
+            # occur on clean systems (e.g., during service-pack install) →
+            # medium.
+            core_singletons = {"lsass.exe", "wininit.exe", "services.exe",
+                                "csrss.exe", "lsaiso.exe", "smss.exe",
+                                "winlogon.exe"}
+            if a.image_name in core_singletons:
+                confidence = "high"
+            elif a.reason == "unexpected_parent":
+                confidence = "medium"
+            else:
+                confidence = "medium"
+
+            out.append(self.emit(ctx, Finding(
+                case_id=ctx.case_id, agent=self.name, confidence=confidence,
+                claim=(f"Process-tree anomaly [{a.image_name}/{a.reason}]: "
+                       f"{a.details}"),
+                evidence=[ev],
+                hypotheses_supported=a.hypotheses,
+            )))
         return out
 
     def _flag_malfind(self, ctx: AgentContext, run: vol3.PluginRun) -> list[Finding]:
