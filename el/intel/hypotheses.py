@@ -38,6 +38,23 @@ def _claim_contains(*needles: str) -> Callable[[Finding], bool]:
     return lambda f: any(n in (f.claim or "").lower() for n in needles)
 
 
+# Agents whose claims ECHO the input filename — if the corpus has
+# honest labels (e.g. "2016-12-09-Locky-ransomware.pcap"), those labels
+# leak into keyword-based hypothesis scoring. threat_hunter's claim is
+# "YARA sweep of <filename>: N hit(s)"; triage's is "Input identified
+# as X from magic bytes". Both legitimate signals come through specific
+# TAGS (H_IOC_CORROBORATED, H_OS_WINDOWS, etc.), not through keyword
+# matches on the claim text. Scorers below skip these agents to prevent
+# corpus-label leakage.
+_FILENAME_ECHO_AGENTS = frozenset({"threat_hunter", "triage"})
+
+
+def _filename_safe(f: Finding) -> bool:
+    """Return False when the finding is from an agent whose claim always
+    contains the input filename — see _FILENAME_ECHO_AGENTS above."""
+    return f.agent not in _FILENAME_ECHO_AGENTS
+
+
 def _h_benign(f: Finding) -> int:
     """Benign / null hypothesis. Lifted ONLY by positive baseline-style
     indicators ("no non-baseline items in Memory Baseliner", "all binaries
@@ -83,14 +100,8 @@ def _h_commodity(f: Finding) -> int:
 
 
 def _h_ransomware(f: Finding) -> int:
-    # threat_hunter's YARA-sweep claim always echoes the input filename
-    # (e.g. "YARA sweep of 2016-12-09-Locky-ransomware.pcap: …"). That
-    # filename comes from the pcap corpus and often contains ground-truth
-    # labels like "ransomware" — scoring on it leaks the label. Similarly
-    # triage's "Input identified as X" claim can include the filename.
-    # Exclude these agents from keyword scoring; they emit specific tags
-    # (H_IOC_CORROBORATED etc.) that score through other paths.
-    if f.agent in ("threat_hunter", "triage"):
+    # Filename-label leak guard — see _filename_safe() docstring.
+    if not _filename_safe(f):
         return 0
     s = 0
     if _claim_contains("vssadmin", "shadowcopy", "shadows /all", "delete shadows",
@@ -162,8 +173,12 @@ def _h_insider_email_exfil(f: Finding) -> int:
 
 def _h_insider(f: Finding) -> int:
     s = 0
-    if _claim_contains("usb", "removable", "robocopy", "7-zip", "rar.exe",
-                       "stage", "exfil", "uploaded")(f):
+    # Filename-leak guard — pcap corpora occasionally include "exfil"
+    # or "upload" in ground-truth labels; threat_hunter / triage claims
+    # would echo them.
+    if _filename_safe(f) and _claim_contains(
+            "usb", "removable", "robocopy", "7-zip", "rar.exe",
+            "stage", "exfil", "uploaded")(f):
         s += 3
     # An email-exfil finding is also evidence for the generic insider
     # hypothesis, just weaker than for H_INSIDER_EMAIL_EXFIL itself —
@@ -236,8 +251,11 @@ def _h_c2_beaconing(f: Finding) -> int:
     beacon, periodic check-in patterns)."""
     s = 0
     if _has_tag("H_C2_OR_REVERSE_SHELL")(f): s += 3
-    if _claim_contains("suspicious destination ports", "beacon",
-                        "periodic check-in", "c2 channel")(f):
+    # Keyword scoring guarded against filename-label leak (pcap filenames
+    # like "2020-*-cobalt-strike-beacon.pcap" echoed by threat_hunter).
+    if _filename_safe(f) and _claim_contains(
+            "suspicious destination ports", "beacon",
+            "periodic check-in", "c2 channel")(f):
         s += 1
     return s
 
