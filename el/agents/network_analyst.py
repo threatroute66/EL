@@ -216,6 +216,39 @@ class NetworkAnalystAgent(Agent):
                                            "H_OPPORTUNISTIC_COMMODITY"],
                 )))
                 break
+
+        # PR-L: network traffic anomaly detectors over Zeek http.log +
+        # dns.log. Each detector computes one poster-shaped anomaly
+        # (HTTP POST skew, error-rate, scripted UA, DNS short TTL,
+        # DNS domain skew) and returns hit summaries we promote to
+        # Findings with their own hypothesis lift.
+        out.extend(self._run_network_anomaly(ctx, analysis / "zeek",
+                                              r.as_evidence()))
+        return out
+
+    def _run_network_anomaly(self, ctx: AgentContext, zeek_dir,
+                              zeek_evidence) -> list[Finding]:
+        from el.skills import network_anomaly as na
+        out: list[Finding] = []
+        try:
+            hits = na.run_all(zeek_dir)
+        except Exception as e:
+            out.append(self.emit(ctx, Finding(
+                case_id=ctx.case_id, agent=self.name, confidence="insufficient",
+                claim=f"Network-anomaly detector failure: {e}",
+            )))
+            return out
+        for h in hits:
+            # confidence from the detector itself is the floor; in some
+            # detectors the summary text already carries the reason —
+            # we never escalate here, only copy.
+            out.append(self.emit(ctx, Finding(
+                case_id=ctx.case_id, agent=self.name,
+                confidence=h.confidence,
+                claim=f"Network anomaly [{h.anomaly_id}]: {h.summary}",
+                evidence=[zeek_evidence],
+                hypotheses_supported=h.hypotheses,
+            )))
         return out
 
     # ----- tshark -----
