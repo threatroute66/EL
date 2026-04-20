@@ -18,6 +18,7 @@ from el.agents.base import Agent, AgentContext
 from el.agents.cloud_forensicator import CloudForensicatorAgent
 from el.agents.correlator import CorrelatorAgent
 from el.agents.browser_forensicator import BrowserForensicatorAgent
+from el.agents.credential_analyst import CredentialAnalystAgent
 from el.agents.disk_forensicator import DiskForensicatorAgent
 from el.agents.email_forensicator import EmailForensicatorAgent
 from el.agents.endpoint_analyst import EndpointAnalystAgent
@@ -219,6 +220,11 @@ class Coordinator:
                 # Shimcache/Prefetch/Amcache/UserAssist CSVs to corroborate
                 # which binaries actually ran. Same short-circuit pattern.
                 self._run_agent(ExecutionCorroboratorAgent(), ctx)
+                # Credential-access / brute-force detectors over the same
+                # EvtxECmd CSV — 4625 bursts + 4769 RC4-Kerberoasting +
+                # 4776 NTLM spray. Disjoint from LM detectors; runs here
+                # so the EVTX CSV is already on disk.
+                self._run_agent(CredentialAnalystAgent(), ctx)
 
                 # If PSTs were also extracted (extract_windows_artifacts
                 # drops them under exports/windows-artifacts/mail/), triage
