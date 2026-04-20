@@ -157,6 +157,81 @@ def test_partial_layout_only_reports_what_exists(tmp_path):
     assert out == {"registry_hives": 1}
 
 
+def test_dirty_hive_log1_log2_extracted_alongside_hive(tmp_path):
+    """SRL-2018 wkstn-01 + base-file were live-imaged and both tripped
+    EZ-Tools 'hive is dirty and no transaction logs were found — Aborting!'
+    because extract_windows_artifacts didn't copy the LOG1/LOG2 companion
+    files. This test locks in that fix: for every hive the extractor
+    emits, any sibling .LOG / .LOG1 / .LOG2 must travel with it."""
+    mount = tmp_path / "mnt"
+    win = mount / "Windows"
+    cfg = win / "System32" / "config"
+    # Modern-Windows dual-log (LOG1/LOG2) dirty-hive shape
+    for h in ("SYSTEM", "SOFTWARE", "SAM"):
+        _write(cfg / h)
+        _write(cfg / f"{h}.LOG1", b"log1-data")
+        _write(cfg / f"{h}.LOG2", b"log2-data")
+    # Amcache with LOG1 only (observed variant)
+    _write(win / "AppCompat" / "Programs" / "Amcache.hve")
+    _write(win / "AppCompat" / "Programs" / "Amcache.hve.LOG1", b"am-log")
+    # Per-user NTUSER.DAT with LOG1/LOG2 — rename must follow
+    users = mount / "Users"
+    _write(users / "alice" / "NTUSER.DAT")
+    _write(users / "alice" / "NTUSER.DAT.LOG1", b"alice-log1")
+    _write(users / "alice" / "NTUSER.DAT.LOG2", b"alice-log2")
+
+    exports = tmp_path / "exports"
+    out = sk.extract_windows_artifacts(mount, exports)
+
+    # Hive-count unchanged — LOGs don't inflate the count
+    assert out.get("registry_hives") == 3, out
+    assert out.get("amcache") == 1, out
+    assert out.get("ntuser_hives") == 1, out
+
+    reg = exports / "registry"
+    for h in ("SYSTEM", "SOFTWARE", "SAM"):
+        assert (reg / h).is_file()
+        assert (reg / f"{h}.LOG1").is_file(), f"{h}.LOG1 missing — dirty hive would fail to parse"
+        assert (reg / f"{h}.LOG2").is_file(), f"{h}.LOG2 missing — dirty hive would fail to parse"
+
+    assert (reg / "Amcache.hve").is_file()
+    assert (reg / "Amcache.hve.LOG1").is_file()
+
+    # NTUSER LOGs renamed to follow the destination hive
+    assert (reg / "NTUSER-alice.DAT").is_file()
+    assert (reg / "NTUSER-alice.DAT.LOG1").is_file()
+    assert (reg / "NTUSER-alice.DAT.LOG2").is_file()
+
+
+def test_xp_single_log_form_also_copied(tmp_path):
+    """XP/2003 uses a single HIVE.LOG rather than LOG1/LOG2. Detector
+    must pick both forms so the fix works for legacy images too."""
+    mount = tmp_path / "mnt"
+    cfg = mount / "WINDOWS" / "system32" / "config"
+    _write(cfg / "SYSTEM")
+    _write(cfg / "SYSTEM.LOG", b"xp-style-log")
+
+    exports = tmp_path / "exports"
+    sk.extract_windows_artifacts(mount, exports)
+    assert (exports / "registry" / "SYSTEM").is_file()
+    assert (exports / "registry" / "SYSTEM.LOG").is_file()
+
+
+def test_clean_hive_with_no_logs_still_copies_cleanly(tmp_path):
+    """Boxes that were cleanly shut down have no LOG files. The extractor
+    must not produce errors — missing logs are the normal case."""
+    mount = tmp_path / "mnt"
+    _write(mount / "Windows" / "System32" / "config" / "SYSTEM")
+    # No .LOG / .LOG1 / .LOG2 present at all
+
+    exports = tmp_path / "exports"
+    out = sk.extract_windows_artifacts(mount, exports)
+    assert out.get("registry_hives") == 1
+    assert (exports / "registry" / "SYSTEM").is_file()
+    # No spurious log files created
+    assert not (exports / "registry" / "SYSTEM.LOG1").exists()
+
+
 def test_skips_unreadable_directories(tmp_path, monkeypatch):
     """Don't crash if a child iterdir raises — should just skip."""
     mount = tmp_path / "mnt"

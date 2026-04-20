@@ -230,6 +230,39 @@ def _resolve_ci(root: Path, *segments: str) -> Path | None:
     return cur
 
 
+# Registry transaction-log suffixes. On Vista+ the kernel maintains
+# HIVE.LOG1 / HIVE.LOG2 dual logs; older Windows (XP/2003) uses a
+# single HIVE.LOG. A hive that was in use at image time is "dirty" —
+# EZ Tools' AmcacheParser / AppCompatCacheParser / RECmd refuse to
+# parse it without the matching LOG files sitting next to it. Copying
+# the logs turns a "hive is dirty and no transaction logs were found"
+# abort into a successful parse (SRL-2018 wkstn-01 + base-file were
+# both live-imaged and both previously failed for this reason).
+_HIVE_LOG_SUFFIXES: tuple[str, ...] = (".LOG", ".LOG1", ".LOG2")
+
+
+def _copy_hive_with_logs(src_hive: Path, dst_hive: Path) -> bool:
+    """Copy a registry hive and any sibling transaction-log files.
+
+    `src_hive.parent` is scanned (case-insensitively) for every
+    `<hive_name><suffix>` in `_HIVE_LOG_SUFFIXES`. Each found file is
+    copied to `dst_hive.parent / (dst_hive.name + suffix)` so that when
+    the destination is later renamed (e.g. NTUSER.DAT → NTUSER-alice.DAT)
+    the logs follow the rename. Returns True iff the hive copy
+    succeeded; log-copy failures are silent (missing logs are normal
+    for cleanly-shutdown boxes)."""
+    ok = _sudo_cp(src_hive, dst_hive)
+    if not ok:
+        return False
+    src_name = src_hive.name
+    parent = src_hive.parent
+    for suffix in _HIVE_LOG_SUFFIXES:
+        log_src = _child_ci(parent, src_name + suffix)
+        if log_src and log_src.is_file():
+            _sudo_cp(log_src, dst_hive.parent / (dst_hive.name + suffix))
+    return True
+
+
 def extract_windows_artifacts(mount_point: Path, exports_dir: Path) -> dict:
     """Copy known Windows forensic artifacts from a read-only NTFS mount
     into a structured exports directory ready for WindowsArtifactAgent.
@@ -257,14 +290,19 @@ def extract_windows_artifacts(mount_point: Path, exports_dir: Path) -> dict:
         for hive_name in ("SYSTEM", "SOFTWARE", "SECURITY", "SAM", "DEFAULT"):
             src = _child_ci(config, hive_name)
             if src and src.is_file():
-                _sudo_cp(src, reg_dir / hive_name)
-        out["registry_hives"] = sum(1 for _ in reg_dir.iterdir() if _.is_file())
+                _copy_hive_with_logs(src, reg_dir / hive_name)
+        # Only count the hives themselves, not the LOG siblings, so the
+        # return value remains comparable across clean / dirty cases.
+        out["registry_hives"] = sum(
+            1 for p in reg_dir.iterdir()
+            if p.is_file() and not any(
+                p.name.upper().endswith(s) for s in _HIVE_LOG_SUFFIXES))
 
     # Amcache.hve — Win7+ only, lives at <win>/AppCompat/Programs/Amcache.hve
     amcache = _resolve_ci(win_root, "AppCompat", "Programs", "Amcache.hve") if win_root else None
     if amcache and amcache.is_file():
         reg_dir.mkdir(parents=True, exist_ok=True)
-        if _sudo_cp(amcache, reg_dir / "Amcache.hve"):
+        if _copy_hive_with_logs(amcache, reg_dir / "Amcache.hve"):
             out["amcache"] = 1
 
     # Prefetch — <win>/Prefetch/*.pf (both XP and post-XP, disabled by default on servers)
@@ -338,7 +376,8 @@ def extract_windows_artifacts(mount_point: Path, exports_dir: Path) -> dict:
                 continue
             ntuser = _child_ci(user_dir, "NTUSER.DAT")
             if ntuser and ntuser.is_file():
-                if _sudo_cp(ntuser, reg_dir / f"NTUSER-{user_dir.name}.DAT"):
+                if _copy_hive_with_logs(
+                        ntuser, reg_dir / f"NTUSER-{user_dir.name}.DAT"):
                     n_ntuser += 1
             # PST hunt — try each of the three known Outlook data paths
             outlook_dirs = [
