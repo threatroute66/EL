@@ -12,7 +12,7 @@ from pathlib import Path
 from el.agents.base import Agent, AgentContext
 from el.evidence.graph import open_graph
 from el.schemas.finding import Finding
-from el.skills import memory_baseliner, process_profile, vol3
+from el.skills import memory_baseliner, netscan_triage, process_profile, vol3
 
 
 SUSPICIOUS_PARENTS = {
@@ -142,6 +142,15 @@ class MemoryForensicatorAgent(Agent):
             out.extend(self._hunt_evil_process_matrix(
                 ctx, runs["windows.pslist.PsList"],
                 runs.get("windows.psscan.PsScan")))
+
+        # PR-C: netscan beacon + lateral-admin-port triage. vol3 netscan
+        # survives the Win10 EPROCESS/tcpip symbol-mismatch that takes
+        # out netstat, so it's frequently the only network visibility
+        # available on a memory capture. Turn clusters of outbound
+        # connections into hypothesis-lifting findings.
+        if family == "windows" and "windows.netscan.NetScan" in runs:
+            out.extend(self._netscan_triage(
+                ctx, runs["windows.netscan.NetScan"]))
 
         baseline_path = (ctx.shared.get("memory_baseline")
                           or ctx.shared.get("memory_baseline_json"))
@@ -460,6 +469,67 @@ class MemoryForensicatorAgent(Agent):
                        f"{a.details}{source_note}"),
                 evidence=[ev],
                 hypotheses_supported=a.hypotheses,
+            )))
+        return out
+
+    def _netscan_triage(self, ctx: AgentContext,
+                         run: vol3.PluginRun) -> list[Finding]:
+        """PR-C: promote netscan row clusters into Findings.
+
+        Two detectors from `el.skills.netscan_triage`:
+          - repeat-endpoint beacon → H_C2_BEACONING
+          - lateral admin-port session → H_LATERAL_MOVEMENT
+
+        Confidence ladder:
+          - Beacon with ≥10 hits to a single (addr, port) → high
+          - Beacon with ≥4 hits → medium
+          - Lateral with at least one ESTABLISHED session → high
+          - Lateral with only CLOSED sockets → medium
+        """
+        out: list[Finding] = []
+        rows = [r for r in run.rows if isinstance(r, dict)]
+        if not rows:
+            return out
+
+        beacons = netscan_triage.detect_repeat_endpoint_beacon(rows)
+        laterals = netscan_triage.detect_lateral_admin_port_session(rows)
+        if not beacons and not laterals:
+            return out
+
+        ev = run.as_evidence({
+            "phase": "netscan_triage",
+            "beacon_count": len(beacons),
+            "lateral_count": len(laterals),
+        })
+
+        for b in beacons[:10]:  # cap to avoid report spam
+            confidence = "high" if b.count >= 10 else "medium"
+            states = ", ".join(f"{k or '?'}={v}" for k, v in b.states.items())
+            out.append(self.emit(ctx, Finding(
+                case_id=ctx.case_id, agent=self.name, confidence=confidence,
+                claim=(f"Netscan beacon pattern: {b.count} connection(s) from "
+                       f"this host to {b.foreign_addr}:{b.foreign_port} "
+                       f"({b.proto}; states: {states}). "
+                       f"Repeated contact with the same (IP, port) is the "
+                       f"signature shape of periodic C2 beaconing."),
+                evidence=[ev],
+                hypotheses_supported=["H_C2_BEACONING"],
+            )))
+
+        for l in laterals[:10]:
+            confidence = "high" if l.established else "medium"
+            states = ", ".join(f"{k or '?'}={v}" for k, v in l.states.items())
+            out.append(self.emit(ctx, Finding(
+                case_id=ctx.case_id, agent=self.name, confidence=confidence,
+                claim=(f"Netscan lateral-admin-port session: "
+                       f"{l.count} connection(s) from this host to "
+                       f"{l.foreign_addr}:{l.foreign_port} "
+                       f"({l.service}; {l.proto}; states: {states}; "
+                       f"established={l.established}). "
+                       f"Outbound traffic to an admin / remote-exec port is "
+                       f"a Hunt-Evil lateral-movement signature."),
+                evidence=[ev],
+                hypotheses_supported=["H_LATERAL_MOVEMENT"],
             )))
         return out
 
