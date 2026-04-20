@@ -128,9 +128,17 @@ def parse_prefetch(csv_path: Path) -> list[ExecutionHit]:
 def parse_amcache(csv_path: Path) -> list[ExecutionHit]:
     out: list[ExecutionHit] = []
     for r in _read_csv(csv_path):
-        # UnassociatedFileEntries: LowerCaseLongPath is the canonical path.
-        # Other Amcache CSV flavours fall back to Name / LongPath.
+        # Column name varies across AmcacheParser versions + Amcache.hve
+        # flavours:
+        #   * Older AssociatedFileEntries: LowerCaseLongPath
+        #   * Newer + UnassociatedFileEntries: FullPath
+        #   * Some legacy: LongPath / Name
+        # On modern dirty-hive-recovered Amcaches (SRL-2018 base-file +
+        # dmz-ftp) only FullPath is populated; missing that column meant
+        # every row dropped to path="" and Amcache contributed 0 hits
+        # despite 30+ entries being present.
         path = (r.get("LowerCaseLongPath")
+                or r.get("FullPath")
                 or r.get("LongPath") or r.get("Name") or "")
         if not path:
             continue

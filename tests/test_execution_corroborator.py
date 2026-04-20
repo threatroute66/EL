@@ -113,6 +113,40 @@ def test_user_writable_path_detection():
         "C:\\Windows\\System32\\cmd.exe")
 
 
+def test_amcache_unassociated_fullpath_column_parsed(tmp_path):
+    """Real EZ Tools AmcacheParser output for UnassociatedFileEntries
+    uses `FullPath` (capital F) — not LowerCaseLongPath, not LongPath,
+    not Name. Before the fix, dmz-ftp and base-file parsed their
+    Amcache hives successfully (30-519 entries) but every row dropped
+    here because parse_amcache looked for the wrong column and the
+    corroborator reported "1 source (shimcache)" with amcache silently
+    contributing zero hits."""
+    csv_path = tmp_path / "20260420203903_Amcache_UnassociatedFileEntries.csv"
+    # Exact column layout observed on srl-dmz-ftp-disk (partial)
+    with csv_path.open("w", newline="") as f:
+        w = csv.writer(f)
+        w.writerow(["ProgramName", "ProgramID", "VolumeID",
+                    "FileID", "FileIDLastWriteTimestamp", "SHA1",
+                    "FullPath", "FileExtension"])
+        w.writerow(["Unassociated", "", "vol-1", "fid-1",
+                    "2018-03-14 14:01:17", "deadbeef",
+                    "C:\\Program Files\\VMware\\vmtoolsd.exe", ".exe"])
+        w.writerow(["Unassociated", "", "vol-1", "fid-2",
+                    "2018-04-01 12:00:00", "cafebabe",
+                    "C:\\Users\\alice\\AppData\\Local\\Temp\\dropper.exe",
+                    ".exe"])
+
+    hits = xc.parse_amcache(csv_path)
+    assert len(hits) == 2, (
+        f"parse_amcache dropped rows because FullPath fallback was "
+        f"missing; got {len(hits)} hit(s) instead of 2")
+    names = {h.name_lc for h in hits}
+    assert "vmtoolsd.exe" in names
+    assert "dropper.exe" in names
+    # Confirm SHA1 still extracted from its expected column
+    assert any(h.extra.get("SHA1") == "deadbeef" for h in hits)
+
+
 def test_userassist_ignores_non_exe_rows(tmp_path):
     """CLSIDs and shortcuts sometimes appear in UserAssist — skip unless
     ProgramName ends with .exe."""
