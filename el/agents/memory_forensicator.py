@@ -130,12 +130,18 @@ class MemoryForensicatorAgent(Agent):
 
         if family == "windows" and "windows.pslist.PsList" in runs and runs["windows.pslist.PsList"].rows:
             out.extend(self._process_anomalies(ctx, runs["windows.pslist.PsList"]))
-            # PR-H: Hunt-Evil "Know Normal" expected-profile matrix
-            # (parent + count checks for the 12 core Windows processes).
-            # Orthogonal to _process_anomalies (which checks orphans +
-            # short-lived) — every anomaly class fires its own finding.
+        # PR-H: Hunt-Evil "Know Normal" expected-profile matrix
+        # (parent + count checks for the 12 core Windows processes).
+        # Orthogonal to _process_anomalies (which checks orphans +
+        # short-lived) — every anomaly class fires its own finding.
+        # Fallback: on Win10/11 builds where vol3 has an EPROCESS symbol
+        # mismatch, pslist returns 0 rows but psscan (pool-tag scan) still
+        # works. Pass both — the matrix uses psscan rows filtered to
+        # ExitTime=None when pslist is empty.
+        if family == "windows" and "windows.pslist.PsList" in runs:
             out.extend(self._hunt_evil_process_matrix(
-                ctx, runs["windows.pslist.PsList"]))
+                ctx, runs["windows.pslist.PsList"],
+                runs.get("windows.psscan.PsScan")))
 
         baseline_path = (ctx.shared.get("memory_baseline")
                           or ctx.shared.get("memory_baseline_json"))
@@ -388,14 +394,37 @@ class MemoryForensicatorAgent(Agent):
         return out
 
     def _hunt_evil_process_matrix(self, ctx: AgentContext,
-                                    run: vol3.PluginRun) -> list[Finding]:
+                                    pslist_run: vol3.PluginRun,
+                                    psscan_run: vol3.PluginRun | None = None,
+                                    ) -> list[Finding]:
         """PR-H: per Hunt Evil page 1, check the 12 core Windows processes
         against their expected (parent, count) profile. Emits one Finding
         per anomaly class, with confidence escalated for lsass.exe / core
         singletons because a masquerade there is unambiguous.
+
+        PR-B (SRL-2018 shakedown): on images where vol3 can't resolve the
+        EPROCESS symbols (common on Win10 1709+/Win11 with no matching
+        ISF), pslist returns 0 rows but psscan's pool-tag scan still
+        works. When that happens, fall back to psscan filtered on
+        ExitTime=None (still-running only — psscan otherwise includes
+        exited processes that would falsify count checks), and cap
+        confidence at medium to reflect the weaker data source.
         """
         out: list[Finding] = []
-        rows = [r for r in run.rows if isinstance(r, dict)]
+        rows = [r for r in pslist_run.rows if isinstance(r, dict)]
+        source_run = pslist_run
+        source_note = ""
+
+        if not rows and psscan_run is not None:
+            # Fallback. psscan includes exited procs → filter them out
+            # so count checks don't get poisoned by pool-resident corpses.
+            rows = [r for r in psscan_run.rows
+                    if isinstance(r, dict) and r.get("ExitTime") in (None, "")]
+            if rows:
+                source_run = psscan_run
+                source_note = (" [data source: windows.psscan.PsScan + ExitTime=None; "
+                               "pslist returned 0 rows due to Vol3 symbol mismatch]")
+
         if not rows:
             return out
 
@@ -403,8 +432,10 @@ class MemoryForensicatorAgent(Agent):
         if not anomalies:
             return out
 
-        ev = run.as_evidence({"phase": "hunt_evil_process_matrix",
-                              "anomaly_count": len(anomalies)})
+        ev = source_run.as_evidence({"phase": "hunt_evil_process_matrix",
+                                      "source": source_run.plugin,
+                                      "anomaly_count": len(anomalies)})
+        psscan_fallback = source_run is not pslist_run
         for a in anomalies:
             # Credential-access core processes (lsass/wininit/services/csrss)
             # masqueraded or duplicated is an unambiguous high-confidence
@@ -420,11 +451,13 @@ class MemoryForensicatorAgent(Agent):
                 confidence = "medium"
             else:
                 confidence = "medium"
+            if psscan_fallback and confidence == "high":
+                confidence = "medium"
 
             out.append(self.emit(ctx, Finding(
                 case_id=ctx.case_id, agent=self.name, confidence=confidence,
                 claim=(f"Process-tree anomaly [{a.image_name}/{a.reason}]: "
-                       f"{a.details}"),
+                       f"{a.details}{source_note}"),
                 evidence=[ev],
                 hypotheses_supported=a.hypotheses,
             )))

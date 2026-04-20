@@ -186,3 +186,130 @@ def test_memory_forensicator_emits_hunt_evil_findings(tmp_path, monkeypatch):
     assert lsass
     assert lsass[0].confidence == "high"
     assert "H_CREDENTIAL_ACCESS" in lsass[0].hypotheses_supported
+
+
+# ---------------------------------------------------------------------------
+# PR-B: psscan fallback when pslist symbol-mismatches to 0 rows
+# (SRL-2018 shakedown: Win10 1709+ memory images on vol3-2.27 produce
+#  pslist=0 / psscan≈100+. Whole Hunt-Evil matrix used to go silent; the
+#  fallback path surfaces real anomalies at capped-medium confidence.)
+# ---------------------------------------------------------------------------
+
+
+def test_psscan_fallback_used_when_pslist_empty(tmp_path, monkeypatch):
+    from el.agents.base import AgentContext
+    from el.agents.memory_forensicator import MemoryForensicatorAgent
+    from el.evidence import intake as intake_mod
+    from el.evidence.ledger import open_ledger
+    from el.skills.vol3 import PluginRun
+
+    monkeypatch.setattr(intake_mod, "CASE_ROOT", tmp_path / "cases")
+    src = tmp_path / "x.bin"; src.write_bytes(b"x")
+    m = intake_mod.intake(src, case_id="t-psscan-fallback")
+    with open_ledger(m.case_dir):
+        pass
+    ctx = AgentContext(case_id="t-psscan-fallback", case_dir=m.case_dir,
+                       input_path=src, manifest=m.__dict__)
+
+    # pslist: empty (vol3 symbol mismatch)
+    (tmp_path / "pslist.json").write_text("[]")
+    pslist = PluginRun(
+        plugin="windows.pslist.PsList", image=src, rc=0,
+        stdout_path=tmp_path / "pslist.json",
+        stderr_path=tmp_path / "pslist.stderr",
+        rows=[], command=["vol"], version="2.27.0",
+    )
+    # psscan: clean Win10 tree + a masqueraded lsass.exe (parent=explorer)
+    psscan_rows = _clean_win10() + [_row("lsass.exe", 6666, 1500)]
+    (tmp_path / "psscan.json").write_text("[]")
+    psscan = PluginRun(
+        plugin="windows.psscan.PsScan", image=src, rc=0,
+        stdout_path=tmp_path / "psscan.json",
+        stderr_path=tmp_path / "psscan.stderr",
+        rows=psscan_rows, command=["vol"], version="2.27.0",
+    )
+    findings = MemoryForensicatorAgent()._hunt_evil_process_matrix(
+        ctx, pslist, psscan)
+    assert findings, "expected psscan fallback to surface anomalies"
+    lsass = [f for f in findings if "lsass.exe" in f.claim.lower()]
+    assert lsass
+    # Confidence capped to medium because psscan is weaker than pslist
+    assert lsass[0].confidence == "medium"
+    assert "psscan" in lsass[0].claim.lower()
+
+
+def test_psscan_fallback_filters_exited_processes():
+    """psscan-pool-scan includes exited processes; they would otherwise
+    inflate count checks (e.g. smss.exe count_high false positive).
+    Fallback must filter ExitTime!=None before handing rows to analyze().
+    """
+    from el.agents.base import AgentContext
+    from el.agents.memory_forensicator import MemoryForensicatorAgent
+    from el.skills.vol3 import PluginRun
+    import tempfile
+    from pathlib import Path
+
+    # Build: clean tree (all ExitTime=None) + two EXITED smss.exe corpses
+    # that psscan resurrects from pool. Real pslist would omit them.
+    tmp = Path(tempfile.mkdtemp())
+    live = _clean_win10()
+    dead_smss_1 = _row("smss.exe", 5001, 4)
+    dead_smss_1["ExitTime"] = "2023-01-01T00:00:10+00:00"
+    dead_smss_2 = _row("smss.exe", 5002, 4)
+    dead_smss_2["ExitTime"] = "2023-01-01T00:00:12+00:00"
+
+    src = tmp / "x.bin"; src.write_bytes(b"x")
+    from el.evidence import intake as intake_mod
+    from el.evidence.ledger import open_ledger
+    intake_mod.CASE_ROOT = tmp / "cases"
+    m = intake_mod.intake(src, case_id="t-psscan-filter-exited")
+    with open_ledger(m.case_dir):
+        pass
+    ctx = AgentContext(case_id="t-psscan-filter-exited", case_dir=m.case_dir,
+                       input_path=src, manifest=m.__dict__)
+
+    (tmp / "a").write_text("[]"); (tmp / "c").write_text("[]")
+    pslist = PluginRun(plugin="windows.pslist.PsList", image=src, rc=0,
+                       stdout_path=tmp / "a", stderr_path=tmp / "b",
+                       rows=[], command=["vol"], version="2.27.0")
+    psscan = PluginRun(plugin="windows.psscan.PsScan", image=src, rc=0,
+                       stdout_path=tmp / "c", stderr_path=tmp / "d",
+                       rows=live + [dead_smss_1, dead_smss_2],
+                       command=["vol"], version="2.27.0")
+    findings = MemoryForensicatorAgent()._hunt_evil_process_matrix(
+        ctx, pslist, psscan)
+    # Should NOT flag smss.exe count_high: 2 corpses filtered out, only
+    # the 1 live smss.exe remains → count satisfies exact_count=1.
+    smss_count_high = [f for f in findings
+                       if "smss.exe" in f.claim.lower() and "count_high" in f.claim]
+    assert not smss_count_high, (
+        "smss.exe exited corpses leaked through psscan fallback; "
+        f"got claims: {[f.claim for f in findings]}")
+
+
+def test_both_empty_produces_no_findings(tmp_path, monkeypatch):
+    """If BOTH pslist and psscan are empty (vol3 totally broken on this
+    image), matrix must silently produce no findings — not raise."""
+    from el.agents.base import AgentContext
+    from el.agents.memory_forensicator import MemoryForensicatorAgent
+    from el.evidence import intake as intake_mod
+    from el.evidence.ledger import open_ledger
+    from el.skills.vol3 import PluginRun
+
+    monkeypatch.setattr(intake_mod, "CASE_ROOT", tmp_path / "cases")
+    src = tmp_path / "x.bin"; src.write_bytes(b"x")
+    m = intake_mod.intake(src, case_id="t-both-empty")
+    with open_ledger(m.case_dir):
+        pass
+    ctx = AgentContext(case_id="t-both-empty", case_dir=m.case_dir,
+                       input_path=src, manifest=m.__dict__)
+
+    def _empty(plugin):
+        return PluginRun(plugin=plugin, image=src, rc=0,
+                         stdout_path=tmp_path / f"{plugin}.json",
+                         stderr_path=tmp_path / f"{plugin}.stderr",
+                         rows=[], command=["vol"], version="2.27.0")
+
+    findings = MemoryForensicatorAgent()._hunt_evil_process_matrix(
+        ctx, _empty("windows.pslist.PsList"), _empty("windows.psscan.PsScan"))
+    assert findings == []
