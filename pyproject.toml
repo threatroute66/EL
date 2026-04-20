@@ -7,6 +7,8 @@ name = "el"
 version = "0.1.0"
 description = "EL — Edmond Locard. Multi-agent DFIR orchestrator for SANS SIFT."
 requires-python = ">=3.11"
+license = "AGPL-3.0-or-later"
+license-files = ["LICENSE"]
 dependencies = [
     "pydantic>=2.6",
     "kuzu>=0.4",

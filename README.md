@@ -350,4 +350,14 @@ no disk-side hypothesis scoring.
 
 ## License
 
-Not yet declared. If you intend to fork or contribute, open an issue first.
+EL is licensed under the **GNU Affero General Public License v3.0 or later**
+(AGPL-3.0-or-later). See [LICENSE](./LICENSE) for the full text.
+
+The AGPL extends the GPL's share-alike obligation to *network* use: anyone
+who modifies EL and runs the modified version as a service (including
+internal tooling exposed over a network) must make the corresponding
+source available to users of that service. Pure internal use without
+modification is fine; so is unmodified redistribution. If you want to
+embed EL in a closed commercial product or SaaS and cannot comply with
+the AGPL's source-disclosure terms, contact the maintainer to discuss
+a commercial license.
