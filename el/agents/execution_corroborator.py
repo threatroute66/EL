@@ -121,9 +121,16 @@ class ExecutionCorroboratorAgent(Agent):
             else:
                 confidence = "medium"
 
+            # Execution-corroborator's job is to say "this binary ran",
+            # not "this binary is commodity malware." Path classification
+            # still drives confidence tiering (above) and disk_anomaly
+            # carries the dropper signal independently; tagging
+            # H_OPPORTUNISTIC_COMMODITY here turned legitimate modern
+            # installers (Chrome, Teams, Dashlane, OneDrive — all in
+            # AppData by design) into 9+ × +3 commodity lifts that
+            # overran H_APT_ESPIONAGE on rd-01 (observed 26 vs 20 with
+            # masqueraded csrss from an admin share clearly present).
             hyps: list[str] = ["H_DISK_ARTIFACTS"]
-            if is_user_path:
-                hyps.append("H_OPPORTUNISTIC_COMMODITY")
             if name in ("mimikatz.exe", "sekurlsa.exe", "kiwi.exe",
                          "procdump.exe", "psexec.exe", "psexesvc.exe"):
                 hyps.extend(["H_CREDENTIAL_ACCESS", "H_LATERAL_MOVEMENT"])

@@ -159,9 +159,17 @@ def test_agent_high_confidence_on_user_writable_path(tmp_path, monkeypatch):
     findings = ExecutionCorroboratorAgent().run(ctx)
     dropper = [f for f in findings if "dropper.exe" in f.claim.lower()]
     assert dropper
+    # User-writable path still drives high-confidence tiering + the
+    # "User-writable path — dropper-shape" phrase in the claim…
     assert dropper[0].confidence == "high"
-    assert "H_OPPORTUNISTIC_COMMODITY" in dropper[0].hypotheses_supported
     assert "User-writable path" in dropper[0].claim
+    # …but the finding must NOT tag H_OPPORTUNISTIC_COMMODITY. This was
+    # the rd-01 scoring bug: Chrome/Teams/Dashlane/OneDrive all install
+    # to AppData (is_user_writable_path = True) and emitted +3 lifts
+    # each, surpassing H_APT_ESPIONAGE on a clearly APT-shaped case.
+    # Execution corroboration says "ran" — classification is left to
+    # malware_triage / threat_hunter / disk_anomaly.
+    assert "H_OPPORTUNISTIC_COMMODITY" not in dropper[0].hypotheses_supported
 
 
 def test_agent_skips_noisy_systemxexe_in_system32(tmp_path, monkeypatch):
