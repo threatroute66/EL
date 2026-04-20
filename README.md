@@ -129,6 +129,17 @@ windows-artifacts, yara-hunting).
 
 ## Install
 
+### Host requirements
+
+| Resource | Minimum | Recommended | Driver |
+|---|---|---|---|
+| RAM | 8 GB | **16 GB** | DC-class `evtx_parsed.csv` is 6+ GB / 5 M+ rows; `iter_events` materialises it into a Python list. Runs with <8 GB RAM will OOM on domain-controller / long-running-server images. 16 GB also lets disk + memory investigations run in parallel and leaves headroom for vol3 on 8 GB memory captures |
+| vCPU | 2 | **4** | EvtxECmd, AmcacheParser, RECmd and bulk_extractor are multi-threaded; vol3 runs plugins sequentially but the agent launches several per case |
+| Disk | 100 GB | **300–500 GB** | Each DC / RD case produces 6–10 GB of exports before sealing; sealed archives compound. 100 GB forces cleanup cycles during a corpus run |
+| Base OS | — | SANS SIFT Workstation (Ubuntu 22.04) | Sleuth Kit, Plaso, EZ Tools runtime, dotnet, bulk_extractor already present |
+
+### Install steps
+
 ```bash
 git clone https://github.com/threatroute66/EL.git /opt/EL
 cd /opt/EL
@@ -146,10 +157,8 @@ cd /opt/EL
 
 Re-verify anytime with `./install.sh --doctor` or `make doctor`.
 
-EL assumes a **SANS SIFT Workstation** base (Sleuth Kit, Plaso, EZ Tools,
-dotnet, bulk_extractor already present). Optional tools we detect but
-don't install: Memory Baseliner, zeek, suricata, tshark, PECmd. See
-`provisioning/optional-tools.txt`.
+Optional tools we detect but don't install: Memory Baseliner, zeek,
+suricata, tshark, PECmd. See `provisioning/optional-tools.txt`.
 
 ---
 
