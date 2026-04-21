@@ -239,13 +239,18 @@ def _scan_text(text: str, haystack_label: str,
 
 def iter_4104_rows(csv_path: Path):
     """Stream rows from EvtxECmd CSV where EventId == 4104."""
+    yield from iter_eid_rows(csv_path, {4104})
+
+
+def iter_eid_rows(csv_path: Path, eids: set[int]):
+    """Stream rows from EvtxECmd CSV whose EventId is in the allow set."""
     with csv_path.open(encoding="utf-8", errors="ignore", newline="") as f:
         for row in csv.DictReader(f):
             try:
                 eid = int((row.get("EventId") or "").strip())
             except ValueError:
                 continue
-            if eid == 4104:
+            if eid in eids:
                 yield row
 
 
@@ -334,8 +339,150 @@ def hypotheses_for(family: str) -> list[str]:
     return list(_FAMILY_HYPOTHESES.get(family, []))
 
 
+def run_on_eid(csv_path: Path, eids: set[int]) -> list[PSHit]:
+    """Like `run()` but configurable EID set. Used for EID 4103 (module
+    logging) which puts the pipeline-invocation text in PayloadData fields
+    in the same shape as 4104 ScriptBlockLogging."""
+    from collections import defaultdict
+    family_counter: dict[str, int] = defaultdict(int)
+    family_times: dict[str, list[str]] = defaultdict(list)
+    family_computers: dict[str, Counter] = defaultdict(Counter)
+    family_users: dict[str, Counter] = defaultdict(Counter)
+    family_samples: dict[str, list[str]] = defaultdict(list)
+    family_pattern: dict[str, str] = {}
+    family_decoded: dict[str, list[str]] = defaultdict(list)
+
+    if not Path(csv_path).is_file():
+        return []
+
+    for row in iter_eid_rows(Path(csv_path), eids):
+        text = _extract_script_block(row)
+        if not text:
+            continue
+        per_family: dict[str, list[tuple[str, str]]] = \
+            {k: [] for k in _PATTERNS}
+        _scan_text(text, "raw", per_family)
+        decoded_variants = _attempt_decode(text)
+        for decoded in decoded_variants:
+            _scan_text(decoded, "decoded", per_family)
+
+        for family, matches in per_family.items():
+            if not matches:
+                continue
+            family_counter[family] += 1
+            ts = row.get("TimeCreated") or ""
+            if ts:
+                family_times[family].append(ts)
+            comp = (row.get("Computer") or "").strip()
+            if comp:
+                family_computers[family][comp] += 1
+            user = (row.get("UserName") or "").strip()
+            if user:
+                family_users[family][user] += 1
+            if not family_pattern.get(family):
+                family_pattern[family] = matches[0][0]
+            if len(family_samples[family]) < 3:
+                family_samples[family].append(text[:300])
+            if (decoded_variants
+                    and any(lbl == "decoded" for _, lbl in matches)
+                    and len(family_decoded[family]) < 3):
+                for d in decoded_variants:
+                    if re.search(_PATTERNS[family][0], d, re.IGNORECASE):
+                        family_decoded[family].append(d[:300])
+                        break
+
+    return _build_pshits(family_counter, family_times, family_computers,
+                           family_users, family_samples, family_pattern,
+                           family_decoded)
+
+
+def run_on_text_file(text_path: Path) -> list[PSHit]:
+    """Scan a standalone PowerShell text file (PSReadline history
+    or a transcription log). Each file-scan contributes a single
+    'virtual event' per family match — we can't reconstruct per-
+    invocation counts the way we do from EVTX, so we collapse into
+    one hit per family per file."""
+    from collections import defaultdict
+
+    family_counter: dict[str, int] = defaultdict(int)
+    family_samples: dict[str, list[str]] = defaultdict(list)
+    family_pattern: dict[str, str] = {}
+    family_decoded: dict[str, list[str]] = defaultdict(list)
+    family_times: dict[str, list[str]] = defaultdict(list)
+    family_computers: dict[str, Counter] = defaultdict(Counter)
+    family_users: dict[str, Counter] = defaultdict(Counter)
+
+    p = Path(text_path)
+    if not p.is_file():
+        return []
+    try:
+        text = p.read_text(encoding="utf-8", errors="ignore")
+    except OSError:
+        return []
+
+    # Scan each non-empty line independently so we count matching
+    # commands (what analysts want to know) instead of matching files.
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        per_family: dict[str, list[tuple[str, str]]] = \
+            {k: [] for k in _PATTERNS}
+        _scan_text(line, "raw", per_family)
+        decoded_variants = _attempt_decode(line)
+        for decoded in decoded_variants:
+            _scan_text(decoded, "decoded", per_family)
+        for family, matches in per_family.items():
+            if not matches:
+                continue
+            family_counter[family] += 1
+            if not family_pattern.get(family):
+                family_pattern[family] = matches[0][0]
+            if len(family_samples[family]) < 3:
+                family_samples[family].append(line[:300])
+            if (decoded_variants
+                    and any(lbl == "decoded" for _, lbl in matches)
+                    and len(family_decoded[family]) < 3):
+                for d in decoded_variants:
+                    if re.search(_PATTERNS[family][0], d, re.IGNORECASE):
+                        family_decoded[family].append(d[:300])
+                        break
+
+    return _build_pshits(family_counter, family_times, family_computers,
+                           family_users, family_samples, family_pattern,
+                           family_decoded)
+
+
+def _build_pshits(counter, times, computers, users,
+                    samples, patterns, decoded) -> list[PSHit]:
+    """Shared aggregator used by run(), run_on_eid(), run_on_text_file()."""
+    out: list[PSHit] = []
+    for family, count in counter.items():
+        ts = sorted(times.get(family, []))
+        out.append(PSHit(
+            family=family,
+            matched_pattern=patterns.get(family, ""),
+            event_count=count,
+            sample_text=samples[family][0] if samples[family] else "",
+            first_seen=ts[0] if ts else "",
+            last_seen=ts[-1] if ts else "",
+            top_computers=computers[family].most_common(5)
+                           if family in computers else [],
+            top_users=users[family].most_common(5)
+                       if family in users else [],
+            decoded_samples=decoded.get(family, []),
+            attack=_FAMILY_ATTACK.get(family, []),
+        ))
+    priority = {"mimikatz": 0, "c2_framework": 1, "amsi_bypass": 2,
+                "encoded_command": 3, "download_cradle": 4,
+                "persistence": 5, "obfuscation": 6}
+    out.sort(key=lambda h: priority.get(h.family, 99))
+    return out
+
+
 __all__ = [
     "PSHit",
-    "iter_4104_rows", "run", "hypotheses_for",
+    "iter_4104_rows", "iter_eid_rows", "run", "run_on_eid",
+    "run_on_text_file", "hypotheses_for",
     "_PATTERNS", "_FAMILY_HYPOTHESES",
 ]

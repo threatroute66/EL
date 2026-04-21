@@ -477,6 +477,44 @@ def extract_windows_artifacts(mount_point: Path, exports_dir: Path) -> dict:
                             out["anydesk_trace_files"] = (
                                 out.get("anydesk_trace_files", 0) + 1
                             )
+
+            # PowerShell breadth: PSReadline console history.
+            # File lists every command the user typed at a PS prompt —
+            # persists across sessions, defeats `$HistoryPath = $null`
+            # in-process clearing. Same fallback order as the rest:
+            # Win7+ AppData\Roaming path first.
+            ps_history = _resolve_ci(
+                user_dir, "AppData", "Roaming", "Microsoft", "Windows",
+                "PowerShell", "PSReadLine", "ConsoleHost_history.txt")
+            if ps_history and ps_history.is_file():
+                ps_dir = exports_dir / "powershell" / "psreadline"
+                ps_dir.mkdir(parents=True, exist_ok=True)
+                if _sudo_cp(ps_history,
+                            ps_dir / f"{user_dir.name}--ConsoleHost_history.txt"):
+                    out["psreadline_history_files"] = (
+                        out.get("psreadline_history_files", 0) + 1
+                    )
+
+            # PowerShell transcription logs (when enabled via
+            # Start-Transcript or GPO). Default path is Documents\;
+            # some orgs redirect via OutputDirectory registry setting
+            # to \\fileserver\share\PSTranscripts — we only pull the
+            # local default here.
+            docs_root = _child_ci(user_dir, "Documents")
+            if docs_root and docs_root.is_dir():
+                ts_dir = exports_dir / "powershell" / "transcripts"
+                for entry in docs_root.iterdir():
+                    if not entry.is_file():
+                        continue
+                    name_lc = entry.name.lower()
+                    if (name_lc.startswith("powershell_transcript")
+                            and name_lc.endswith(".txt")):
+                        ts_dir.mkdir(parents=True, exist_ok=True)
+                        if _sudo_cp(entry, ts_dir /
+                                    f"{user_dir.name}--{entry.name}"):
+                            out["ps_transcript_files"] = (
+                                out.get("ps_transcript_files", 0) + 1
+                            )
         if n_ntuser:
             out["ntuser_hives"] = n_ntuser
         if n_pst:

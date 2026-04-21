@@ -61,6 +61,47 @@ class PowerShellAnalystAgent(Agent):
             ))]
 
         csv_sha = hashlib.sha256(csv_path.read_bytes()).hexdigest()
+
+        # EID 4103 (module logging) — same shape in EvtxECmd, different
+        # EID. Scan with the same pattern library so pipeline-parameter
+        # audit entries don't fall between detectors.
+        try:
+            hits_4103 = pst.run_on_eid(csv_path, {4103})
+        except Exception:
+            hits_4103 = []
+        for h in hits_4103:
+            # Annotate that the family source is 4103 — keep in its own
+            # per-family bucket so it doesn't inflate the 4104 counts.
+            h.matched_pattern = f"[EID 4103] {h.matched_pattern}"
+        # Deduplicate by family so we don't emit two findings for the
+        # same family on the same case — merge by summing event counts.
+        by_family = {h.family: h for h in hits}
+        for h in hits_4103:
+            if h.family in by_family:
+                by_family[h.family].event_count += h.event_count
+            else:
+                by_family[h.family] = h
+        hits = list(by_family.values())
+
+        # PSReadline + transcription text files under
+        # exports/windows-artifacts/powershell/ get scanned with the
+        # same library. One per-file Finding summary set per family.
+        ps_text_root = (ctx.case_dir / "exports" / "windows-artifacts"
+                         / "powershell")
+        text_hits_total: dict[str, int] = {}
+        if ps_text_root.is_dir():
+            for text_file in sorted(ps_text_root.rglob("*.txt")):
+                file_hits = pst.run_on_text_file(text_file)
+                for th in file_hits:
+                    if th.family in by_family:
+                        by_family[th.family].event_count += th.event_count
+                    else:
+                        by_family[th.family] = th
+                    text_hits_total[th.family] = (
+                        text_hits_total.get(th.family, 0) + th.event_count
+                    )
+            hits = list(by_family.values())
+
         out: list[Finding] = []
         for h in hits:
             if h.family in _HIGH_FAMILIES:
