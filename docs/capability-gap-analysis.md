@@ -40,12 +40,23 @@ the wire layer; fires even when Windows auditing is disabled or
 cleared. Technique-to-hypothesis map lines up with PR-E so ACH sees
 cross-layer reinforcement.
 
-**3. M365 Unified Audit Log + Azure Sign-in Logs** — largest
-cloud gap. EL only does AWS CloudTrail. Identity is the modern
-breach surface; M365 UAL and Entra sign-in logs capture BEC,
-MFA-bypass, OAuth consent abuse, anomalous-geography auth. JSON
-ingestion, same shape as our existing `cloudtrail` skill. New
-`cloud_identity` agent or extension of `cloud_forensicator`.
+**3. M365 Unified Audit Log + Azure Sign-in Logs** — ✅ **SHIPPED.**
+`cloud_forensicator` now sniffs the input shape and dispatches across
+AWS CloudTrail (existing), Azure Entra sign-in logs, and M365 UAL.
+Two new skills:
+- `el.skills.azure_signin` — 4 detectors: sign-in brute / spray,
+  legacy-auth bypass (IMAP / POP3 / SMTP / EAS / older Office
+  clients — all MFA bypasses on success), Entra risk-classifier
+  trigger (`riskLevelAggregated=high` or `riskState=atRisk`),
+  impossible travel (same principal, two countries, 60-min window).
+- `el.skills.m365_audit` — 4 detectors: inbox-rule external forward
+  (BEC persistence; tenant-domain anchor supported), MailItemsAccessed
+  bulk (≥50 per user — post-compromise scraping), OAuth consent
+  grant (illicit-consent attack surface), UserLoginFailed burst with
+  brute / spray tiers matching PR-E.
+Tenant domains supplied via `ctx.shared["tenant_domains"]` for
+accurate external-forward detection. Silent-dispatch when input
+isn't a known cloud-log shape.
 
 **4. Windows Timeline (ActivitiesCache.db) + BAM/DAM** — two
 first-class user-activity artifacts already within
@@ -293,7 +304,7 @@ wraps `dotnet` for EZ Tools.
 |---|---|---|
 | 1 | ~~SIGMA rule ingestion~~ ✅ | Shipped; RC4 Kerberoasting starter rule validated against srl-dc-disk-r3 (124 hits matching credential_analyst) |
 | 1 | ~~Kerberos wire parsing~~ ✅ | Shipped; `kerberos_triage` skill + `network_analyst._run_kerberos_triage` with RC4 Kerberoasting + AS-REQ brute/spray + krbtgt-TGS detectors |
-| 1 | M365 UAL + Azure Sign-in | Biggest cloud blind spot; identity = modern breach vector |
+| 1 | ~~M365 UAL + Azure Sign-in~~ ✅ | Shipped; 4 sign-in detectors + 4 UAL detectors dispatched by content-sniff in `cloud_forensicator` |
 | 2 | ActivitiesCache.db + BAM/DAM | Trivial addition; high per-case signal |
 | 2 | PowerShell 4104 decoded | We see the count; we should see the content |
 | 2 | `capa` + `FLOSS` | ATT&CK on dumped binaries; replaces brittle fingerprint strings |
