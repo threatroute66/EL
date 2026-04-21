@@ -525,6 +525,34 @@ def extract_windows_artifacts(mount_point: Path, exports_dir: Path) -> dict:
     return out
 
 
+def mount_linux_ro(raw_image: Path, start_sector: int,
+                    mount_point: Path, sector_size: int = 512,
+                    timeout: int = 60) -> None:
+    """Loop-mount an ext2/ext3/ext4/xfs partition read-only. Accepts a
+    byte offset in sectors (from mmls) and the disk sector size.
+    Leaves the filesystem open for `extract_linux_artifacts`; caller
+    invokes `umount` when done.
+
+    ext-family filesystems auto-detect via blkid; for other Linux
+    filesystems the caller can pass `fstype` via kwargs once we need
+    that (e.g. xfs images).
+    """
+    mount_point = Path(mount_point)
+    mount_point.mkdir(parents=True, exist_ok=True)
+    offset = start_sector * sector_size
+    cmd = ["sudo", "mount", "-o",
+           f"ro,noexec,loop,offset={offset}",
+           str(raw_image), str(mount_point)]
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True,
+                            timeout=timeout)
+    except subprocess.TimeoutExpired as e:
+        raise SleuthkitError(f"mount timeout after {timeout}s") from e
+    if r.returncode != 0:
+        raise SleuthkitError(
+            f"Linux mount failed (rc={r.returncode}): {r.stderr[:500]}")
+
+
 def ewfumount(mount_point: Path, timeout: int = 30) -> None:
     """Unmount an ewfmount-mounted image. Idempotent — silent on already-unmounted.
     Also removes the (now-empty) mount directory."""

@@ -214,6 +214,12 @@ class Coordinator:
         # pool has anything to attribute.
         self._run_agent(MalwareTriageAgent(), ctx)
 
+        # If DiskForensicator extracted Linux artifacts (ext2/3/4), chain
+        # LinuxForensicatorAgent for the triage-detector sweep.
+        if ctx.shared.get("linux_artifacts_dir"):
+            from el.agents.linux_forensicator import LinuxForensicatorAgent
+            self._run_agent(LinuxForensicatorAgent(), ctx)
+
         # If the primary investigator extracted Windows artifacts (DiskForensicator
         # on an NTFS partition), chain WindowsArtifactAgent against them.
         if ctx.shared.get("artifacts_dir"):
