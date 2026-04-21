@@ -75,6 +75,10 @@ class WindowsArtifactAgent(Agent):
         # — both already extracted by DiskForensicator; consume them here.
         out.extend(self._bam_dam(ctx, root, analysis))
         out.extend(self._win_timeline(ctx, root, analysis))
+        # T3-3: remote-access tooling (TeamViewer + AnyDesk) — any
+        # inbound session from an unknown peer is high-signal even
+        # when the tool is legitimately installed.
+        out.extend(self._remote_access(ctx, root, analysis))
 
         if all(f.confidence == "insufficient" for f in out):
             out.append(self.emit(ctx, Finding(
@@ -248,6 +252,65 @@ class WindowsArtifactAgent(Agent):
                 evidence=[ev],
                 hypotheses_supported=["H_APT_ESPIONAGE",
                                        "H_PROCESS_INJECTION"],
+            )))
+        return out
+
+    def _remote_access(self, ctx, root, analysis):
+        """Scan extracted remote_access/ for TeamViewer + AnyDesk logs.
+        Inbound sessions always emit at high confidence (attacker-
+        invoked tools often produce no other artifact), outbound
+        AnyDesk at medium (legitimate admin use is common)."""
+        from el.schemas.finding import EvidenceItem
+        from el.skills import remote_access_apps as raa
+        import hashlib
+
+        ra_dir = _finddir(root, "remote_access")
+        if not ra_dir:
+            return []
+        hits = raa.run_all(ra_dir)
+        if not hits:
+            return []
+        # Build one shared evidence item hashing the whole dir
+        hasher = hashlib.sha256()
+        for p in sorted(ra_dir.rglob("*")):
+            if p.is_file():
+                try:
+                    hasher.update(p.read_bytes())
+                except OSError:
+                    continue
+        ev = EvidenceItem(
+            tool="el.remote_access_apps", version="0.1.0",
+            command=f"run_all({ra_dir.name})",
+            output_sha256=hasher.hexdigest(),
+            output_path=str(ra_dir),
+            extracted_facts={
+                "hit_count": len(hits),
+                "apps": sorted({hit.app for hit in hits}),
+            },
+        )
+        out = []
+        for h in hits:
+            # Inbound sessions are always high: an inbound TeamViewer
+            # session from an unknown peer is exactly the shape of
+            # attacker tooling, even on a box where TV is legitimately
+            # installed. Outbound AnyDesk at medium — admin use
+            # collides frequently with that pattern.
+            if h.technique == "outbound_session":
+                confidence = "medium"
+            else:
+                confidence = "high"
+            peers = ", ".join(
+                f"{peer} (×{count})" for peer, count in h.top_peers[:5])
+            out.append(self.emit(ctx, Finding(
+                case_id=ctx.case_id, agent=self.name, confidence=confidence,
+                claim=(f"Remote-access {h.app} {h.technique}: "
+                       f"{h.event_count} session(s) recorded; "
+                       f"first={h.first_seen or '?'}, "
+                       f"last={h.last_seen or '?'}. Top peers: {peers}."),
+                evidence=[ev],
+                hypotheses_supported=["H_C2_OR_REVERSE_SHELL",
+                                       "H_APT_ESPIONAGE",
+                                       "H_LATERAL_MOVEMENT"],
             )))
         return out
 

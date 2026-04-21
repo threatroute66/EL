@@ -347,6 +347,28 @@ def extract_windows_artifacts(mount_point: Path, exports_dir: Path) -> dict:
         if _sudo_cp(srudb, srum_dir / "SRUDB.dat"):
             out["srum"] = 1
 
+    # T3-3: TeamViewer — system-wide install, logs live in
+    # Program Files[ (x86)]\TeamViewer\. Connection log is
+    # connections_incoming.txt (inbound sessions) + TeamViewer*_Logfile.log.
+    teamviewer_dir = exports_dir / "remote_access" / "teamviewer"
+    for pf_name in ("Program Files", "Program Files (x86)"):
+        pf = _child_ci(mount_point, pf_name)
+        tv = _child_ci(pf, "TeamViewer") if pf else None
+        if not tv or not tv.is_dir():
+            continue
+        for entry in tv.iterdir():
+            if not entry.is_file():
+                continue
+            name_lc = entry.name.lower()
+            if (name_lc == "connections_incoming.txt"
+                    or (name_lc.startswith("teamviewer") and
+                        name_lc.endswith("_logfile.log"))):
+                teamviewer_dir.mkdir(parents=True, exist_ok=True)
+                if _sudo_cp(entry, teamviewer_dir / entry.name):
+                    out["teamviewer_log_files"] = (
+                        out.get("teamviewer_log_files", 0) + 1
+                    )
+
     # Per-user artifacts: NTUSER.DAT + Outlook PSTs + Firefox profiles.
     # Profile root:
     #   XP/2003: <mount>/Documents and Settings/<name>/...
@@ -440,6 +462,21 @@ def extract_windows_artifacts(mount_point: Path, exports_dir: Path) -> dict:
                                 out["activities_cache_files"] = (
                                     out.get("activities_cache_files", 0) + 1
                                 )
+            # T3-3: AnyDesk per-user connection traces. TeamViewer is
+            # system-wide and handled below.
+            anydesk_dir = exports_dir / "remote_access" / "anydesk"
+            ad_root = _resolve_ci(user_dir, "AppData", "Roaming", "AnyDesk")
+            if ad_root and ad_root.is_dir():
+                for fname in ("connection_trace.txt", "ad.trace",
+                               "ad_svc.trace"):
+                    src = _child_ci(ad_root, fname)
+                    if src and src.is_file():
+                        anydesk_dir.mkdir(parents=True, exist_ok=True)
+                        if _sudo_cp(src, anydesk_dir /
+                                    f"{user_dir.name}--{fname}"):
+                            out["anydesk_trace_files"] = (
+                                out.get("anydesk_trace_files", 0) + 1
+                            )
         if n_ntuser:
             out["ntuser_hives"] = n_ntuser
         if n_pst:
