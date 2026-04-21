@@ -75,6 +75,7 @@ class WindowsArtifactAgent(Agent):
         # — both already extracted by DiskForensicator; consume them here.
         out.extend(self._bam_dam(ctx, root, analysis))
         out.extend(self._win_timeline(ctx, root, analysis))
+        out.extend(self._recent_docs(ctx, root, analysis))
         # T3-3: remote-access tooling (TeamViewer + AnyDesk) — any
         # inbound session from an unknown peer is high-signal even
         # when the tool is legitimately installed.
@@ -249,6 +250,83 @@ class WindowsArtifactAgent(Agent):
                        f"executable path sits in a user-writable "
                        f"marker dir (Temp / AppData / Downloads / "
                        f"ProgramData / Public). Samples: {samples}"),
+                evidence=[ev],
+                hypotheses_supported=["H_APT_ESPIONAGE",
+                                       "H_PROCESS_INJECTION"],
+            )))
+        return out
+
+    def _recent_docs(self, ctx, root, analysis):
+        """Parse every NTUSER.DAT in exports/windows-artifacts/registry/
+        for RecentDocs + OpenSave MRU entries. Emit one per-user
+        summary + one suspicious-path finding when any entry points
+        at a user-writable marker directory."""
+        from el.schemas.finding import EvidenceItem
+        from el.skills import recent_docs
+        import hashlib
+
+        reg_dir = _finddir(root, "registry", "Registry")
+        if not reg_dir:
+            return []
+        ntusers = sorted(p for p in reg_dir.glob("NTUSER-*.DAT")
+                         if p.is_file())
+        if not ntusers:
+            return []
+        all_entries: list[recent_docs.RecentDocEntry] = []
+        for hive in ntusers:
+            all_entries.extend(recent_docs.parse_recentdocs(hive))
+        if not all_entries:
+            return [self.emit(ctx, Finding(
+                case_id=ctx.case_id, agent=self.name, confidence="insufficient",
+                claim=(f"RecentDocs/OpenSave-MRU: {len(ntusers)} "
+                       f"NTUSER.DAT hive(s) parsed but no MRU entries "
+                       f"recovered. Hives may be dirty without LOG "
+                       f"companions (see PR-A), or the user didn't "
+                       f"interact via Explorer / common dialogs."),
+            ))]
+        summary = recent_docs.summarise(all_entries)
+
+        hasher = hashlib.sha256()
+        for p in ntusers:
+            try:
+                hasher.update(p.read_bytes())
+            except OSError:
+                continue
+        ev = EvidenceItem(
+            tool="el.recent_docs", version="0.1.0",
+            command=f"parse_recentdocs(×{len(ntusers)} NTUSER hive(s))",
+            output_sha256=hasher.hexdigest(),
+            output_path=str(reg_dir),
+            extracted_facts={
+                "total_entries": summary.total_entries,
+                "per_extension": summary.per_extension,
+                "per_source": summary.per_source,
+                "suspicious_count": len(summary.suspicious),
+            },
+        )
+        out = [self.emit(ctx, Finding(
+            case_id=ctx.case_id, agent=self.name, confidence="high",
+            claim=(f"RecentDocs/OpenSave-MRU: {summary.total_entries} "
+                   f"file-touch record(s) recovered from "
+                   f"{len(ntusers)} NTUSER.DAT hive(s) "
+                   f"(RecentDocs={summary.per_source.get('recentdocs', 0)}, "
+                   f"OpenSaveMRU={summary.per_source.get('opensave', 0)}). "
+                   f"Per-user file-access ledger — survives "
+                   f"Timeline / Jump-List clearing."),
+            evidence=[ev],
+            hypotheses_supported=["H_DISK_ARTIFACTS"],
+        ))]
+        if summary.suspicious:
+            sample = "; ".join(
+                f"{e.filename[-60:]} @ {e.last_write_utc[:19] or '?'}"
+                for e in summary.suspicious[:5])
+            out.append(self.emit(ctx, Finding(
+                case_id=ctx.case_id, agent=self.name, confidence="high",
+                claim=(f"RecentDocs/OpenSave-MRU suspicious-path "
+                       f"entry: {len(summary.suspicious)} file "
+                       f"reference(s) in user-writable marker dirs "
+                       f"(Temp / AppData / Downloads / ProgramData / "
+                       f"Public). Samples: {sample}"),
                 evidence=[ev],
                 hypotheses_supported=["H_APT_ESPIONAGE",
                                        "H_PROCESS_INJECTION"],
