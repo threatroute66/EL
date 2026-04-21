@@ -114,9 +114,18 @@ class Coordinator:
         from el.schemas.finding import EvidenceItem, Finding
         import hashlib
         # Group prior observations by (value, ioc_type) to keep findings tidy
+        from el.intel.long_tail import (
+            score as rarity_score, bucket_for_case_count)
         for value, observations in prior.items():
             ioc_type = observations[0]["ioc_type"]
             cases = sorted({o["case_id"] for o in observations})
+            rarity = rarity_score(value, observations)
+            # Ubiquitous IOCs are almost always benign infrastructure
+            # (8.8.8.8, fonts.googleapis.com, time.windows.com). Suppress
+            # the finding entirely — writing a ledger row per one of
+            # these every case just adds noise to the report.
+            if rarity.bucket == "ubiquitous":
+                continue
             ev = EvidenceItem(
                 tool="el.knowledge", version="0.1.0",
                 command=f"kb.lookup_iocs([{value}])",
@@ -127,13 +136,17 @@ class Coordinator:
                     "ioc_type": ioc_type,
                     "previously_seen_in_cases": cases,
                     "first_seen_utc": min(o["observed_utc"] for o in observations),
+                    "rarity_bucket": rarity.bucket,
+                    "prior_case_count": rarity.case_count,
                 },
             )
             f = Finding(
                 case_id=ctx.case_id, agent="knowledge_lookup",
-                claim=(f"Cross-case overlap: {ioc_type} `{value[:80]}` previously "
-                       f"observed in case(s) {', '.join(cases[:3])}"
-                       f"{' …' if len(cases) > 3 else ''}. "
+                claim=(f"Cross-case overlap [{rarity.bucket}]: {ioc_type} "
+                       f"`{value[:80]}` previously observed in "
+                       f"{rarity.case_count} case(s) "
+                       f"({', '.join(cases[:3])}"
+                       f"{' …' if len(cases) > 3 else ''}). "
                        "Suggestive only — confidence stays 'low' because cross-case "
                        "overlap is context, not evidence for this case's hypotheses."),
                 confidence="low", evidence=[ev],
