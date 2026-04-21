@@ -8,11 +8,12 @@ DFIR-CTI trifold, DFIR START). Written 2026-04-21._
 
 EL was compared against each poster to identify concrete additions —
 specific artifact paths, tool names, vol3 plugins, Event IDs, protocol
-analyses, cloud log sources, rule formats. Scope was limited to items
-within EL's design philosophy (tool-output-as-evidence, rule-based
-detectors, Heuer ACH). macOS/APFS (FOR518) and Mobile (FOR585)
-intentionally excluded — those would be greenfield subprojects, not
-extensions.
+analyses, cloud log sources, rule formats. Scope covers items within
+EL's design philosophy (tool-output-as-evidence, rule-based detectors,
+Heuer ACH). Web-app pentesting (SEC542) is the only domain left out —
+it's offensive, not defensive forensics, and doesn't fit the charter.
+macOS/APFS and Mobile *are* in scope (see those sections below for
+concrete agent + skill outlines).
 
 ## Top 6 picks (highest leverage per unit of effort)
 
@@ -202,11 +203,84 @@ agent parallel to `DiskForensicator`:
 
 **Highest-impact single add:** STIX 2.1 import so external threat feeds enrich the cross-case IOC store without hand-curation.
 
-## Deliberately out of scope (would be separate subprojects)
+### macOS / APFS forensics (FOR518)
 
-- **macOS / APFS forensics (FOR518)** — new disk agent, new plugin set for HFS+/APFS, distinct tool chain. Viable as a follow-up project; not a simple extension.
-- **Mobile (FOR585 Android/iOS)** — same. Would need Cellebrite/Magnet-format image readers, iOS backup parsers, Android ADB collection; separate value-stream.
-- **Web-app pentesting (SEC542)** — offensive, not defensive forensics. Out of EL's charter.
+EL's abstractions are OS-agnostic: `Triage` already routes by
+`evidence_kind`, the `MemoryForensicator` has a `family` branch point,
+and vol3 already ships `mac.*` plugins. Extension, not greenfield.
+
+**Triage additions** — evidence-kind detectors for:
+- `apfs_disk_image` — magic `NXSB` at offset `0x20` of container superblock
+- `dmg` / `sparseimage` — Apple disk image wrappers
+- `macos_memory` — vol3 banner match for xnu / Darwin kernel
+- `ios_backup` — presence of `Manifest.mbdb` or `Manifest.db`
+
+**New skills (all Python-scriptable or subprocess-wrapped):**
+- `apfs_fuse` — FUSE mount wrapper around the community `apfs-fuse` binary (read-only, unencrypted containers)
+- `mac_apt_skill` — wrap the open-source `mac_apt` (MIT, Python) which already extracts KnowledgeC.db, Unified Logs, plists, FSEvents, Spotlight metadata, MRU lists
+- `plist_triage` — native `plistlib` parser for `*.plist`, binary + XML
+- `unified_log_parse` — wrap `log show --style json` (requires a macOS host) OR the `UnifiedLogReader` Python tool
+- `knowledgec_parse` — SQLite-based; query `ZOBJECT` table for application-usage events
+- `fsevents_parse` — wrap `FSEventsParser` (David Cowen)
+
+**New agents:**
+- `MacDiskForensicator` — mirrors `DiskForensicator`: mount APFS, walk filesystem, extract high-value plists + KnowledgeC.db + user home, then chain MacArtifactAgent
+- `MacArtifactAgent` — parallel to `WindowsArtifactAgent`: consume the extracted plists + SQLite DBs, emit per-artifact findings (SSH authorized keys, LaunchAgents, LaunchDaemons, login-items, persistent-app persistence paths, browser history via WebKit SQLite)
+- Family branch inside `MemoryForensicator`: add `mac` plugin list — `mac.pslist.PsList`, `mac.pstree.PsTree`, `mac.lsof.Lsof`, `mac.malfind.Malfind`, `mac.netstat.Netstat`, `mac.check_syscall.Check_syscall` (rootkit detection), `mac.ifconfig.Ifconfig`
+
+**macOS-specific hypothesis additions:**
+- `H_MAC_LAUNCH_DAEMON_PERSISTENCE` — plist in `/Library/LaunchDaemons/` or `~/Library/LaunchAgents/`
+- `H_MAC_TCC_BYPASS` — Transparency/Consent/Control abuse via `TCC.db`
+- `H_MAC_FILELESS_AMFI_BYPASS` — Apple Mobile File Integrity bypass traces
+
+**Known hard constraints:**
+- FileVault-encrypted containers need the key from the operator — same as Windows BitLocker
+- vol3 `mac.*` symbols need exact kernel-version ISF (same symbol-mismatch pain as Windows)
+- No T2/Secure Enclave key material is retrievable without Apple silicon acquisition tools
+
+**Effort estimate:** ~2-3 weeks focused work for Windows-parity disk + memory coverage on unencrypted images.
+
+### Mobile (FOR585 iOS / Android)
+
+Cheapest tier-3 option because `iLEAPP` (iOS) and `ALEAPP` (Android) —
+both maintained by Alexis Brignoni, MIT-licensed, pure Python — do
+~80% of the artifact extraction already. EL wraps them the way it
+wraps `dotnet` for EZ Tools.
+
+**Triage additions:**
+- `ios_logical_backup` — detect `Manifest.plist` + `Manifest.db` at root
+- `ios_file_system` — AFU (after-first-unlock) dump: presence of `private/var/mobile/`
+- `android_adb_tar` — ADB-collected tar stream; identifies by `data/` root + `build.prop`
+- `android_full_file_system` — rooted dump with `/data/` + `/system/`
+
+**New skills:**
+- `ileapp` — subprocess wrapper: runs iLEAPP against a backup, consumes its JSON/HTML output
+- `aleapp` — same for ALEAPP
+- `ios_backup_parse` — decrypt a passcode-known iTunes/Finder backup (`iphone-backup-decrypt` Python lib), emit unencrypted file tree
+- `apple_kc_parse` — KnowledgeC.db parser (shared with macOS agent)
+
+**New agents:**
+- `MobileForensicator` — single agent handling both iOS + Android via iLEAPP/ALEAPP output. Emits findings keyed on:
+  - iOS: iMessage SQLite, SMS/MMS, WhatsApp `ChatStorage.sqlite`, Signal, Telegram, Safari `History.db` + `BrowserState.db`, Photos.sqlite (geolocation EXIF + album ACLs), Calendar `Calendar.sqlitedb`, Notes, Call History `CallHistory.storedata`, Apple Pay, KeyChain-access-group-enumeration
+  - Android: `contacts2.db`, `mmssms.db`, `Chrome/History`, `webview.db`, location provider `*.db`, app-specific SQLite at `/data/data/<pkg>/databases/`, `logcat` dumps, `Wi-Fi` config
+  - Cross-platform: app installation inventory, push-notification history, clipboard history
+
+**Mobile-specific hypotheses:**
+- `H_MOBILE_SPYWARE_PERSISTENCE` — Pegasus/Predator-class artifact patterns (DataUsage.sqlite anomalies, unusual cache paths)
+- `H_MOBILE_SIDELOADED_APP` — unsigned IPA / outside-Play-Store APK installer
+- `H_MOBILE_MDM_ABUSE` — unexpected MDM profile installation
+
+**Known hard constraints:**
+- BFU (before-first-unlock) iOS images are essentially unreadable — operator has to acquire AFU
+- Cellebrite UFDR / Magnet AXIOM proprietary archives need commercial readers; we'd ingest after their export-to-open-format step
+- Passcode unknown ⇒ keychain unavailable
+- Android full-disk encryption (FBE) same issue
+
+**Effort estimate:** ~1-2 weeks for mainstream open formats (iTunes/Finder logical backups, ADB tar, iLEAPP/ALEAPP-compatible file-system dumps).
+
+### Deliberately out of scope
+
+- **Web-app pentesting (SEC542)** — offensive, not defensive forensics. Doesn't fit the charter.
 
 ## Pre-ranked shortlist for follow-up sessions
 
@@ -220,9 +294,14 @@ agent parallel to `DiskForensicator`:
 | 2 | `capa` + `FLOSS` | ATT&CK on dumped binaries; replaces brittle fingerprint strings |
 | 3 | vol3 modules / modscan / ldrmodules / handles / getsids | Rootkit + process-anomaly completeness |
 | 3 | Linux forensics agent | Depends on whether Linux evidence is expected |
+| 3 | macOS / APFS agent family | OS-agnostic abstractions already support it; ~2-3 weeks |
+| 3 | Mobile (iLEAPP / ALEAPP wrap) | Cheapest tier-3: Python tools already extract 80%; ~1-2 weeks |
 | 3 | Teams / Slack / OneDrive parsers | Frequent on enterprise endpoints |
 | 4 | Diamond Model / ACH matrix export | Reporting polish |
 | 4 | STIX 2.1 import + MISP/TAXII | Knowledge-DB enrichment |
 
 None of these are committed to. They're a menu informed by the posters;
 shakedown evidence on the next real cases should still drive ordering.
+For macOS and mobile specifically, sourcing a test corpus (e.g.
+digitalcorpora macOS images, publicly available mobile CTF images) is
+a prerequisite before the improvement loop can fire.
