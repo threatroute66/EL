@@ -307,6 +307,16 @@ wraps `dotnet` for EZ Tools.
 
 - **Web-app pentesting (SEC542)** — offensive, not defensive forensics. Doesn't fit the charter.
 
+## Analyst-facing web view
+
+Separate from the detector/extraction roadmap above: a per-case
+single-page HTML report showing timeline + attack-chain graph +
+detail drawer + ATT&CK + IOCs. Reference design notes (NodeZero-
+inspired) + four-tier implementation plan at
+[docs/web-view-design.md](./web-view-design.md). Zero-server,
+vendor-everything, deep-linkable by finding_id, integrates with the
+existing `el report` CLI.
+
 ## Pre-ranked shortlist for follow-up sessions
 
 | Tier | Addition | Reason |
