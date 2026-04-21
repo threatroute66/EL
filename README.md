@@ -357,16 +357,18 @@ no disk-side hypothesis scoring.
   CLI); all IOCs recorded into `~/.el/knowledge.sqlite` for cross-case
   retention.
 
+## Author
+
+Created by **Murat Cakir** — [LinkedIn](https://tr.linkedin.com/in/cakirm).
+
 ## License
 
-EL is licensed under the **GNU Affero General Public License v3.0 or later**
-(AGPL-3.0-or-later). See [LICENSE](./LICENSE) for the full text.
+EL is licensed under the **Apache License, Version 2.0**. See
+[LICENSE](./LICENSE) for the full text.
 
-The AGPL extends the GPL's share-alike obligation to *network* use: anyone
-who modifies EL and runs the modified version as a service (including
-internal tooling exposed over a network) must make the corresponding
-source available to users of that service. Pure internal use without
-modification is fine; so is unmodified redistribution. If you want to
-embed EL in a closed commercial product or SaaS and cannot comply with
-the AGPL's source-disclosure terms, contact the maintainer to discuss
-a commercial license.
+Apache 2.0 is a permissive license: you may use, modify, and
+redistribute EL in any product (commercial or non-commercial) provided
+you preserve the copyright + license notices and mark any changes you
+make. Apache 2.0 also grants an express patent license from every
+contributor to every user — important for a DFIR tool that touches
+techniques some vendors hold patents on.
