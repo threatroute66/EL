@@ -134,6 +134,43 @@ def knowledge_cmd(
     raise typer.Exit(2)
 
 
+@app.command("stix")
+def stix_cmd(
+    action: str = typer.Argument(..., help="import"),
+    path: str = typer.Argument(None, help="Path to STIX 2.1 bundle JSON"),
+    case_id: str = typer.Option(None, "--case-id",
+                                 help="Provenance tag for imported IOCs "
+                                      "(default: stix-import-<file-stem>)"),
+) -> None:
+    """STIX 2.1 toolbox. V1: `stix import <bundle.json>` pulls
+    indicators out of a STIX 2.1 bundle and into the cross-case
+    knowledge store tagged with the supplied case_id. Output: counts
+    per IOC type."""
+    from el.skills import stix_import
+
+    if action != "import":
+        console.print(f"[red]unknown action: {action}[/red]")
+        console.print("Supported: [bold]import[/bold]")
+        raise typer.Exit(2)
+    if not path:
+        console.print("[red]stix import requires a bundle path[/red]")
+        raise typer.Exit(2)
+
+    bundle = Path(path)
+    if not bundle.is_file():
+        console.print(f"[red]bundle not found: {bundle}[/red]")
+        raise typer.Exit(2)
+
+    cid = case_id or f"stix-import-{bundle.stem}"
+    total, per_type = stix_import.import_bundle(bundle, case_id=cid)
+    if not total:
+        console.print(f"[yellow]no indicators extracted from {bundle}[/yellow]")
+        return
+    console.print(f"[green]imported {total} IOC(s) → case_id={cid}[/green]")
+    for t, n in sorted(per_type.items()):
+        console.print(f"  {t}: {n}")
+
+
 @app.command("provision-snapshot")
 def provision_snapshot_cmd(
     label: str = typer.Option("manual", "--label", "-l",
