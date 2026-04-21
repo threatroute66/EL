@@ -33,6 +33,17 @@ WIN_PLUGINS = [
     "windows.netscan.NetScan",     # SKILL: netscan = historical (pool-tag)
     "windows.dlllist.DllList",
     "windows.svcscan.SvcScan",
+    # T3-1: kernel-driver + handle + SID visibility. modules vs modscan
+    # diff reveals unlinked drivers (rootkit). ldrmodules three-list
+    # diff reveals unlinked DLLs (reflective injection). handles
+    # identifies which process holds a staging file or named pipe.
+    # getsids completes the process-anomaly matrix's user-account
+    # check that PR-H explicitly deferred.
+    "windows.modules.Modules",
+    "windows.modscan.ModScan",
+    "windows.ldrmodules.LdrModules",
+    "windows.handles.Handles",
+    "windows.getsids.GetSIDs",
 ]
 
 # malfind runs separately with --dump so suspicious regions hit disk as files
@@ -152,6 +163,20 @@ class MemoryForensicatorAgent(Agent):
             out.extend(self._netscan_triage(
                 ctx, runs["windows.netscan.NetScan"]))
 
+        # T3-1: kernel-driver rootkit detection via modules-vs-modscan diff.
+        if (family == "windows"
+                and {"windows.modules.Modules",
+                     "windows.modscan.ModScan"} <= runs.keys()):
+            out.extend(self._diff_hidden_drivers(
+                ctx, runs["windows.modules.Modules"],
+                runs["windows.modscan.ModScan"]))
+
+        # T3-1: unlinked-DLL detection via ldrmodules InLoad/InInit/InMem diff.
+        if ("windows.ldrmodules.LdrModules" in runs
+                and runs["windows.ldrmodules.LdrModules"].rows):
+            out.extend(self._flag_unlinked_dlls(
+                ctx, runs["windows.ldrmodules.LdrModules"]))
+
         baseline_path = (ctx.shared.get("memory_baseline")
                           or ctx.shared.get("memory_baseline_json"))
         if baseline_path:
@@ -225,6 +250,113 @@ class MemoryForensicatorAgent(Agent):
                    f"from pslist (likely unlinked / rootkit / injection): {hidden_pids[:20]}"),
             evidence=[ev],
             hypotheses_supported=["H_PROCESS_INJECTION", "H_ROOTKIT"],
+        ))]
+
+    def _diff_hidden_drivers(self, ctx: AgentContext,
+                              modules: vol3.PluginRun,
+                              modscan: vol3.PluginRun) -> list[Finding]:
+        """T3-1: kernel-driver rootkit detection. modules walks the
+        PsLoadedModuleList (the normal kernel driver registry);
+        modscan finds drivers via pool-tag scanning. A driver in
+        modscan but not in modules is unlinked — classic rootkit
+        trick to hide from standard enumeration.
+        """
+        if not modules.rows:
+            return [self.emit(ctx, Finding(
+                case_id=ctx.case_id, agent=self.name, confidence="insufficient",
+                claim=("Driver rootkit diff skipped — modules returned 0 rows "
+                       "(vol3 symbol mismatch). Cannot distinguish "
+                       "'all drivers unlinked' from 'tool failure'."),
+            ))]
+
+        def _key(row: dict) -> str:
+            # Normalise on module name; offset varies across plugins.
+            return ((row.get("Name") or row.get("FullDllName")
+                      or row.get("Path") or "") or "").strip().lower()
+
+        listed = {_key(r) for r in modules.rows
+                  if isinstance(r, dict)}
+        scanned = {_key(r) for r in modscan.rows
+                   if isinstance(r, dict)}
+        hidden = sorted(n for n in (scanned - listed)
+                        if n and n != "")
+        if not hidden:
+            return []
+        ev = modscan.as_evidence({"hidden_drivers": hidden[:50]})
+        return [self.emit(ctx, Finding(
+            case_id=ctx.case_id, agent=self.name, confidence="high",
+            claim=(f"Hidden kernel driver(s) detected — {len(hidden)} "
+                   f"module name(s) in modscan (pool-tag scan) but "
+                   f"absent from modules (PsLoadedModuleList walk). "
+                   f"Unlinked drivers are a classic rootkit "
+                   f"hide-from-enumeration trick. Samples: "
+                   f"{', '.join(hidden[:5])}"
+                   f"{' …' if len(hidden) > 5 else ''}."),
+            evidence=[ev],
+            hypotheses_supported=["H_ROOTKIT", "H_APT_ESPIONAGE"],
+        ))]
+
+    def _flag_unlinked_dlls(self, ctx: AgentContext,
+                             run: vol3.PluginRun) -> list[Finding]:
+        """T3-1: unlinked-DLL detection via ldrmodules three-list diff.
+        The Windows loader tracks loaded DLLs in three linked lists
+        (InLoad / InInit / InMem). A DLL present in some lists but not
+        others is hiding — the signature of reflectively-injected
+        modules (Metasploit reflective DLL injection,
+        Invoke-ReflectivePEInjection, Cobalt Strike's default module
+        loader). Flag processes where any DLL has InLoad=False
+        OR InInit=False OR InMem=False while at least one list
+        recorded it."""
+        rows = [r for r in run.rows if isinstance(r, dict)]
+        if not rows:
+            return []
+
+        unlinked: list[dict] = []
+        for r in rows:
+            il = r.get("InLoad")
+            ii = r.get("InInit")
+            im = r.get("InMem")
+            # Each column may be bool/"True"/"False"/None in vol3 JSON
+            def _is_false(v):
+                if v is None:
+                    return True
+                if isinstance(v, bool):
+                    return not v
+                s = str(v).strip().lower()
+                return s in ("false", "0", "no", "none", "")
+            false_count = sum(1 for v in (il, ii, im) if _is_false(v))
+            # Only flag if ≥1 list was true but ≥1 was false — symmetric
+            # all-true or all-false patterns are either normal or tool-
+            # failure, not injection signals.
+            if 1 <= false_count <= 2:
+                unlinked.append(r)
+        if not unlinked:
+            return []
+
+        # Group by (Pid, Process) to report per-process counts
+        from collections import Counter
+        by_proc: Counter = Counter()
+        for r in unlinked:
+            key = (r.get("Pid") or r.get("PID") or 0,
+                   r.get("Process") or r.get("ImageFileName") or "?")
+            by_proc[key] += 1
+        top = by_proc.most_common(5)
+        sample = ", ".join(f"PID {pid} {name}: {n} DLL(s)"
+                            for (pid, name), n in top)
+        ev = run.as_evidence({"unlinked_dll_count": len(unlinked),
+                               "top_processes": [[k[0], k[1], n]
+                                                   for k, n in top]})
+        return [self.emit(ctx, Finding(
+            case_id=ctx.case_id, agent=self.name, confidence="high",
+            claim=(f"Unlinked DLL(s) detected via ldrmodules three-list "
+                   f"diff: {len(unlinked)} DLL(s) present in some but "
+                   f"not all of InLoad / InInit / InMem across "
+                   f"{len(by_proc)} process(es). Reflective-injection "
+                   f"signature (Metasploit / Cobalt Strike / "
+                   f"Invoke-ReflectivePEInjection). Top: {sample}."),
+            evidence=[ev],
+            hypotheses_supported=["H_PROCESS_INJECTION", "H_APT_ESPIONAGE",
+                                    "H_ROOTKIT"],
         ))]
 
     def _analyze_pslist_windows(self, ctx: AgentContext, run: vol3.PluginRun) -> list[Finding]:

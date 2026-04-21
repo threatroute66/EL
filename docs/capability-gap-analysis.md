@@ -317,7 +317,7 @@ wraps `dotnet` for EZ Tools.
 | 2 | ~~ActivitiesCache.db + BAM/DAM~~ ✅ | Shipped; `bam_dam` (regipy) + `win_timeline` (sqlite3 ro) skills, validated 39 BAM entries on wkstn-01 |
 | 2 | PowerShell 4104 decoded | We see the count; we should see the content |
 | 2 | ~~`capa` + `FLOSS`~~ ✅ | Shipped; rule-pack resolver + shellcode-mode dispatch; 5 rules fire on real srl-admin-memory dump |
-| 3 | vol3 modules / modscan / ldrmodules / handles / getsids | Rootkit + process-anomaly completeness |
+| 3 | ~~vol3 modules / modscan / ldrmodules / handles / getsids~~ ✅ | Shipped; 5 plugins added to `WIN_PLUGINS`, modules-vs-modscan diff detector (rootkit drivers) + ldrmodules three-list diff (reflective-injection signature) |
 | 3 | Linux forensics agent | Depends on whether Linux evidence is expected |
 | 3 | macOS / APFS agent family | OS-agnostic abstractions already support it; ~2-3 weeks |
 | 3 | Mobile (iLEAPP / ALEAPP wrap) | Cheapest tier-3: Python tools already extract 80%; ~1-2 weeks |
