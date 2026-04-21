@@ -311,19 +311,231 @@ def detect_dns_domain_skew(dns_rows: list[dict],
     return []
 
 
+# --- DGA entropy detection -----------------------------------------------
+
+import math
+
+
+def _label_entropy(label: str) -> float:
+    """Shannon entropy of a label. High entropy → character
+    distribution close to uniform → DGA smell. English-dictionary
+    words score ~3.0-3.5 bits; DGA-generated labels score ~3.8+."""
+    if not label:
+        return 0.0
+    counts: dict[str, int] = {}
+    for c in label:
+        counts[c] = counts.get(c, 0) + 1
+    n = len(label)
+    return -sum((c / n) * math.log2(c / n) for c in counts.values())
+
+
+_DGA_MIN_ENTROPY = 3.8        # threshold observed on DGA research datasets
+_DGA_MIN_LABEL_LEN = 10       # below this length entropy gets noisy
+
+
+def detect_dns_dga_entropy(dns_rows: list[dict]) -> list[AnomalyHit]:
+    """Flag DNS queries whose leftmost label scores suspiciously high
+    on Shannon entropy AND is long enough that the entropy isn't just
+    a short-string artefact."""
+    flagged: list[tuple[str, float]] = []
+    for r in dns_rows:
+        q = (r.get("query") or "").strip().lower()
+        if not q or "." not in q:
+            continue
+        label = q.split(".", 1)[0]
+        if len(label) < _DGA_MIN_LABEL_LEN:
+            continue
+        ent = _label_entropy(label)
+        if ent >= _DGA_MIN_ENTROPY:
+            flagged.append((q, ent))
+    if len(flagged) < 3:       # singleton could be legit CDN shard
+        return []
+    flagged.sort(key=lambda kv: -kv[1])
+    sample = ", ".join(f"{q} (H={e:.2f})" for q, e in flagged[:5])
+    return [AnomalyHit(
+        anomaly_id="DNS_DGA_ENTROPY",
+        summary=(f"{len(flagged)} DNS query label(s) scored Shannon "
+                 f"entropy ≥{_DGA_MIN_ENTROPY:.1f} bits and length "
+                 f"≥{_DGA_MIN_LABEL_LEN} — DGA (domain-generation "
+                 f"algorithm) signature. Samples: {sample}."),
+        confidence="medium",
+        hypotheses=["H_C2_OR_REVERSE_SHELL", "H_OPPORTUNISTIC_COMMODITY"],
+        attack=[("T1568.002", "Dynamic Resolution: Domain Generation Algorithms")],
+        facts={"flagged_count": len(flagged),
+               "min_entropy": _DGA_MIN_ENTROPY,
+               "top_labels": flagged[:20]},
+    )]
+
+
+# --- DNS tunneling -------------------------------------------------------
+
+_TUNNELING_RARE_QTYPES = {"TXT", "NULL", "CNAME"}
+_TUNNELING_NXDOMAIN_BURST_MIN = 50
+_TUNNELING_LONG_QUERY_LEN = 100       # labels > 100 chars = exfil-sized
+
+
+def detect_dns_tunneling(dns_rows: list[dict]) -> list[AnomalyHit]:
+    """Three DNS-tunneling signals in one detector:
+      - High-frequency unique subdomain labels under one parent
+        (each query carries ~1 exfil chunk in the label)
+      - Burst of NXDOMAIN responses to a single parent
+      - Oversized query names (exfil payload inline)
+    Any one hitting → emit; all three → analyst should treat as
+    near-certain."""
+    if not dns_rows:
+        return []
+
+    from collections import defaultdict
+
+    subdom_cardinality: dict[str, set[str]] = defaultdict(set)
+    nxdomain_by_parent: dict[str, int] = defaultdict(int)
+    oversized: list[str] = []
+    rare_qtype_count = 0
+
+    for r in dns_rows:
+        q = (r.get("query") or "").strip().lower()
+        if not q:
+            continue
+        if len(q) >= _TUNNELING_LONG_QUERY_LEN:
+            oversized.append(q)
+        qtype = (r.get("qtype_name") or r.get("qtype") or "").upper()
+        if qtype in _TUNNELING_RARE_QTYPES:
+            rare_qtype_count += 1
+        # Parent = eTLD+1 approximation (last two labels)
+        parts = q.split(".")
+        if len(parts) >= 2:
+            parent = ".".join(parts[-2:])
+            subdom = ".".join(parts[:-2]) or parts[0]
+            subdom_cardinality[parent].add(subdom)
+        rcode = (r.get("rcode_name") or r.get("rcode") or "").upper()
+        if "NXDOMAIN" in rcode:
+            parent = ".".join(parts[-2:]) if len(parts) >= 2 else q
+            nxdomain_by_parent[parent] += 1
+
+    signals: list[str] = []
+    facts: dict = {}
+    high_card = [(p, len(subs)) for p, subs in subdom_cardinality.items()
+                 if len(subs) >= 50]
+    if high_card:
+        high_card.sort(key=lambda kv: -kv[1])
+        signals.append(f"high-cardinality subdomains: "
+                       f"{high_card[0][0]} saw {high_card[0][1]} unique labels")
+        facts["high_cardinality_parents"] = high_card[:5]
+    burst = [(p, n) for p, n in nxdomain_by_parent.items()
+             if n >= _TUNNELING_NXDOMAIN_BURST_MIN]
+    if burst:
+        burst.sort(key=lambda kv: -kv[1])
+        signals.append(f"NXDOMAIN burst: {burst[0][0]} ×{burst[0][1]}")
+        facts["nxdomain_burst"] = burst[:5]
+    if oversized:
+        signals.append(f"oversized queries: {len(oversized)} ≥"
+                       f"{_TUNNELING_LONG_QUERY_LEN} chars")
+        facts["oversized_sample"] = oversized[:5]
+    if rare_qtype_count >= 20:
+        signals.append(f"rare record types: {rare_qtype_count} TXT/NULL/CNAME queries")
+        facts["rare_qtype_count"] = rare_qtype_count
+
+    if not signals:
+        return []
+
+    confidence = "high" if len(signals) >= 2 else "medium"
+    return [AnomalyHit(
+        anomaly_id="DNS_TUNNELING",
+        summary=(f"DNS tunneling signals: {'; '.join(signals)}. "
+                 f"DNS-based covert channel exfiltrates data in "
+                 f"subdomain labels or TXT answers."),
+        confidence=confidence,
+        hypotheses=["H_C2_OR_REVERSE_SHELL", "H_INSIDER_DATA_EXFIL"],
+        attack=[("T1071.004", "Application Layer Protocol: DNS"),
+                ("T1048.003", "Exfiltration Over Alternative Protocol: "
+                               "Unencrypted/Obfuscated Non-C2 Protocol")],
+        facts=facts,
+    )]
+
+
+# --- SMB write activity --------------------------------------------------
+
+def detect_smb_file_writes(smb_rows: list[dict]) -> list[AnomalyHit]:
+    """Zeek's smb_files.log records every SMB file open with
+    action={SMB::FILE_WRITE, SMB::FILE_READ, ...}. Write operations
+    to admin shares (C$, ADMIN$, IPC$) are the classic lateral-
+    movement staging pattern; write operations to user-share paths
+    at high volume from a single client indicate data staging.
+
+    Flags when either:
+      - ≥1 write to an admin share, OR
+      - any client accounts for ≥25 writes to non-local shares
+    """
+    if not smb_rows:
+        return []
+
+    admin_writes = []
+    by_client: dict[str, int] = {}
+    for r in smb_rows:
+        action = (r.get("action") or "").upper()
+        if "WRITE" not in action and "MODIFY" not in action:
+            continue
+        path = (r.get("path") or "").upper()
+        name = (r.get("name") or "")
+        full = f"{path}\\{name}".replace("\\\\", "\\")
+        if any(share in full.upper() for share in
+               ("\\C$\\", "\\ADMIN$\\", "\\IPC$\\", "\\C$$", "\\ADMIN$$")):
+            admin_writes.append(full)
+        client = (r.get("id.orig_h") or "").strip()
+        if client and not path.startswith(client.upper()):
+            by_client[client] = by_client.get(client, 0) + 1
+
+    out: list[AnomalyHit] = []
+    if admin_writes:
+        sample = ", ".join(admin_writes[:5])
+        out.append(AnomalyHit(
+            anomaly_id="SMB_ADMIN_SHARE_WRITE",
+            summary=(f"SMB write(s) to admin share(s) observed: "
+                     f"{len(admin_writes)} operation(s). Classic "
+                     f"lateral-movement staging / RAT drop pattern. "
+                     f"Samples: {sample}."),
+            confidence="high",
+            hypotheses=["H_LATERAL_MOVEMENT", "H_APT_ESPIONAGE"],
+            attack=[("T1021.002",
+                     "Remote Services: SMB/Windows Admin Shares"),
+                    ("T1570", "Lateral Tool Transfer")],
+            facts={"admin_write_count": len(admin_writes),
+                   "samples": admin_writes[:10]},
+        ))
+    high_volume = [(c, n) for c, n in by_client.items() if n >= 25]
+    if high_volume:
+        high_volume.sort(key=lambda kv: -kv[1])
+        out.append(AnomalyHit(
+            anomaly_id="SMB_WRITE_FAN_IN",
+            summary=(f"SMB write fan-in: {len(high_volume)} client(s) "
+                     f"each wrote ≥25 files to non-local shares. "
+                     f"Data-staging shape. Top: "
+                     f"{high_volume[0][0]} ×{high_volume[0][1]}."),
+            confidence="medium",
+            hypotheses=["H_INSIDER_DATA_EXFIL", "H_LATERAL_MOVEMENT"],
+            attack=[("T1039", "Data from Network Shared Drive")],
+            facts={"top_clients": high_volume[:5]},
+        ))
+    return out
+
+
 # --- Top-level convenience ------------------------------------------------
 
 def run_all(zeek_dir: Path) -> list[AnomalyHit]:
-    """Parse http.log + dns.log from a Zeek output directory and run
-    every detector. Missing logs are silent — caller gets [] for an
-    encrypted or DNS-free capture."""
+    """Parse http.log + dns.log + smb_files.log from a Zeek output
+    directory and run every detector. Missing logs are silent —
+    caller gets [] for an encrypted or DNS-free capture."""
     zeek_dir = Path(zeek_dir)
     http_rows = parse_zeek_log(zeek_dir / "http.log")
     dns_rows = parse_zeek_log(zeek_dir / "dns.log")
+    smb_rows = parse_zeek_log(zeek_dir / "smb_files.log")
     hits: list[AnomalyHit] = []
     hits.extend(detect_http_method_ratio(http_rows))
     hits.extend(detect_http_error_rate(http_rows))
     hits.extend(detect_http_user_agent_anomalies(http_rows))
     hits.extend(detect_dns_short_ttl(dns_rows))
     hits.extend(detect_dns_domain_skew(dns_rows))
+    hits.extend(detect_dns_dga_entropy(dns_rows))
+    hits.extend(detect_dns_tunneling(dns_rows))
+    hits.extend(detect_smb_file_writes(smb_rows))
     return hits
