@@ -347,3 +347,20 @@ Tier-3 additions specifically:
 Coverage additions that don't need evidence (SIGMA rule ingestion,
 `capa`/`FLOSS` wrappers, cloud-log parsers) can proceed independently
 of corpus sourcing.
+
+## Category extras shipped April 2026 (no-corpus chain)
+
+Beyond the Tier 1–4 shortlist, the following category items landed:
+
+| Item | Commit | Deferred (needs corpus or bigger dep) |
+|---|---|---|
+| Network depth — DGA entropy + DNS tunneling + SMB admin-share writes | `9821af5` | JA3/JA4 + Umbrella allowlist |
+| Cloud breadth — Azure Activity + GCP Cloud Audit + AWS VPC Flow | `d070478` | Google Workspace + AWS GuardDuty |
+| PowerShell breadth — EID 4103 + PSReadline + transcription scans | `15fdaee` | Windows Cloud-Clipboard (UWP state) |
+| vol3 extras — ssdt + driverirp + kernel-hook detector + filescan + mftscan | `8de8f9d` | dumpfiles + yarascan (need per-pid / per-rules args) |
+| Windows artifact extras — RecentDocs + OpenSave-MRU | `b6ead0d` | CapabilityAccess / UAL mdb / VSS mounting |
+| Detection engineering — IOC rarity scoring + ubiquitous-noise suppression | `84359ba` | MITRE CAR analytic import (overlaps SIGMA) |
+
+Corpus-gated (waiting on Evidence-Locker downloads): T3-2 Linux,
+T3-4 macOS, T3-5 Mobile. Everything else in the doc is shipped or
+listed under a deferred-with-rationale item above.
