@@ -177,6 +177,15 @@ class DiskForensicatorAgent(Agent):
                         # that would mislead the Windows-artifact chain
                         # into parsing a Linux tree as if it were NTFS.
                         ctx.shared["linux_artifacts_dir"] = str(extracted)
+                elif "disk image" in desc.lower() or "apfs" in desc.lower():
+                    # GPT partition labeled "disk image" on a Mac is
+                    # the APFS container (macOS default since High
+                    # Sierra). Sector 409640 on a standard Big Sur+
+                    # install; this handles any offset.
+                    extracted = self._extract_macos_artifacts_partition(
+                        ctx, raw_image, p, sector_size, label)
+                    if extracted:
+                        ctx.shared["macos_artifacts_dir"] = str(extracted)
             else:
                 out.append(self.emit(ctx, Finding(
                     case_id=ctx.case_id, agent=self.name, confidence="insufficient",
@@ -393,6 +402,79 @@ class DiskForensicatorAgent(Agent):
         self.emit(ctx, Finding(
             case_id=ctx.case_id, agent=self.name, confidence="high",
             claim=(f"Linux artifacts extracted from {label}: {summary}"),
+            evidence=[ev],
+            hypotheses_supported=["H_DISK_ARTIFACTS"],
+        ))
+        return exports_dir
+
+    def _extract_macos_artifacts_partition(
+        self, ctx: AgentContext, raw_image: Path, partition: dict,
+        sector_size: int, label: str,
+    ) -> Path | None:
+        """Mount the APFS Data volume (volume 1 on a standard Big Sur+
+        install) via `fsapfsmount` and copy IR artifacts via
+        `extract_macos_artifacts`. Mirrors the Linux path structure.
+        """
+        from el.skills import macos_artifacts as ma
+        fs_mount = Path("/tmp/el-mounts") / f"{ctx.case_id}-fs-{label}"
+        exports_dir = ctx.case_dir / "exports" / "macos-artifacts"
+        try:
+            sk.mount_apfs_ro(raw_image, partition["start_sector"],
+                               fs_mount, volume_index=1,
+                               sector_size=sector_size, timeout=120)
+        except sk.SleuthkitError as e:
+            self.emit(ctx, Finding(
+                case_id=ctx.case_id, agent=self.name,
+                confidence="insufficient",
+                claim=(f"APFS mount failed for {label} "
+                       f"({partition['description']}): {e}. "
+                       f"Requires libfsapfs-tools (apt install "
+                       f"libfsapfs-tools)."),
+            ))
+            return None
+        try:
+            extracted = ma.extract_macos_artifacts(fs_mount, exports_dir)
+        except Exception as e:
+            self.emit(ctx, Finding(
+                case_id=ctx.case_id, agent=self.name,
+                confidence="insufficient",
+                claim=(f"macOS artifact extraction errored for "
+                       f"{label}: {e}"),
+            ))
+            sk.umount(fs_mount)
+            return None
+        sk.umount(fs_mount)
+        if not extracted:
+            self.emit(ctx, Finding(
+                case_id=ctx.case_id, agent=self.name,
+                confidence="insufficient",
+                claim=(f"APFS partition {label} mounted but no "
+                       f"recognised IR artifacts found (no /Users, "
+                       f"no /Library/LaunchAgents, no /private/etc). "
+                       f"Maybe wrong volume index — try another "
+                       f"volume in the container."),
+            ))
+            return None
+
+        from el.schemas.finding import EvidenceItem
+        import hashlib
+        listing = "\n".join(sorted(
+            str(p.relative_to(exports_dir))
+            for p in exports_dir.rglob("*") if p.is_file()))
+        listing_path = exports_dir / "MANIFEST.txt"
+        listing_path.parent.mkdir(parents=True, exist_ok=True)
+        listing_path.write_text(listing)
+        ev = EvidenceItem(
+            tool="el.disk_forensicator", version="0.1.0",
+            command=f"ma.extract_macos_artifacts({label})",
+            output_sha256=hashlib.sha256(listing.encode()).hexdigest(),
+            output_path=str(listing_path),
+            extracted_facts=extracted,
+        )
+        summary = ", ".join(f"{k}={v}" for k, v in sorted(extracted.items()))
+        self.emit(ctx, Finding(
+            case_id=ctx.case_id, agent=self.name, confidence="high",
+            claim=(f"macOS artifacts extracted from {label}: {summary}"),
             evidence=[ev],
             hypotheses_supported=["H_DISK_ARTIFACTS"],
         ))

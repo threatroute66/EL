@@ -560,6 +560,34 @@ def mount_linux_ro(raw_image: Path, start_sector: int,
             f"Linux mount failed (rc={r.returncode}): {r.stderr[:500]}")
 
 
+def mount_apfs_ro(raw_image: Path, start_sector: int,
+                    mount_point: Path, volume_index: int = 1,
+                    sector_size: int = 512,
+                    timeout: int = 60) -> None:
+    """Mount an APFS volume read-only via `fsapfsmount`. Requires the
+    `libfsapfs-tools` apt package. Accepts a byte offset in sectors
+    (from mmls) and a 1-based `volume_index` — an APFS container
+    typically holds 6 volumes in Big Sur+ (Data, Preboot, Recovery,
+    VM, Update, System). Volume 1 = 'Macintosh HD - Data' on a
+    standard install and is where user data + most forensic
+    artifacts live.
+    """
+    mount_point = Path(mount_point)
+    mount_point.mkdir(parents=True, exist_ok=True)
+    offset = start_sector * sector_size
+    cmd = ["sudo", "fsapfsmount", "-X", "allow_other",
+           "-o", str(offset), "-f", str(volume_index),
+           str(raw_image), str(mount_point)]
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True,
+                            timeout=timeout)
+    except subprocess.TimeoutExpired as e:
+        raise SleuthkitError(f"fsapfsmount timeout after {timeout}s") from e
+    if r.returncode != 0:
+        raise SleuthkitError(
+            f"APFS mount failed (rc={r.returncode}): {r.stderr[:500]}")
+
+
 def ewfumount(mount_point: Path, timeout: int = 30) -> None:
     """Unmount an ewfmount-mounted image. Idempotent — silent on already-unmounted.
     Also removes the (now-empty) mount directory."""

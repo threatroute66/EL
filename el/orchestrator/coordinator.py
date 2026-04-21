@@ -220,6 +220,12 @@ class Coordinator:
             from el.agents.linux_forensicator import LinuxForensicatorAgent
             self._run_agent(LinuxForensicatorAgent(), ctx)
 
+        # If DiskForensicator extracted macOS artifacts (APFS Data
+        # volume), chain MacOSForensicatorAgent.
+        if ctx.shared.get("macos_artifacts_dir"):
+            from el.agents.macos_forensicator import MacOSForensicatorAgent
+            self._run_agent(MacOSForensicatorAgent(), ctx)
+
         # If the primary investigator extracted Windows artifacts (DiskForensicator
         # on an NTFS partition), chain WindowsArtifactAgent against them.
         if ctx.shared.get("artifacts_dir"):
