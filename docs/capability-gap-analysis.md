@@ -17,16 +17,18 @@ concrete agent + skill outlines).
 
 ## Top 6 picks (highest leverage per unit of effort)
 
-**1. SIGMA rule ingestion** — single biggest force multiplier. The
-SigmaHQ community rule library has thousands of Windows/Linux/cloud
-detection rules in portable YAML. EL already has the target log
-streams (EvtxECmd CSV, Zeek logs, Suricata alerts). A
-`sigma_engine` skill + new `SigmaAnalystAgent` that loads a rule pack
-and applies it to those streams would multiply our attack-pattern
-coverage by orders of magnitude without hand-writing detectors. Tag
-each resulting Finding with the Sigma rule ID and MITRE technique.
-Complements the rule-based Red Reviewer — deterministic, grounded,
-auditable.
+**1. SIGMA rule ingestion** — ✅ **SHIPPED.** Native evaluator in
+`el.skills.sigma_engine` + `SigmaAnalystAgent` wired after
+`CredentialAnalystAgent`. Supports the modifier set covering ~90% of
+community Windows rules (`contains`, `startswith`, `endswith`, `re`,
+`all`, `cased`, `gt/gte/lt/lte`) and the full condition grammar
+(`and` / `or` / `not` / parens / `1 of X` / `all of X` with wildcards).
+MITRE ATT&CK techniques extracted from rule tags; tag-to-hypothesis
+map lifts `H_CREDENTIAL_ACCESS` from `attack.credential_access`, etc.
+`EventID`-indexed pre-filter keeps per-row cost small on large CSVs.
+Real-data validation: the RC4 Kerberoasting starter rule fires 124
+times on `srl-dc-disk-r3`, exactly matching the `credential_analyst`
+count from PR-E — cross-layer corroboration confirmed.
 
 **2. Kerberos wire-level analysis** — corroborates our EVTX-based
 Kerberoasting detector at the network layer. AS-REQ / AS-REP /
@@ -286,7 +288,7 @@ wraps `dotnet` for EZ Tools.
 
 | Tier | Addition | Reason |
 |---|---|---|
-| 1 | SIGMA rule ingestion | Force-multiplier; applies to streams we already produce |
+| 1 | ~~SIGMA rule ingestion~~ ✅ | Shipped; RC4 Kerberoasting starter rule validated against srl-dc-disk-r3 (124 hits matching credential_analyst) |
 | 1 | Kerberos wire parsing | Cross-layer corroboration; survives log clearing |
 | 1 | M365 UAL + Azure Sign-in | Biggest cloud blind spot; identity = modern breach vector |
 | 2 | ActivitiesCache.db + BAM/DAM | Trivial addition; high per-case signal |

@@ -19,6 +19,7 @@ from el.agents.cloud_forensicator import CloudForensicatorAgent
 from el.agents.correlator import CorrelatorAgent
 from el.agents.browser_forensicator import BrowserForensicatorAgent
 from el.agents.credential_analyst import CredentialAnalystAgent
+from el.agents.sigma_analyst import SigmaAnalystAgent
 from el.agents.disk_forensicator import DiskForensicatorAgent
 from el.agents.email_forensicator import EmailForensicatorAgent
 from el.agents.endpoint_analyst import EndpointAnalystAgent
@@ -225,6 +226,12 @@ class Coordinator:
                 # 4776 NTLM spray. Disjoint from LM detectors; runs here
                 # so the EVTX CSV is already on disk.
                 self._run_agent(CredentialAnalystAgent(), ctx)
+                # Community SIGMA rule pack over the same EvtxECmd CSV.
+                # Short-circuits insufficient when no rule pack is
+                # configured; otherwise emits one Finding per matched
+                # rule with the ATT&CK technique IDs from the rule's
+                # tags wired into hypotheses_supported.
+                self._run_agent(SigmaAnalystAgent(), ctx)
 
                 # If PSTs were also extracted (extract_windows_artifacts
                 # drops them under exports/windows-artifacts/mail/), triage

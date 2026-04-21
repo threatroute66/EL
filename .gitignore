@@ -32,6 +32,13 @@ cases/*/
 cases/_archives/
 !cases/.keep
 
+# --- User-supplied SIGMA rule packs ---
+# rules/sigma/ is where operators clone a SigmaHQ rule pack or drop
+# their own rules. Content is user-supplied and often covered by
+# different licenses; don't track it here.
+rules/sigma/*
+!rules/sigma/README.md
+
 # --- EL ad-hoc analysis area ---
 analysis/*
 !analysis/.keep
