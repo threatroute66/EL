@@ -302,6 +302,23 @@ wraps `dotnet` for EZ Tools.
 
 None of these are committed to. They're a menu informed by the posters;
 shakedown evidence on the next real cases should still drive ordering.
-For macOS and mobile specifically, sourcing a test corpus (e.g.
-digitalcorpora macOS images, publicly available mobile CTF images) is
-a prerequisite before the improvement loop can fire.
+
+## Test-corpus sourcing
+
+Primary image source for extending coverage:
+**[The Evidence Locker](https://theevidencelocker.github.io/)** —
+curated DFIR evidence index. Images pulled from there drive the
+shakedown-improvement loop for every new platform EL adds. For the
+Tier-3 additions specifically:
+
+- **macOS / APFS** — pull APFS disk images + macOS memory dumps from
+  the Locker; EL's improvement loop then fires PRs off the same
+  ≥2-case repetition rule it uses today.
+- **Mobile** — pull iOS logical backups + Android ADB tars; iLEAPP /
+  ALEAPP output drives `MobileForensicator` findings.
+- **Linux** — pull any Linux IR image set (the Locker indexes several)
+  to populate the `LinuxForensicator` agent.
+
+Coverage additions that don't need evidence (SIGMA rule ingestion,
+`capa`/`FLOSS` wrappers, cloud-log parsers) can proceed independently
+of corpus sourcing.
