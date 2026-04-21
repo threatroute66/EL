@@ -71,6 +71,10 @@ class WindowsArtifactAgent(Agent):
         out.extend(self._jumplists(ctx, root, analysis))
         out.extend(self._lnk(ctx, root, analysis))
         out.extend(self._recyclebin(ctx, root, analysis))
+        # BAM/DAM (SYSTEM hive) and Windows Timeline (ActivitiesCache.db)
+        # — both already extracted by DiskForensicator; consume them here.
+        out.extend(self._bam_dam(ctx, root, analysis))
+        out.extend(self._win_timeline(ctx, root, analysis))
 
         if all(f.confidence == "insufficient" for f in out):
             out.append(self.emit(ctx, Finding(
@@ -187,3 +191,143 @@ class WindowsArtifactAgent(Agent):
             return []
         return self._try(ctx, f"RBCmd ({d.name})",
                          lambda: ezt.run_rbcmd(d, analysis / "recyclebin"))
+
+    def _bam_dam(self, ctx, root, analysis):
+        """Walk the SYSTEM hive's BAM/DAM subtree and surface per-user
+        last-run executable evidence. Suspicious paths (Temp / AppData
+        / Downloads / ProgramData) emit at high confidence tagged for
+        H_APT_ESPIONAGE + H_PROCESS_INJECTION."""
+        from el.schemas.finding import EvidenceItem
+        from el.skills import bam_dam
+        import hashlib
+
+        system_hive = _findfirst(root, "SYSTEM")
+        if not system_hive:
+            return []
+        entries = bam_dam.parse_system_hive(system_hive)
+        if not entries:
+            return [self.emit(ctx, Finding(
+                case_id=ctx.case_id, agent=self.name, confidence="insufficient",
+                claim=(f"BAM/DAM: no entries parsed from {system_hive.name}. "
+                       f"Expected on pre-Win10-1709 images or hives where "
+                       f"BAM was cleared."),
+            ))]
+        summary = bam_dam.summarise(entries)
+        ev = EvidenceItem(
+            tool="el.bam_dam", version="0.1.0",
+            command=f"parse_system_hive({system_hive.name})",
+            output_sha256=hashlib.sha256(
+                system_hive.read_bytes()).hexdigest(),
+            output_path=str(system_hive),
+            extracted_facts={
+                "total_entries": summary.total_entries,
+                "per_sid_counts": summary.per_sid,
+                "suspicious_path_count": len(summary.suspicious),
+            },
+        )
+        out = [self.emit(ctx, Finding(
+            case_id=ctx.case_id, agent=self.name, confidence="high",
+            claim=(f"BAM/DAM parsed: {summary.total_entries} last-run "
+                   f"record(s) across {len(summary.per_sid)} user SID(s). "
+                   f"Per-user execution ledger (Windows 10/11) — every "
+                   f"executable each user ran, with last-run timestamp."),
+            evidence=[ev],
+            hypotheses_supported=["H_DISK_ARTIFACTS"],
+        ))]
+        if summary.suspicious:
+            samples = "; ".join(
+                f"{e.executable[-60:]} @ {e.last_run_utc[:19]}"
+                for e in summary.suspicious[:5])
+            out.append(self.emit(ctx, Finding(
+                case_id=ctx.case_id, agent=self.name, confidence="high",
+                claim=(f"BAM/DAM suspicious-path execution: "
+                       f"{len(summary.suspicious)} entry(ies) whose "
+                       f"executable path sits in a user-writable "
+                       f"marker dir (Temp / AppData / Downloads / "
+                       f"ProgramData / Public). Samples: {samples}"),
+                evidence=[ev],
+                hypotheses_supported=["H_APT_ESPIONAGE",
+                                       "H_PROCESS_INJECTION"],
+            )))
+        return out
+
+    def _win_timeline(self, ctx, root, analysis):
+        """Parse every ActivitiesCache.db under the timeline export dir.
+        Emits one summary Finding plus one suspicious-entry finding
+        when any activity's app/file/URI sits in a user-writable
+        marker directory."""
+        from el.schemas.finding import EvidenceItem
+        from el.skills import win_timeline as wt
+        import hashlib
+
+        timeline_dir = _finddir(root, "timeline")
+        if not timeline_dir:
+            return []
+        # extract_windows_artifacts prefixes each file with
+        # `<user>--L.<user>--` for uniqueness, so the actual filename
+        # looks like "alice--L.alice--ActivitiesCache.db". Glob for the
+        # suffix rather than exact name, and exclude the -wal/-shm
+        # sidecars which aren't standalone databases.
+        dbs = sorted(
+            p for p in timeline_dir.rglob("*ActivitiesCache.db")
+            if p.is_file() and not p.name.endswith(("-wal", "-shm"))
+        )
+        if not dbs:
+            return []
+        all_entries: list[wt.TimelineEntry] = []
+        for db in dbs:
+            all_entries.extend(wt.parse_activities_cache(db))
+        if not all_entries:
+            return [self.emit(ctx, Finding(
+                case_id=ctx.case_id, agent=self.name, confidence="insufficient",
+                claim=(f"Windows Timeline: found {len(dbs)} "
+                       f"ActivitiesCache.db file(s) but none held a "
+                       f"readable Activity table. DB may be corrupted "
+                       f"or Timeline feature was disabled."),
+            ))]
+        suspicious = wt.suspicious_entries(all_entries)
+        top_apps = wt.summarise_apps(all_entries, top_n=10)
+
+        # Hash all DBs together for a single evidence item
+        h = hashlib.sha256()
+        for db in dbs:
+            h.update(db.read_bytes())
+        ev = EvidenceItem(
+            tool="el.win_timeline", version="0.1.0",
+            command=f"parse_activities_cache(×{len(dbs)})",
+            output_sha256=h.hexdigest(),
+            output_path=str(timeline_dir),
+            extracted_facts={
+                "db_count": len(dbs),
+                "activity_count": len(all_entries),
+                "suspicious_count": len(suspicious),
+                "top_apps": top_apps,
+            },
+        )
+        out = [self.emit(ctx, Finding(
+            case_id=ctx.case_id, agent=self.name, confidence="high",
+            claim=(f"Windows Timeline parsed: {len(all_entries)} "
+                   f"activity record(s) across {len(dbs)} "
+                   f"ActivitiesCache.db file(s). Timeline records "
+                   f"foreground-app usage + document / URI touches "
+                   f"per user per foreground app."),
+            evidence=[ev],
+            hypotheses_supported=["H_DISK_ARTIFACTS"],
+        ))]
+        if suspicious:
+            samples = "; ".join(
+                f"{(e.app_path or e.file_path or e.target_uri)[-60:]} @ "
+                f"{e.start_time_utc[:19] or e.last_modified_utc[:19]}"
+                for e in suspicious[:5])
+            out.append(self.emit(ctx, Finding(
+                case_id=ctx.case_id, agent=self.name, confidence="high",
+                claim=(f"Windows Timeline suspicious-path activity: "
+                       f"{len(suspicious)} record(s) referencing an "
+                       f"executable or file in a user-writable "
+                       f"marker dir (Temp / AppData / Downloads / "
+                       f"ProgramData / Public). Samples: {samples}"),
+                evidence=[ev],
+                hypotheses_supported=["H_APT_ESPIONAGE",
+                                       "H_PROCESS_INJECTION"],
+            )))
+        return out

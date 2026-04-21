@@ -417,6 +417,29 @@ def extract_windows_artifacts(mount_point: Path, exports_dir: Path) -> dict:
                         dst_dir.mkdir(parents=True, exist_ok=True)
                         if _sudo_cp(places, dst_dir / "places.sqlite"):
                             n_firefox += 1
+            # Windows 10/11 Timeline (ActivitiesCache.db) — per-user
+            # SQLite under AppData\Local\ConnectedDevicesPlatform\L.<user>\.
+            # One user can have multiple L.* subdirs (profile migrations,
+            # Microsoft-account roaming); we walk every one we find.
+            timeline_dir = exports_dir / "timeline"
+            cdp_root = _resolve_ci(user_dir, "AppData", "Local",
+                                     "ConnectedDevicesPlatform")
+            if cdp_root and cdp_root.is_dir():
+                for sub in cdp_root.iterdir():
+                    if not sub.is_dir() or not sub.name.lower().startswith("l."):
+                        continue
+                    for fname in ("ActivitiesCache.db",
+                                   "ActivitiesCache.db-wal",
+                                   "ActivitiesCache.db-shm"):
+                        src = _child_ci(sub, fname)
+                        if src and src.is_file():
+                            timeline_dir.mkdir(parents=True, exist_ok=True)
+                            dst = (timeline_dir /
+                                   f"{user_dir.name}--{sub.name}--{fname}")
+                            if _sudo_cp(src, dst):
+                                out["activities_cache_files"] = (
+                                    out.get("activities_cache_files", 0) + 1
+                                )
         if n_ntuser:
             out["ntuser_hives"] = n_ntuser
         if n_pst:

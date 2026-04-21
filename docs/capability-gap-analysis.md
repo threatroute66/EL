@@ -58,13 +58,12 @@ Tenant domains supplied via `ctx.shared["tenant_domains"]` for
 accurate external-forward detection. Silent-dispatch when input
 isn't a known cloud-log shape.
 
-**4. Windows Timeline (ActivitiesCache.db) + BAM/DAM** — two
-first-class user-activity artifacts already within
-`extract_windows_artifacts` reach. `ActivitiesCache.db` is a SQLite
-DB at `%LOCALAPPDATA%\ConnectedDevicesPlatform\L.<user>\` that
-records every foreground app + document touched. BAM/DAM lives at
-`SYSTEM\CurrentControlSet\Services\bam\State\UserSettings\<SID>` and
-records every executable run per user. Both parse trivially.
+**4. Windows Timeline (ActivitiesCache.db) + BAM/DAM** — ✅ **SHIPPED.**
+Two new skills consumed by `WindowsArtifactAgent`:
+- `el.skills.bam_dam` — walks `SYSTEM\\ControlSet00{1,2}\\Services\\{bam,dam}\\[State\\]UserSettings\\<SID>` via regipy (new pure-Python dep). Decodes the 8-byte FILETIME prefix in each REG_BINARY into per-user last-run timestamps; surfaces entries whose executable path sits in Temp / AppData / Downloads / ProgramData / Public as a dedicated high-confidence finding.
+- `el.skills.win_timeline` — reads `ActivitiesCache.db` as SQLite (URI `mode=ro&immutable=1` so evidence stays untouched). Parses `AppId` JSON to extract both packaged PFNs and Win32 paths; normalises `Payload` to surface `displayText`, `activationUri`, `appPath`. Same suspicious-path overlay emits a second finding.
+- `extract_windows_artifacts` extended to walk `<user>\\AppData\\Local\\ConnectedDevicesPlatform\\L.*\\` and copy `ActivitiesCache.db[-wal/-shm]` into `exports/windows-artifacts/timeline/` with per-user filename prefixes.
+Real-data validation: `bam_dam.parse_system_hive` on the SRL-2018 wkstn-01 SYSTEM hive returns 39 entries across 5 SIDs (all UWP packages — that machine had no attacker-invoked binaries, so the suspicious overlay correctly stays silent).
 
 **5. PowerShell ScriptBlock decoded extraction** — we count EID 4104
 today but don't decode the payload. Real attacker usage is near-always
@@ -305,7 +304,7 @@ wraps `dotnet` for EZ Tools.
 | 1 | ~~SIGMA rule ingestion~~ ✅ | Shipped; RC4 Kerberoasting starter rule validated against srl-dc-disk-r3 (124 hits matching credential_analyst) |
 | 1 | ~~Kerberos wire parsing~~ ✅ | Shipped; `kerberos_triage` skill + `network_analyst._run_kerberos_triage` with RC4 Kerberoasting + AS-REQ brute/spray + krbtgt-TGS detectors |
 | 1 | ~~M365 UAL + Azure Sign-in~~ ✅ | Shipped; 4 sign-in detectors + 4 UAL detectors dispatched by content-sniff in `cloud_forensicator` |
-| 2 | ActivitiesCache.db + BAM/DAM | Trivial addition; high per-case signal |
+| 2 | ~~ActivitiesCache.db + BAM/DAM~~ ✅ | Shipped; `bam_dam` (regipy) + `win_timeline` (sqlite3 ro) skills, validated 39 BAM entries on wkstn-01 |
 | 2 | PowerShell 4104 decoded | We see the count; we should see the content |
 | 2 | `capa` + `FLOSS` | ATT&CK on dumped binaries; replaces brittle fingerprint strings |
 | 3 | vol3 modules / modscan / ldrmodules / handles / getsids | Rootkit + process-anomaly completeness |

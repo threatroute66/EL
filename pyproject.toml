@@ -19,6 +19,8 @@ dependencies = [
     "anthropic>=0.39",
     "scapy>=2.5",
     "stix2>=3.0",
+    # BAM/DAM parser: SYSTEM-hive binary value walk. MIT licensed.
+    "regipy>=5.0",
 ]
 
 [project.optional-dependencies]
