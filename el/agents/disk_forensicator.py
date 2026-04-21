@@ -157,40 +157,50 @@ class DiskForensicatorAgent(Agent):
                     claim=f"fls failed for partition {label} ({p['description']}): {e}",
                 )))
                 continue
-            if fls_run.rc == 0 and fls_run.stdout_path.stat().st_size > 0:
+            desc = p["description"]
+            fls_ok = (fls_run.rc == 0
+                      and fls_run.stdout_path.stat().st_size > 0)
+            if fls_ok:
                 out.extend(self._fls_to_timeline(
                     ctx, fls_run, analysis, part_label=label,
-                    desc=p["description"]))
-                desc = p["description"]
-                if "NTFS" in desc or "Basic data" in desc:
-                    extracted = self._extract_ntfs_artifacts(
-                        ctx, raw_image, p, sector_size, label)
-                    if extracted:
-                        artifact_dirs.append(extracted)
-                elif "Linux" in desc or "ext" in desc.lower():
-                    extracted = self._extract_linux_artifacts_partition(
-                        ctx, raw_image, p, sector_size, label)
-                    if extracted:
-                        linux_dirs.append(extracted)
-                        # Mark the family so LinuxForensicator knows to
-                        # run. Deliberately NOT setting artifacts_dir —
-                        # that would mislead the Windows-artifact chain
-                        # into parsing a Linux tree as if it were NTFS.
-                        ctx.shared["linux_artifacts_dir"] = str(extracted)
-                elif "disk image" in desc.lower() or "apfs" in desc.lower():
-                    # GPT partition labeled "disk image" on a Mac is
-                    # the APFS container (macOS default since High
-                    # Sierra). Sector 409640 on a standard Big Sur+
-                    # install; this handles any offset.
-                    extracted = self._extract_macos_artifacts_partition(
-                        ctx, raw_image, p, sector_size, label)
-                    if extracted:
-                        ctx.shared["macos_artifacts_dir"] = str(extracted)
-            else:
+                    desc=desc))
+
+            # APFS is not supported by Sleuth Kit's fls, so fls_ok is
+            # always False for APFS partitions. Route to fsapfsmount
+            # directly — don't gate the extraction on fls.
+            apfs_partition = (
+                "disk image" in desc.lower() or "apfs" in desc.lower())
+
+            if fls_ok and ("NTFS" in desc or "Basic data" in desc):
+                extracted = self._extract_ntfs_artifacts(
+                    ctx, raw_image, p, sector_size, label)
+                if extracted:
+                    artifact_dirs.append(extracted)
+            elif fls_ok and ("Linux" in desc or "ext" in desc.lower()):
+                extracted = self._extract_linux_artifacts_partition(
+                    ctx, raw_image, p, sector_size, label)
+                if extracted:
+                    linux_dirs.append(extracted)
+                    # Mark the family so LinuxForensicator knows to
+                    # run. Deliberately NOT setting artifacts_dir —
+                    # that would mislead the Windows-artifact chain
+                    # into parsing a Linux tree as if it were NTFS.
+                    ctx.shared["linux_artifacts_dir"] = str(extracted)
+            elif apfs_partition:
+                # GPT partition labeled "disk image" on a Mac is
+                # the APFS container. fsapfsmount (libfsapfs-tools)
+                # reads it directly; no fls dependency.
+                extracted = self._extract_macos_artifacts_partition(
+                    ctx, raw_image, p, sector_size, label)
+                if extracted:
+                    ctx.shared["macos_artifacts_dir"] = str(extracted)
+            elif not fls_ok:
                 out.append(self.emit(ctx, Finding(
-                    case_id=ctx.case_id, agent=self.name, confidence="insufficient",
-                    claim=f"fls returned no rows for partition {label} ({p['description']}) "
-                          f"— filesystem may be unreadable or unsupported",
+                    case_id=ctx.case_id, agent=self.name,
+                    confidence="insufficient",
+                    claim=(f"fls returned no rows for partition {label} "
+                           f"({desc}) — filesystem may be unreadable or "
+                           f"unsupported"),
                 )))
 
         if artifact_dirs:
