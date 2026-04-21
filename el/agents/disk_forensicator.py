@@ -144,7 +144,8 @@ class DiskForensicatorAgent(Agent):
             return out
 
         sector_size = ctx.shared.get("sector_size", 512)
-        artifact_dirs: list[Path] = []
+        artifact_dirs: list[Path] = []        # Windows-shaped only
+        linux_dirs: list[Path] = []            # Linux ext{2,3,4}
         for p in partitions:
             label = f"slot{p['slot']}-off{p['start_sector']}"
             try:
@@ -170,8 +171,11 @@ class DiskForensicatorAgent(Agent):
                     extracted = self._extract_linux_artifacts_partition(
                         ctx, raw_image, p, sector_size, label)
                     if extracted:
-                        artifact_dirs.append(extracted)
-                        # Mark the family so LinuxForensicator knows to run
+                        linux_dirs.append(extracted)
+                        # Mark the family so LinuxForensicator knows to
+                        # run. Deliberately NOT setting artifacts_dir —
+                        # that would mislead the Windows-artifact chain
+                        # into parsing a Linux tree as if it were NTFS.
                         ctx.shared["linux_artifacts_dir"] = str(extracted)
             else:
                 out.append(self.emit(ctx, Finding(
@@ -191,11 +195,14 @@ class DiskForensicatorAgent(Agent):
         # emails / URLs / domains / IPv4 / CCN / BTC from unallocated
         # space and slack that the FS walk misses.
         out.extend(self._run_bulk_extractor(ctx, raw_image, analysis))
-        # exiftool: metadata sweep across extracted Windows artifacts to
-        # surface authoring fingerprints (Office Author, PDF Producer,
-        # camera serial, GPS) that suggest data origin / transfer paths.
-        if artifact_dirs:
-            out.extend(self._run_exiftool(ctx, artifact_dirs[0]))
+        # exiftool: metadata sweep across extracted artifacts (Windows
+        # OR Linux) to surface authoring fingerprints (Office Author,
+        # PDF Producer, camera serial, GPS) that suggest data origin /
+        # transfer paths. Worth running on Linux extract trees too —
+        # /home/*/Documents often contains office docs with metadata.
+        sweep_dirs = artifact_dirs + linux_dirs
+        if sweep_dirs:
+            out.extend(self._run_exiftool(ctx, sweep_dirs[0]))
         return out
 
     def _run_bulk_extractor(self, ctx: AgentContext, raw_image,
