@@ -47,7 +47,8 @@ def test_capa_attack_techniques_map_to_hypothesis_tags(isolated, monkeypatch):
         command=["capa", str(fake_dump)],
     )
     monkeypatch.setattr(capa_skill, "analyze",
-                        lambda target, out_dir, timeout=300: fake_capa)
+                        lambda target, out_dir, timeout=300,
+                               shellcode_arch=None: fake_capa)
 
     findings = MalwareTriageAgent()._run_capa(ctx, fake_dump, fake_scan, isolated / "out")
     assert len(findings) == 1

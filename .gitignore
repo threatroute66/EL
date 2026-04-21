@@ -39,6 +39,13 @@ cases/_archives/
 rules/sigma/*
 !rules/sigma/README.md
 
+# --- capa rule pack (Mandiant) ---
+# Cloned from https://github.com/mandiant/capa-rules; ~6 MB, Apache-2.0.
+# Keep out of tree for the same licensing-drift reason as SIGMA. Setup
+# instructions live in docs/capa-rules.md rather than a README inside
+# the dir (so an operator clone doesn't collide with EL's doc).
+rules/capa/
+
 # --- EL ad-hoc analysis area ---
 analysis/*
 !analysis/.keep

@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -21,6 +22,22 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from el.schemas.finding import EvidenceItem
+
+
+# capa ships without its rule pack when installed as a library. We
+# default to cloning Mandiant's capa-rules into /opt/EL/rules/capa/
+# (see rules/capa/README.md). Operators override with EL_CAPA_RULES.
+def _rules_dir() -> Path | None:
+    for candidate in (
+        os.environ.get("EL_CAPA_RULES"),
+        "/opt/EL/rules/capa",
+    ):
+        if not candidate:
+            continue
+        p = Path(candidate)
+        if p.is_dir() and any(p.rglob("*.yml")):
+            return p
+    return None
 
 
 class CapaError(RuntimeError):
@@ -87,6 +104,9 @@ def analyze(target: Path, out_dir: Path,
     stderr_path = out_dir / f"capa-{target.name}.stderr"
 
     cmd = [_bin(), "--json"]
+    rules = _rules_dir()
+    if rules:
+        cmd += ["-r", str(rules)]
     if shellcode_arch:
         cmd += ["--format", f"sc{shellcode_arch}"]
     cmd.append(str(target))

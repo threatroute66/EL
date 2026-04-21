@@ -71,11 +71,21 @@ obfuscated (base64 + gzip + IEX). Decoding + pattern-matching on the
 decoded script (Mimikatz sentinels, EncodedCommand, Invoke-Expression
 pipelines, URL downloaders) is high-signal and self-contained.
 
-**6. `capa` + `FLOSS` integration for `malware_triage`** — migrate
-from our 14-family fingerprint library to capability enumeration
-tied directly to MITRE ATT&CK (capa outputs ATT&CK techniques per
-binary). Dumped `malfind --dump` regions + extracted PE droppers
-become structured capability findings.
+**6. `capa` + `FLOSS` integration for `malware_triage`** — ✅ **SHIPPED
+(mostly already there, now actually working).** capa + FLOSS subprocess
+wrappers already existed; they were silent because (a) capa ships
+without rules when installed as a library and (b) `_run_capa` skipped
+every raw-shellcode dump. Fixed both:
+- `el.skills.capa._rules_dir()` resolves a rule pack from
+  `EL_CAPA_RULES` → `/opt/EL/rules/capa/` (documented in
+  `docs/capa-rules.md`; directory gitignored so upstream clones drift
+  independently).
+- `analyze()` injects `-r <rules>` when a pack resolves.
+- `malware_triage._run_capa` now runs on shellcode dumps with
+  `--format sc<arch>` (reads `ctx.shared["mem_arch"]`; defaults to
+  `sc64`). Real-data proof: `srl-admin-memory/pid.8884.vad.…dmp` now
+  yields 5 capability rules + T1027 obfuscation attribution (was 0
+  before because capa silently exited with no rules loaded).
 
 ## Category-by-category additions (prioritized within each)
 
@@ -306,7 +316,7 @@ wraps `dotnet` for EZ Tools.
 | 1 | ~~M365 UAL + Azure Sign-in~~ ✅ | Shipped; 4 sign-in detectors + 4 UAL detectors dispatched by content-sniff in `cloud_forensicator` |
 | 2 | ~~ActivitiesCache.db + BAM/DAM~~ ✅ | Shipped; `bam_dam` (regipy) + `win_timeline` (sqlite3 ro) skills, validated 39 BAM entries on wkstn-01 |
 | 2 | PowerShell 4104 decoded | We see the count; we should see the content |
-| 2 | `capa` + `FLOSS` | ATT&CK on dumped binaries; replaces brittle fingerprint strings |
+| 2 | ~~`capa` + `FLOSS`~~ ✅ | Shipped; rule-pack resolver + shellcode-mode dispatch; 5 rules fire on real srl-admin-memory dump |
 | 3 | vol3 modules / modscan / ldrmodules / handles / getsids | Rootkit + process-anomaly completeness |
 | 3 | Linux forensics agent | Depends on whether Linux evidence is expected |
 | 3 | macOS / APFS agent family | OS-agnostic abstractions already support it; ~2-3 weeks |
