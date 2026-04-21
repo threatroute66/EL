@@ -30,12 +30,15 @@ Real-data validation: the RC4 Kerberoasting starter rule fires 124
 times on `srl-dc-disk-r3`, exactly matching the `credential_analyst`
 count from PR-E — cross-layer corroboration confirmed.
 
-**2. Kerberos wire-level analysis** — corroborates our EVTX-based
-Kerberoasting detector at the network layer. AS-REQ / AS-REP /
-TGS-REQ / TGS-REP extraction from pcap with RC4-HMAC flagging fires
-even when audit logs are disabled or cleared (we saw EID 1102
-log-clear six times in SRL-2018). Fits inside the existing
-`network_analyst` via Zeek's `kerberos.log` or a scapy parser.
+**2. Kerberos wire-level analysis** — ✅ **SHIPPED.** New
+`el.skills.kerberos_triage` over Zeek's `kerberos.log` + three
+detectors wired into `network_analyst._run_kerberos_triage`:
+RC4-HMAC TGS-REQ (Kerberoasting), AS-REQ failure burst
+(brute force + password spray), `krbtgt/` service in TGS-REQ
+(golden-ticket smell). Mirrors the EVTX `credential_analyst` at
+the wire layer; fires even when Windows auditing is disabled or
+cleared. Technique-to-hypothesis map lines up with PR-E so ACH sees
+cross-layer reinforcement.
 
 **3. M365 Unified Audit Log + Azure Sign-in Logs** — largest
 cloud gap. EL only does AWS CloudTrail. Identity is the modern
@@ -289,7 +292,7 @@ wraps `dotnet` for EZ Tools.
 | Tier | Addition | Reason |
 |---|---|---|
 | 1 | ~~SIGMA rule ingestion~~ ✅ | Shipped; RC4 Kerberoasting starter rule validated against srl-dc-disk-r3 (124 hits matching credential_analyst) |
-| 1 | Kerberos wire parsing | Cross-layer corroboration; survives log clearing |
+| 1 | ~~Kerberos wire parsing~~ ✅ | Shipped; `kerberos_triage` skill + `network_analyst._run_kerberos_triage` with RC4 Kerberoasting + AS-REQ brute/spray + krbtgt-TGS detectors |
 | 1 | M365 UAL + Azure Sign-in | Biggest cloud blind spot; identity = modern breach vector |
 | 2 | ActivitiesCache.db + BAM/DAM | Trivial addition; high per-case signal |
 | 2 | PowerShell 4104 decoded | We see the count; we should see the content |

@@ -225,6 +225,14 @@ class NetworkAnalystAgent(Agent):
         out.extend(self._run_network_anomaly(ctx, analysis / "zeek",
                                               r.as_evidence()))
 
+        # Kerberos wire-level detectors over Zeek kerberos.log. Mirror
+        # of the EVTX-based credential_analyst (PR-E) at the network
+        # layer — fires even when Windows auditing is disabled or
+        # cleared. One Finding per hit; hypotheses route into
+        # H_CREDENTIAL_ACCESS / H_BRUTE_FORCE.
+        out.extend(self._run_kerberos_triage(ctx, analysis / "zeek",
+                                              r.as_evidence()))
+
         # PR-M: surface the specific Zeek log classes the SANS poster
         # calls out — weird (protocol anomalies), signatures (Zeek's
         # own sig hits), software (UA/Server/MIME fingerprints), known_
@@ -309,6 +317,55 @@ class NetworkAnalystAgent(Agent):
                 claim=f"Network anomaly [{h.anomaly_id}]: {h.summary}",
                 evidence=[zeek_evidence],
                 hypotheses_supported=h.hypotheses,
+            )))
+        return out
+
+    def _run_kerberos_triage(self, ctx: AgentContext, zeek_dir,
+                              zeek_evidence) -> list[Finding]:
+        """Wire-layer Kerberos detectors: RC4-HMAC TGS (Kerberoasting),
+        AS-REQ failure bursts, krbtgt/ TGS (golden-ticket smell).
+        Mirrors `credential_analyst` at the network layer."""
+        from pathlib import Path
+
+        from el.skills import kerberos_triage as kt
+        out: list[Finding] = []
+        log_path = Path(zeek_dir) / "kerberos.log"
+        if not log_path.is_file():
+            return out
+        try:
+            hits = kt.run_all(log_path)
+        except Exception as e:       # noqa: BLE001
+            out.append(self.emit(ctx, Finding(
+                case_id=ctx.case_id, agent=self.name, confidence="insufficient",
+                claim=f"Kerberos-triage failure parsing {log_path.name}: {e}",
+            )))
+            return out
+        # Technique → hypothesis tags. Mirror the EVTX credential_analyst
+        # map so ACH sees the cross-layer reinforcement.
+        tech_to_hyps = {
+            "kerberoasting":  ["H_CREDENTIAL_ACCESS", "H_APT_ESPIONAGE"],
+            "kerberos_brute": ["H_BRUTE_FORCE", "H_CREDENTIAL_ACCESS"],
+            "kerberos_spray": ["H_BRUTE_FORCE", "H_CREDENTIAL_ACCESS"],
+            "krbtgt_tgs":     ["H_CREDENTIAL_ACCESS", "H_APT_ESPIONAGE"],
+        }
+        for h in hits:
+            # Kerberoasting + golden-ticket are unambiguous → high;
+            # brute / spray follow the same ≥3-entity tiering as the
+            # EVTX credential analyst.
+            if h.technique in ("kerberoasting", "krbtgt_tgs"):
+                confidence = "high"
+            elif (len(h.top_targets) >= 3 or len(h.top_sources) >= 3
+                  or h.event_count >= 50):
+                confidence = "high"
+            else:
+                confidence = "medium"
+            out.append(self.emit(ctx, Finding(
+                case_id=ctx.case_id, agent=self.name, confidence=confidence,
+                claim=(f"Kerberos wire [{h.technique}/{h.subtechnique}] — "
+                       f"{h.description}"),
+                evidence=[zeek_evidence],
+                hypotheses_supported=tech_to_hyps.get(
+                    h.technique, ["H_CREDENTIAL_ACCESS"]),
             )))
         return out
 
