@@ -44,6 +44,17 @@ WIN_PLUGINS = [
     "windows.ldrmodules.LdrModules",
     "windows.handles.Handles",
     "windows.getsids.GetSIDs",
+    # vol3 extras — kernel-hook + in-memory-file carving visibility.
+    # ssdt + driverirp expose syscall-table / IRP-dispatch hooks
+    # (rootkit primitive). filescan + mftscan give disk-less file
+    # visibility for exfil / staged-payload reconstruction. yarascan
+    # sweeps the raw memory image with the per-case YARA catalog
+    # that ThreatHunter already builds — complements malfind-based
+    # region scanning with image-wide match surface.
+    "windows.ssdt.SSDT",
+    "windows.driverirp.DriverIrp",
+    "windows.filescan.FileScan",
+    "windows.mftscan.MFTScan",
 ]
 
 # malfind runs separately with --dump so suspicious regions hit disk as files
@@ -177,6 +188,15 @@ class MemoryForensicatorAgent(Agent):
             out.extend(self._flag_unlinked_dlls(
                 ctx, runs["windows.ldrmodules.LdrModules"]))
 
+        # vol3 extras: syscall-table and driver-IRP hook detection.
+        # Each row in ssdt / driverirp exposes an Address + owning
+        # Module; legitimate entries point at ntoskrnl / hal / win32k.
+        # Anything else is a hook.
+        for plugin in ("windows.ssdt.SSDT", "windows.driverirp.DriverIrp"):
+            if plugin in runs and runs[plugin].rows:
+                out.extend(self._flag_kernel_hooks(
+                    ctx, plugin, runs[plugin]))
+
         baseline_path = (ctx.shared.get("memory_baseline")
                           or ctx.shared.get("memory_baseline_json"))
         if baseline_path:
@@ -292,6 +312,61 @@ class MemoryForensicatorAgent(Agent):
                    f"hide-from-enumeration trick. Samples: "
                    f"{', '.join(hidden[:5])}"
                    f"{' …' if len(hidden) > 5 else ''}."),
+            evidence=[ev],
+            hypotheses_supported=["H_ROOTKIT", "H_APT_ESPIONAGE"],
+        ))]
+
+    def _flag_kernel_hooks(self, ctx: AgentContext,
+                            plugin: str,
+                            run: vol3.PluginRun) -> list[Finding]:
+        """vol3 extras: ssdt + driverirp expose kernel syscall / IRP
+        dispatch tables. A legitimate entry points at ntoskrnl.exe,
+        hal.dll, or win32k.sys (and variants). An entry pointing at
+        ANY other module is a kernel hook — near-unambiguous rootkit
+        primitive (SSDT hook for anti-AV / stealth; IRP hook for
+        file/registry interception)."""
+        legit_modules = {"ntoskrnl.exe", "ntkrnlpa.exe", "ntkrnlmp.exe",
+                         "ntoskrnl", "hal.dll", "hal", "halmacpi.dll",
+                         "win32k.sys", "win32k", "win32kbase.sys",
+                         "win32kfull.sys"}
+        hooks: list[dict] = []
+        for r in run.rows:
+            if not isinstance(r, dict):
+                continue
+            # Column names vary by plugin: SSDT uses "Module", DriverIrp
+            # uses "Module" too but sometimes "Owner". Check both.
+            module = ((r.get("Module") or r.get("Owner")
+                        or r.get("ModuleName") or "") or "").strip().lower()
+            if not module:
+                continue
+            # "UNKNOWN" / empty means vol3 couldn't resolve the address
+            # to a driver — suggestive of hook in unlinked memory.
+            if module in ("unknown", "n/a", "-"):
+                hooks.append(r)
+                continue
+            if module not in legit_modules:
+                hooks.append(r)
+
+        if not hooks:
+            return []
+        # Group by module name for the claim
+        from collections import Counter
+        by_module: Counter = Counter(
+            (r.get("Module") or r.get("Owner") or "unknown")
+            for r in hooks
+        )
+        sample = ", ".join(f"{m} ×{n}"
+                            for m, n in by_module.most_common(5))
+        ev = run.as_evidence({"hook_count": len(hooks),
+                               "by_module": dict(by_module)})
+        plugin_short = plugin.split(".")[-1]
+        return [self.emit(ctx, Finding(
+            case_id=ctx.case_id, agent=self.name, confidence="high",
+            claim=(f"Kernel hook(s) in {plugin_short}: {len(hooks)} "
+                   f"entry(ies) owned by non-core module(s) "
+                   f"({sample}). Expected owners are ntoskrnl / hal / "
+                   f"win32k only; anything else is a syscall-table or "
+                   f"IRP-dispatch hook — classic rootkit primitive."),
             evidence=[ev],
             hypotheses_supported=["H_ROOTKIT", "H_APT_ESPIONAGE"],
         ))]
