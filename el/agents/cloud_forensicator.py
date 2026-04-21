@@ -12,9 +12,12 @@ from pathlib import Path
 
 from el.agents.base import Agent, AgentContext
 from el.schemas.finding import EvidenceItem, Finding
+from el.skills import azure_activity as az_act
 from el.skills import azure_signin as asl
 from el.skills import cloudtrail
+from el.skills import gcp_audit as gcp
 from el.skills import m365_audit as ual
+from el.skills import vpc_flow_log as vpc
 
 
 _CLOUDTRAIL_HINTS = (b'"eventName"', b'"eventSource"', b'"awsRegion"')
@@ -44,20 +47,65 @@ _UAL_TO_HYPOTHESIS: dict[str, list[str]] = {
                                       "H_BEC_ACCOUNT_TAKEOVER"],
 }
 
+_AZURE_ACTIVITY_TO_HYPOTHESIS: dict[str, list[str]] = {
+    "privileged_role_assignment": ["H_CLOUD_PERSISTENCE",
+                                     "H_APT_ESPIONAGE"],
+    "nsg_open_to_world":          ["H_LATERAL_MOVEMENT",
+                                     "H_APT_ESPIONAGE"],
+    "keyvault_bulk_access":       ["H_CREDENTIAL_ACCESS",
+                                     "H_APT_ESPIONAGE"],
+    "resource_mass_delete":       ["H_RANSOMWARE",
+                                     "H_APT_ESPIONAGE"],
+}
+
+_GCP_TO_HYPOTHESIS: dict[str, list[str]] = {
+    "service_account_key_creation": ["H_CLOUD_PERSISTENCE",
+                                       "H_CREDENTIAL_ACCESS"],
+    "iam_privileged_grant":         ["H_CLOUD_PERSISTENCE",
+                                       "H_APT_ESPIONAGE"],
+    "policy_denied_burst":          ["H_APT_ESPIONAGE",
+                                       "H_OPPORTUNISTIC_COMMODITY"],
+    "storage_bucket_public_open":   ["H_INSIDER_DATA_EXFIL",
+                                       "H_CLOUD_PERSISTENCE"],
+}
+
+_VPC_FLOW_TO_HYPOTHESIS: dict[str, list[str]] = {
+    "denied_inbound_scan":  ["H_OPPORTUNISTIC_COMMODITY"],
+    "exfil_large_bytes":    ["H_INSIDER_DATA_EXFIL",
+                              "H_APT_ESPIONAGE"],
+    "outbound_admin_port":  ["H_LATERAL_MOVEMENT",
+                              "H_C2_OR_REVERSE_SHELL"],
+}
+
 
 def _detect_kind(path: Path) -> str:
-    """Sniff the first 16 KB to route the log to the right parser."""
+    """Sniff the first 16 KB to route the log to the right parser.
+    Order matters: most-specific signatures first so an Azure Activity
+    Log that contains the substring "eventName" in a nested property
+    doesn't misroute as CloudTrail."""
     try:
         with path.open("rb") as f:
             head = f.read(16_384)
     except OSError:
         return "unreadable"
-    if any(h in head for h in _CLOUDTRAIL_HINTS):
-        return "aws_cloudtrail"
+    # Sign-in log first — it has userPrincipalName + appDisplayName
     if asl.looks_like_signin_log(head):
         return "azure_signin"
+    # Azure activity log has operationName + resourceProviderName
+    if az_act.looks_like_azure_activity(head):
+        return "azure_activity"
+    # GCP audit log has protoPayload + googleapis.com
+    if gcp.looks_like_gcp_audit(head):
+        return "gcp_audit"
+    # M365 UAL
     if ual.looks_like_ual(head):
         return "m365_ual"
+    # AWS CloudTrail
+    if any(h in head for h in _CLOUDTRAIL_HINTS):
+        return "aws_cloudtrail"
+    # AWS VPC Flow Log (text, not JSON — pattern is distinct)
+    if vpc.looks_like_vpc_flow_log(head):
+        return "aws_vpc_flow"
     return "unknown"
 
 
@@ -78,14 +126,21 @@ class CloudForensicatorAgent(Agent):
             return self._run_cloudtrail(ctx, analysis)
         if kind == "azure_signin":
             return self._run_azure_signin(ctx, analysis)
+        if kind == "azure_activity":
+            return self._run_azure_activity(ctx, analysis)
+        if kind == "gcp_audit":
+            return self._run_gcp_audit(ctx, analysis)
         if kind == "m365_ual":
             return self._run_m365_ual(ctx, analysis)
+        if kind == "aws_vpc_flow":
+            return self._run_vpc_flow(ctx, analysis)
         return [self.emit(ctx, Finding(
             case_id=ctx.case_id, agent=self.name, confidence="insufficient",
             claim=("Input does not match any known cloud-log shape "
-                   "(AWS CloudTrail, Azure sign-in log, M365 UAL). "
-                   "If this IS a cloud log, check it exports at least "
-                   "the first record's distinguishing fields."),
+                   "(AWS CloudTrail / VPC Flow, Azure sign-in / "
+                   "activity, GCP Cloud Audit, M365 UAL). If this IS "
+                   "a cloud log, check it exports at least the first "
+                   "record's distinguishing fields."),
         ))]
 
     # ----- AWS CloudTrail (unchanged path) -----
@@ -203,6 +258,108 @@ class CloudForensicatorAgent(Agent):
                 or hit.event_count >= 50):
             return "high"
         return "medium"
+
+    # ----- Azure Activity Logs -----
+
+    def _run_azure_activity(self, ctx: AgentContext, analysis) -> list[Finding]:
+        record_count, hits = az_act.run_all(ctx.input_path)
+        ev = self._build_evidence(ctx, "azure_activity", record_count,
+                                    len(hits), analysis)
+        out: list[Finding] = []
+        out.append(self.emit(ctx, Finding(
+            case_id=ctx.case_id, agent=self.name, confidence="high",
+            claim=(f"Parsed {record_count} Azure Activity Log "
+                   f"record(s); {len(hits)} detector(s) fired."),
+            evidence=[ev], hypotheses_supported=["H_CLOUD_LOGS_AVAILABLE"],
+        )))
+        for h in hits:
+            # Privileged role assignment + key-vault bulk access +
+            # mass delete are always high; NSG open is high if it
+            # targets admin ports on 0.0.0.0/0, medium otherwise.
+            if h.technique in ("privileged_role_assignment",
+                                "keyvault_bulk_access",
+                                "resource_mass_delete"):
+                confidence = "high"
+            elif (len(h.top_principals) >= 2 or h.event_count >= 5):
+                confidence = "high"
+            else:
+                confidence = "medium"
+            out.append(self.emit(ctx, Finding(
+                case_id=ctx.case_id, agent=self.name, confidence=confidence,
+                claim=(f"Azure activity [{h.technique}/{h.subtechnique}] "
+                       f"— {h.description}"),
+                evidence=[ev],
+                hypotheses_supported=_AZURE_ACTIVITY_TO_HYPOTHESIS.get(
+                    h.technique, ["H_CLOUD_PERSISTENCE"]),
+            )))
+        return out
+
+    # ----- GCP Cloud Audit Logs -----
+
+    def _run_gcp_audit(self, ctx: AgentContext, analysis) -> list[Finding]:
+        record_count, hits = gcp.run_all(ctx.input_path)
+        ev = self._build_evidence(ctx, "gcp_audit", record_count,
+                                    len(hits), analysis)
+        out: list[Finding] = []
+        out.append(self.emit(ctx, Finding(
+            case_id=ctx.case_id, agent=self.name, confidence="high",
+            claim=(f"Parsed {record_count} GCP Cloud Audit Log "
+                   f"record(s); {len(hits)} detector(s) fired."),
+            evidence=[ev], hypotheses_supported=["H_CLOUD_LOGS_AVAILABLE"],
+        )))
+        for h in hits:
+            # Service-account key creation + privileged IAM grants are
+            # always high (cloud persistence primitive); public bucket
+            # is high; denied-burst uses the ≥3-principal tier.
+            if h.technique in ("service_account_key_creation",
+                                "iam_privileged_grant",
+                                "storage_bucket_public_open"):
+                confidence = "high"
+            elif (len(h.top_principals) >= 3 or h.event_count >= 50):
+                confidence = "high"
+            else:
+                confidence = "medium"
+            out.append(self.emit(ctx, Finding(
+                case_id=ctx.case_id, agent=self.name, confidence=confidence,
+                claim=(f"GCP audit [{h.technique}/{h.subtechnique}] — "
+                       f"{h.description}"),
+                evidence=[ev],
+                hypotheses_supported=_GCP_TO_HYPOTHESIS.get(
+                    h.technique, ["H_CLOUD_PERSISTENCE"]),
+            )))
+        return out
+
+    # ----- AWS VPC Flow Logs -----
+
+    def _run_vpc_flow(self, ctx: AgentContext, analysis) -> list[Finding]:
+        record_count, hits = vpc.run_all(ctx.input_path)
+        ev = self._build_evidence(ctx, "aws_vpc_flow", record_count,
+                                    len(hits), analysis)
+        out: list[Finding] = []
+        out.append(self.emit(ctx, Finding(
+            case_id=ctx.case_id, agent=self.name, confidence="high",
+            claim=(f"Parsed {record_count} AWS VPC Flow Log record(s); "
+                   f"{len(hits)} detector(s) fired."),
+            evidence=[ev], hypotheses_supported=["H_CLOUD_LOGS_AVAILABLE"],
+        )))
+        for h in hits:
+            # Exfil + outbound admin port: high; scan: medium (a single
+            # scan source is often commodity bot noise, not a targeted
+            # breach — the interesting signal is a scan that precedes
+            # an ACCEPT to the scanned port).
+            if h.technique in ("exfil_large_bytes", "outbound_admin_port"):
+                confidence = "high"
+            else:
+                confidence = "medium"
+            out.append(self.emit(ctx, Finding(
+                case_id=ctx.case_id, agent=self.name, confidence=confidence,
+                claim=(f"AWS VPC Flow [{h.technique}/{h.subtechnique}] — "
+                       f"{h.description}"),
+                evidence=[ev],
+                hypotheses_supported=_VPC_FLOW_TO_HYPOTHESIS.get(
+                    h.technique, ["H_CLOUD_LOGS_AVAILABLE"]),
+            )))
+        return out
 
     def _tenant_domains_from_ctx(self, ctx: AgentContext) -> set[str]:
         """The operator can supply tenant domains via ctx.shared so
