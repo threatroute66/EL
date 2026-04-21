@@ -26,7 +26,7 @@ def test_plaso_log2timeline_defaults_to_win10_utc(tmp_path):
 
     captured = {}
 
-    def fake_run(cmd, capture_output, text, timeout):
+    def fake_run(cmd, capture_output, text=None, timeout=None):
         captured["cmd"] = cmd
         class P: returncode = 0; stdout = ""; stderr = ""
         return P()
@@ -48,7 +48,7 @@ def test_plaso_log2timeline_vss_opt_in_for_intrusion(tmp_path):
 
     captured = {}
 
-    def fake_run(cmd, capture_output, text, timeout):
+    def fake_run(cmd, capture_output, text=None, timeout=None):
         captured["cmd"] = cmd
         class P: returncode = 0; stdout = ""; stderr = ""
         return P()
@@ -67,9 +67,12 @@ def test_mactime_uses_utc_default(tmp_path):
     body = tmp_path / "body.txt"
     body.write_text("")
 
-    def fake_run(cmd, capture_output, text, timeout):
+    def fake_run(cmd, capture_output, text=None, timeout=None):
         captured["cmd"] = cmd
-        class P: returncode = 0; stdout = ""; stderr = ""
+        class P:
+            returncode = 0
+            stdout = b""
+            stderr = b""
         return P()
 
     with patch("el.skills.sleuthkit.subprocess.run", side_effect=fake_run), \

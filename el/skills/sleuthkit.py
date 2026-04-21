@@ -61,12 +61,19 @@ def _run(tool: str, image: Path, args: list[str], out_dir: Path, label: str, tim
     stderr_path = out_dir / f"{label}.stderr"
     cmd = [_which(tool), *args]
     try:
-        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        # Capture as bytes — fls on non-Windows filesystems can emit
+        # filenames with non-UTF-8 bytes (Latin-1 accented chars,
+        # mojibake from broken encodings, etc). Decode with errors=
+        # replace when writing the stdout file so the pipeline
+        # doesn't crash on a single bad byte.
+        proc = subprocess.run(cmd, capture_output=True, timeout=timeout)
     except subprocess.TimeoutExpired as e:
         stderr_path.write_text(f"TIMEOUT after {timeout}s\n{e}")
         raise SleuthkitError(f"timeout running {tool}") from e
-    stdout_path.write_text(proc.stdout or "")
-    stderr_path.write_text(proc.stderr or "")
+    stdout_bytes = proc.stdout or b""
+    stderr_bytes = proc.stderr or b""
+    stdout_path.write_text(stdout_bytes.decode("utf-8", errors="replace"))
+    stderr_path.write_text(stderr_bytes.decode("utf-8", errors="replace"))
     return TskRun(tool=tool, image=image, rc=proc.returncode,
                   stdout_path=stdout_path, stderr_path=stderr_path, command=cmd)
 
