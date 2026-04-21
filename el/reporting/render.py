@@ -85,6 +85,17 @@ def render_report(
             lines.append(f"    - Δ: {spread}")
         lines.append("")
 
+    # T4-1: formal Heuer ACH consistency matrix + Diamond Model view.
+    # Both are lightweight projections of data already on the
+    # findings ledger + IOC catalog — no extra queries, no per-case
+    # tuning required.
+    from el.reporting.ach_matrix import build_ach_matrix_markdown
+    from el.reporting.diamond import build_diamond_markdown
+    if ach_ranking:
+        lines.extend(build_ach_matrix_markdown(findings, ach_ranking))
+        lines.extend(build_diamond_markdown(findings, ach_ranking,
+                                              iocs, manifest))
+
     lines.append("## Findings")
     lines.append("")
     for conf in ("high", "medium", "low", "insufficient"):

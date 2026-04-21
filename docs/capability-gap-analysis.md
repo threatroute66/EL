@@ -322,7 +322,7 @@ wraps `dotnet` for EZ Tools.
 | 3 | macOS / APFS agent family | OS-agnostic abstractions already support it; ~2-3 weeks |
 | 3 | Mobile (iLEAPP / ALEAPP wrap) | Cheapest tier-3: Python tools already extract 80%; ~1-2 weeks |
 | 3 | ~~Teams / Slack / OneDrive parsers~~ ✅ (remote-access subset) | Shipped the high-signal subset: TeamViewer + AnyDesk inbound/outbound session detection. Teams / Slack LevelDB parsing deferred — needs a LevelDB dep; fold in when real cases demand it. |
-| 4 | Diamond Model / ACH matrix export | Reporting polish |
+| 4 | ~~Diamond Model / ACH matrix export~~ ✅ | Shipped; `ach_matrix.py` + `diamond.py` wired into `render_report`; validated on srl-dc-disk-r3 (APT score 30 → Diamond with Kerberoasting SPNs as Victim users) |
 | 4 | STIX 2.1 import + MISP/TAXII | Knowledge-DB enrichment |
 
 None of these are committed to. They're a menu informed by the posters;
