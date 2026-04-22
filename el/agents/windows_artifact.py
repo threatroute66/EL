@@ -76,6 +76,7 @@ class WindowsArtifactAgent(Agent):
         out.extend(self._bam_dam(ctx, root, analysis))
         out.extend(self._win_timeline(ctx, root, analysis))
         out.extend(self._recent_docs(ctx, root, analysis))
+        out.extend(self._ie_cache(ctx, root, analysis))
         # T3-3: remote-access tooling (TeamViewer + AnyDesk) — any
         # inbound session from an unknown peer is high-signal even
         # when the tool is legitimately installed.
@@ -154,10 +155,58 @@ class WindowsArtifactAgent(Agent):
         d = _finddir(root, "evtx", "Logs", "winevt")
         if not d:
             d = root if any(p.suffix.lower() == ".evtx" for p in root.rglob("*.evtx")) else None
-        if not d:
-            return []
-        return self._try(ctx, f"EvtxECmd ({d.name})",
-                         lambda: ezt.run_evtxecmd(d, analysis / "evtx"))
+        if d:
+            return self._try(ctx, f"EvtxECmd ({d.name})",
+                             lambda: ezt.run_evtxecmd(d, analysis / "evtx"))
+        # No EVTX found — fall back to XP / 2003 legacy .evt. This
+        # closes the M57-Jean gap where credential_analyst and
+        # lateral_movement_analyst landed on confidence=insufficient
+        # because no evtx_parsed.csv existed. Converting the three
+        # standard .evt files (SecEvent, AppEvent, SysEvent) into an
+        # EvtxECmd-shaped CSV lets the downstream agents consume them.
+        evt_files = sorted(list(root.rglob("*.evt"))
+                           + list(root.rglob("*.EVT")))
+        if evt_files:
+            return self._convert_xp_evt(ctx, evt_files, analysis)
+        return []
+
+    def _convert_xp_evt(self, ctx, evt_files, analysis):
+        from el.skills import xp_evt
+        out: list[Finding] = []
+        evtx_dir = analysis / "evtx"
+        evtx_dir.mkdir(parents=True, exist_ok=True)
+        csv_out = evtx_dir / "evtx_parsed.csv"
+        parent_dir = evt_files[0].parent
+        try:
+            run = xp_evt.convert_all_evt(
+                parent_dir, csv_out, evtx_dir / "raw")
+        except Exception as e:
+            return [self.emit(ctx, Finding(
+                case_id=ctx.case_id, agent=self.name,
+                confidence="insufficient",
+                claim=f"XP .evt conversion failed: {e}",
+            ))]
+        if run.event_count == 0:
+            return [self.emit(ctx, Finding(
+                case_id=ctx.case_id, agent=self.name,
+                confidence="insufficient",
+                claim=(f"Legacy .evt files present ({len(evt_files)} "
+                       f"under {parent_dir.name}) but evtexport produced "
+                       f"no parsable records."),
+                evidence=[run.as_evidence()],
+            ))]
+        out.append(self.emit(ctx, Finding(
+            case_id=ctx.case_id, agent=self.name, confidence="high",
+            claim=(f"Legacy XP/2003 .evt → EVTX-shaped CSV conversion: "
+                   f"{run.event_count} record(s) from "
+                   f"{len(evt_files)} .evt file(s) at "
+                   f"{parent_dir.name}. Downstream credential / lateral "
+                   f"/ sigma analysts can now consume "
+                   f"analysis/windows_artifact/evtx/evtx_parsed.csv."),
+            evidence=[run.as_evidence()],
+            hypotheses_supported=["H_DISK_ARTIFACTS"],
+        )))
+        return out
 
     def _srum(self, ctx, root, analysis):
         p = _findfirst(root, "SRUDB.dat")
@@ -196,6 +245,96 @@ class WindowsArtifactAgent(Agent):
             return []
         return self._try(ctx, f"RBCmd ({d.name})",
                          lambda: ezt.run_rbcmd(d, analysis / "recyclebin"))
+
+    def _ie_cache(self, ctx, root, analysis):
+        """Parse legacy IE5 Content.IE5 / index.dat records. Surfaces
+        tracker-sync URLs, raw-IP hosts, unusual TLDs — the M57-Jean
+        jynxora signal (Content.IE5 session-hijack JS under the
+        Administrator profile)."""
+        from el.skills import ie_cache
+        out: list[Finding] = []
+        index_dats = ie_cache.find_index_dat_files(root)
+        if not index_dats:
+            return out
+        all_items: list = []
+        sources: list[str] = []
+        out_dir = analysis / "ie_cache"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        for i, idx in enumerate(index_dats[:50]):
+            sources.append(str(idx))
+            try:
+                run = ie_cache.parse(
+                    idx, out_dir / f"{i:03d}_{idx.parent.name}.txt")
+            except Exception:
+                continue
+            all_items.extend(run.items)
+        if not all_items:
+            return out
+        suspects = ie_cache.flag_suspects(all_items)
+        # Volume finding
+        summary_ev = EvidenceItem(
+            tool="el.ie_cache", version="0.1.0",
+            command=(f"msiecfexport over {len(index_dats)} "
+                     f"index.dat file(s)"),
+            output_sha256="0" * 64,
+            output_path=str(out_dir),
+            extracted_facts={
+                "index_dat_count": len(index_dats),
+                "item_count": len(all_items),
+                "suspects_by_kind": {
+                    k: sum(1 for s in suspects if s.kind == k)
+                    for k in ("raw_ip", "unusual_tld",
+                               "tracker_sync", "long_query")},
+                "sources": sources[:10],
+            },
+        )
+        out.append(self.emit(ctx, Finding(
+            case_id=ctx.case_id, agent=self.name, confidence="high",
+            claim=(f"IE5 Content.IE5 cache parsed: {len(index_dats)} "
+                   f"index.dat file(s), {len(all_items)} record(s). "
+                   f"Suspicious: "
+                   f"{sum(1 for s in suspects if s.kind == 'raw_ip')} raw-IP, "
+                   f"{sum(1 for s in suspects if s.kind == 'unusual_tld')} unusual-TLD, "
+                   f"{sum(1 for s in suspects if s.kind == 'tracker_sync')} tracker-sync URL(s)."),
+            evidence=[summary_ev],
+            hypotheses_supported=["H_DISK_ARTIFACTS"],
+        )))
+        if suspects:
+            sample = "; ".join(
+                f"[{s.kind}] {s.url[:80]} ({s.filename})"
+                for s in suspects[:5])
+            ev = EvidenceItem(
+                tool="el.ie_cache", version="0.1.0",
+                command="flag_suspects over parsed IE5 records",
+                output_sha256="0" * 64,
+                output_path=str(out_dir),
+                extracted_facts={
+                    "top_suspects": [
+                        {"kind": s.kind, "url": s.url[:200],
+                         "filename": s.filename,
+                         "modified_utc": s.modified_utc,
+                         "note": s.note}
+                        for s in suspects[:30]
+                    ],
+                    "total_suspects": len(suspects),
+                },
+            )
+            has_tracker = any(s.kind == "tracker_sync" for s in suspects)
+            hyp = (["H_INITIAL_ACCESS_WEB", "H_BEC_ACCOUNT_TAKEOVER"]
+                   if has_tracker
+                   else ["H_OPPORTUNISTIC_COMMODITY"])
+            out.append(self.emit(ctx, Finding(
+                case_id=ctx.case_id, agent=self.name, confidence="medium",
+                claim=(f"IE5 cache suspicious URLs: {len(suspects)} "
+                       f"row(s) flagged ({sum(1 for s in suspects if s.kind == 'tracker_sync')} "
+                       f"tracker-sync / session-hijack JS pattern(s), "
+                       f"{sum(1 for s in suspects if s.kind == 'raw_ip')} raw-IP, "
+                       f"{sum(1 for s in suspects if s.kind == 'unusual_tld')} unusual-TLD). "
+                       f"Sample: {sample}"),
+                evidence=[ev],
+                hypotheses_supported=hyp,
+            )))
+        return out
 
     def _bam_dam(self, ctx, root, analysis):
         """Walk the SYSTEM hive's BAM/DAM subtree and surface per-user

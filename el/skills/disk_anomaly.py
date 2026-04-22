@@ -249,7 +249,88 @@ def scan_text(text: str) -> list[PathHit]:
                 hypotheses=list(p.hypotheses),
                 attack_techniques=list(p.attack_techniques),
             ))
+    # Row-level detector: zero-size / zero-timestamp Windows system
+    # binaries — the anti-forensic pattern jynxora flagged on M57-Jean
+    # (debug.exe / ipconfig.exe / wscntfy.exe etc. wiped to 0 bytes
+    # with 0000-00-00 timestamps under /WINDOWS/system32 + /dllcache +
+    # /ServicePackFiles). bodyfile columns are
+    # md5|name|inode|mode|uid|gid|size|atime|mtime|ctime|crtime
+    out.extend(_scan_bodyfile_rowwise(text))
     return out
+
+
+_SYSTEM_BIN_PATH_RE = re.compile(
+    r"[/\\](?:"
+    r"WINDOWS[/\\]system32(?:[/\\]dllcache)?"
+    r"|WINDOWS[/\\]ServicePackFiles[/\\](?:i386|amd64)"
+    r"|Windows[/\\]System32(?:[/\\]dllcache)?"
+    r"|Windows[/\\]ServicePackFiles[/\\](?:i386|amd64)"
+    r")[/\\][^/\\|\r\n]+\.(?:exe|dll|sys)\b",
+    re.I,
+)
+
+
+def _scan_bodyfile_rowwise(text: str) -> list[PathHit]:
+    """Parse pipe-delimited fls bodyfile lines and flag rows whose path
+    is a /WINDOWS/system32 binary AND whose size is 0 OR whose four
+    timestamps (atime, mtime, ctime, crtime) are all zero."""
+    zero_size: list[str] = []
+    zero_ts: list[str] = []
+    for line in text.splitlines():
+        if "|" not in line:
+            continue
+        parts = line.split("|")
+        if len(parts) < 11:
+            continue
+        name = parts[1]
+        if not _SYSTEM_BIN_PATH_RE.search(name):
+            continue
+        try:
+            size = int(parts[6] or "0")
+            atime = int(parts[7] or "0")
+            mtime = int(parts[8] or "0")
+            ctime = int(parts[9] or "0")
+            crtime = int(parts[10] or "0")
+        except ValueError:
+            continue
+        # FILE_NAME attribute rows (NTFS 48-2) often have size=0 legitimately;
+        # only flag DATA rows (mode shows $DATA or no $-suffix)
+        is_fname_attr = "($FILE_NAME)" in name
+        if size == 0 and not is_fname_attr:
+            if len(zero_size) < 15:
+                zero_size.append(name[-120:])
+        if (atime == mtime == ctime == crtime == 0) and not is_fname_attr:
+            if len(zero_ts) < 15:
+                zero_ts.append(name[-120:])
+    hits: list[PathHit] = []
+    if zero_size:
+        hits.append(PathHit(
+            pattern_id="SYSTEM_BINARY_ZERO_SIZE",
+            description=("Windows system binary / DLL / driver with "
+                         "size=0 — anti-forensic wipe of a binary the "
+                         "attacker executed (jynxora M57-Jean signature)"),
+            matches=zero_size,
+            hypotheses=["H_ANTI_FORENSICS", "H_LOG_CLEARED"],
+            attack_techniques=[
+                ("T1070.004",
+                  "Indicator Removal: File Deletion"),
+                ("T1565.001",
+                  "Stored Data Manipulation"),
+            ],
+        ))
+    if zero_ts:
+        hits.append(PathHit(
+            pattern_id="SYSTEM_BINARY_ZERO_TIMESTAMPS",
+            description=("Windows system binary with all four MACB "
+                         "timestamps zero — timestomping / anti-forensic "
+                         "tampering of a system file"),
+            matches=zero_ts,
+            hypotheses=["H_ANTI_FORENSICS"],
+            attack_techniques=[
+                ("T1070.006", "Indicator Removal: Timestomp"),
+            ],
+        ))
+    return hits
 
 
 def scan_file(path: Path, max_bytes: int = 200 * 1024 * 1024) -> list[PathHit]:

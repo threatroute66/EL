@@ -16,6 +16,7 @@ NODE_DDL = [
     "CREATE NODE TABLE IF NOT EXISTS Hash(value STRING, algo STRING, PRIMARY KEY(value))",
     "CREATE NODE TABLE IF NOT EXISTS NetworkFlow(flow_id STRING, src STRING, dst STRING, sport INT64, dport INT64, proto STRING, bytes INT64, start_utc STRING, PRIMARY KEY(flow_id))",
     "CREATE NODE TABLE IF NOT EXISTS Event(event_id STRING, source STRING, channel STRING, eid INT64, ts_utc STRING, host STRING, PRIMARY KEY(event_id))",
+    "CREATE NODE TABLE IF NOT EXISTS Email(msg_id STRING, subject STRING, folder STRING, pst_path STRING, sent_utc STRING, has_attachments INT64, PRIMARY KEY(msg_id))",
 ]
 
 REL_DDL = [
@@ -32,6 +33,12 @@ REL_DDL = [
     "CREATE REL TABLE IF NOT EXISTS AUTHENTICATED_AS(FROM Event TO User)",
     "CREATE REL TABLE IF NOT EXISTS RAISED_BY(FROM Event TO Process)",
     "CREATE REL TABLE IF NOT EXISTS RUNS_ON(FROM Process TO Host)",
+    # Email case correlation — sender/recipient Users, attached Files,
+    # sender-domain Domain. Populated by EmailForensicatorAgent.
+    "CREATE REL TABLE IF NOT EXISTS SENT_FROM(FROM Email TO User)",
+    "CREATE REL TABLE IF NOT EXISTS SENT_TO(FROM Email TO User)",
+    "CREATE REL TABLE IF NOT EXISTS HAS_ATTACHMENT(FROM Email TO File)",
+    "CREATE REL TABLE IF NOT EXISTS EMAILS_ON_DOMAIN(FROM User TO Domain)",
 ]
 
 

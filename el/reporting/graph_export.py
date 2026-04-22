@@ -43,6 +43,8 @@ _NODE_TABLES: tuple[tuple[str, str, str, tuple[str, ...]], ...] = (
     ("Hash",         "value",    "hash",    ("algo",)),
     ("NetworkFlow",  "flow_id",  "flow",    ("src", "dst", "dport", "proto")),
     ("Event",        "event_id", "event",   ("source", "eid", "host")),
+    ("Email",        "msg_id",   "email",   ("subject", "folder",
+                                              "pst_path", "sent_utc")),
 )
 
 
@@ -61,6 +63,10 @@ _REL_TABLES: tuple[tuple[str, str, str], ...] = (
     ("AUTHENTICATED_AS",   "Event",        "User"),
     ("RAISED_BY",          "Event",        "Process"),
     ("RUNS_ON",            "Process",      "Host"),
+    ("SENT_FROM",          "Email",        "User"),
+    ("SENT_TO",            "Email",        "User"),
+    ("HAS_ATTACHMENT",     "Email",        "File"),
+    ("EMAILS_ON_DOMAIN",   "User",         "Domain"),
 )
 
 

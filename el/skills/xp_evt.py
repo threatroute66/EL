@@ -1,0 +1,269 @@
+"""Skill: Windows XP / 2003 legacy event-log (.evt) parser.
+
+Wraps `evtexport` from libevt. Pre-Vista event logs are in the binary
+`.evt` format (not `.evtx`) and are NOT readable by EvtxECmd — this
+is why the M57-Jean run landed `credential_analyst` + `lateral_movement
+_analyst` on confidence=insufficient (no evtx_parsed.csv). This skill
+produces an evtx-shaped CSV so those downstream agents have something
+to consume.
+
+Output: a CSV with the same columns EvtxECmd emits, good enough for
+the SIGMA engine + credential / lateral movement detectors:
+  RecordNumber, EventRecordId, TimeCreated, Channel, Provider,
+  EventId, Level, Computer, UserId, UserName, ExecutableInfo,
+  MapDescription, PayloadData1..6, Payload
+"""
+from __future__ import annotations
+
+import csv
+import re
+import shutil
+import subprocess
+from dataclasses import dataclass, field
+from pathlib import Path
+
+from el.schemas.finding import EvidenceItem
+
+
+@dataclass
+class EvtRun:
+    source_path: Path
+    csv_path: Path
+    rc: int
+    event_count: int = 0
+    raw_path: Path | None = None
+
+    def as_evidence(self, facts: dict | None = None) -> EvidenceItem:
+        import hashlib
+        sha = "0" * 64
+        if self.csv_path.is_file():
+            sha = hashlib.sha256(self.csv_path.read_bytes()).hexdigest()
+        base = {"source": str(self.source_path),
+                "event_count": self.event_count, "rc": self.rc,
+                "csv_path": str(self.csv_path)}
+        if facts:
+            base.update(facts)
+        return EvidenceItem(
+            tool="evtexport", version="libevt-20240421",
+            command=f"evtexport {self.source_path}",
+            output_sha256=sha, output_path=str(self.csv_path),
+            extracted_facts=base,
+        )
+
+
+class XpEvtError(RuntimeError):
+    pass
+
+
+def _which() -> str:
+    p = shutil.which("evtexport")
+    if not p:
+        raise XpEvtError(
+            "evtexport not on PATH — apt install libevt-tools")
+    return p
+
+
+def _export_stdout(evt_path: Path, out_dir: Path,
+                    timeout: int = 300) -> tuple[Path, int]:
+    """Run evtexport against a single .evt, capture stdout to out_dir.
+    Returns (raw stdout path, subprocess rc)."""
+    out_dir.mkdir(parents=True, exist_ok=True)
+    raw = out_dir / f"{evt_path.name}.raw.txt"
+    exe = _which()
+    try:
+        r = subprocess.run(
+            [exe, str(evt_path)],
+            capture_output=True, timeout=timeout, check=False,
+        )
+    except subprocess.TimeoutExpired:
+        raw.write_bytes(b"")
+        return raw, -2
+    raw.write_bytes(r.stdout or b"")
+    return raw, r.returncode
+
+
+_EVENT_HEAD_RE = re.compile(
+    r"^Event record:\s*(\d+)\s*of\s*(\d+)", re.MULTILINE)
+_KV_RE = re.compile(r"^([\w ()]+?):\s*(.*)$", re.MULTILINE)
+
+
+def _parse_records(text: str) -> list[dict]:
+    """Split evtexport stdout into per-record dicts. Format is:
+
+        Event record: <N> of <M>
+            Event identifier               : 4624
+            Creation time                  : Jul 18, 2008 05:28:48.000
+            Source name                    : Security
+            Computer name                  : JEAN-PC
+            ...
+
+    One blank line separates records."""
+    records: list[dict] = []
+    # Split on Event-record headers so each chunk is one event
+    chunks = _EVENT_HEAD_RE.split(text)
+    # After split: [header_prefix, rec_n, total_n, chunk_body, rec_n, ...]
+    # Walk in groups of 3 post-index-0
+    for i in range(1, len(chunks) - 2, 3):
+        rec_id = chunks[i]
+        body = chunks[i + 2]
+        if not body:
+            continue
+        fields: dict[str, str] = {"record_number": rec_id.strip()}
+        for m in _KV_RE.finditer(body):
+            k = m.group(1).strip().lower().replace(" ", "_")
+            v = m.group(2).strip()
+            # First occurrence wins (later lines are Strings/Data)
+            if k not in fields:
+                fields[k] = v
+        records.append(fields)
+    return records
+
+
+_EVT_CSV_HEADERS = (
+    "RecordNumber", "EventRecordId", "TimeCreated", "Channel",
+    "Provider", "EventId", "Level", "Computer", "UserId", "UserName",
+    "ExecutableInfo", "MapDescription",
+    "PayloadData1", "PayloadData2", "PayloadData3",
+    "PayloadData4", "PayloadData5", "PayloadData6", "Payload",
+)
+
+
+def _records_to_evtx_csv(records: list[dict], channel_hint: str,
+                          csv_out: Path) -> int:
+    """Write an EvtxECmd-shaped CSV. channel_hint is the log-name
+    inferred from the .evt filename (SecEvent.Evt → Security,
+    AppEvent.Evt → Application, SysEvent.Evt → System)."""
+    n = 0
+    with csv_out.open("w", newline="", encoding="utf-8") as f:
+        w = csv.writer(f, quoting=csv.QUOTE_MINIMAL)
+        w.writerow(_EVT_CSV_HEADERS)
+        for r in records:
+            eid = r.get("event_identifier", "").split()[0] or "0"
+            # evtexport embeds numeric + flag bits, keep just the number
+            try:
+                eid_int = int(re.findall(r"\d+", eid)[0])
+            except (IndexError, ValueError):
+                eid_int = 0
+            ts = r.get("creation_time", "")
+            provider = r.get("source_name", "")
+            computer = r.get("computer_name", "")
+            user = r.get("user_security_identifier", "")
+            payload = " | ".join(
+                (r.get(f"string_{i}", "") for i in range(1, 10))
+            ).strip()
+            w.writerow([
+                r.get("record_number", ""),
+                r.get("record_number", ""),
+                ts,
+                channel_hint,
+                provider,
+                eid_int,
+                r.get("event_type", ""),
+                computer,
+                user,
+                r.get("user_name", ""),
+                "",       # ExecutableInfo — XP EVT doesn't carry
+                "",       # MapDescription — not applicable
+                r.get("string_1", ""),
+                r.get("string_2", ""),
+                r.get("string_3", ""),
+                r.get("string_4", ""),
+                r.get("string_5", ""),
+                r.get("string_6", ""),
+                payload,
+            ])
+            n += 1
+    return n
+
+
+_NAME_TO_CHANNEL = {
+    "secevent.evt": "Security",
+    "appevent.evt": "Application",
+    "sysevent.evt": "System",
+}
+
+
+def convert_evt_to_evtx_csv(evt_path: str | Path,
+                             csv_out: str | Path,
+                             analysis_dir: str | Path) -> EvtRun:
+    """Full pipeline: evtexport → parse → EvtxECmd-shaped CSV.
+    Returns EvtRun with .event_count populated."""
+    src = Path(evt_path)
+    csv_path = Path(csv_out)
+    ad = Path(analysis_dir)
+    raw_path, rc = _export_stdout(src, ad)
+    if rc not in (0,):
+        return EvtRun(source_path=src, csv_path=csv_path,
+                      rc=rc, event_count=0, raw_path=raw_path)
+    text = raw_path.read_text(encoding="utf-8", errors="replace")
+    records = _parse_records(text)
+    channel = _NAME_TO_CHANNEL.get(src.name.lower(), src.stem)
+    n = _records_to_evtx_csv(records, channel, csv_path)
+    return EvtRun(source_path=src, csv_path=csv_path, rc=rc,
+                   event_count=n, raw_path=raw_path)
+
+
+def convert_all_evt(evt_dir: str | Path,
+                     csv_out: str | Path,
+                     analysis_dir: str | Path) -> EvtRun:
+    """Convert every .evt under evt_dir and concatenate into a single
+    EvtxECmd-shaped CSV at csv_out. Returns the aggregate EvtRun."""
+    root = Path(evt_dir)
+    csv_path = Path(csv_out)
+    ad = Path(analysis_dir)
+    if not root.exists():
+        return EvtRun(source_path=root, csv_path=csv_path,
+                      rc=-1, event_count=0)
+    all_records: list[tuple[str, dict]] = []
+    rc_sum = 0
+    for evt in sorted(root.rglob("*.evt")) + sorted(root.rglob("*.EVT")):
+        raw_path, rc = _export_stdout(evt, ad)
+        rc_sum = max(rc_sum, rc if rc >= 0 else abs(rc))
+        if rc != 0:
+            continue
+        text = raw_path.read_text(encoding="utf-8", errors="replace")
+        channel = _NAME_TO_CHANNEL.get(evt.name.lower(), evt.stem)
+        for rec in _parse_records(text):
+            all_records.append((channel, rec))
+    # Write aggregate CSV
+    csv_path.parent.mkdir(parents=True, exist_ok=True)
+    n = 0
+    if all_records:
+        with csv_path.open("w", newline="", encoding="utf-8") as f:
+            w = csv.writer(f, quoting=csv.QUOTE_MINIMAL)
+            w.writerow(_EVT_CSV_HEADERS)
+            for channel, r in all_records:
+                eid_raw = r.get("event_identifier", "0")
+                try:
+                    eid_int = int(re.findall(r"\d+", eid_raw)[0])
+                except (IndexError, ValueError):
+                    eid_int = 0
+                payload = " | ".join(
+                    (r.get(f"string_{i}", "") for i in range(1, 10))
+                ).strip()
+                w.writerow([
+                    r.get("record_number", ""),
+                    r.get("record_number", ""),
+                    r.get("creation_time", ""),
+                    channel,
+                    r.get("source_name", ""),
+                    eid_int,
+                    r.get("event_type", ""),
+                    r.get("computer_name", ""),
+                    r.get("user_security_identifier", ""),
+                    r.get("user_name", ""),
+                    "", "",
+                    r.get("string_1", ""), r.get("string_2", ""),
+                    r.get("string_3", ""), r.get("string_4", ""),
+                    r.get("string_5", ""), r.get("string_6", ""),
+                    payload,
+                ])
+                n += 1
+    return EvtRun(source_path=root, csv_path=csv_path,
+                   rc=0 if n else rc_sum, event_count=n)
+
+
+__all__ = [
+    "EvtRun", "XpEvtError",
+    "convert_evt_to_evtx_csv", "convert_all_evt",
+]
