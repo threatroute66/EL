@@ -463,6 +463,59 @@ def serve_cmd(
             console.print("\n[dim]server stopped[/dim]")
 
 
+@app.command("timeline-memory")
+def timeline_memory_cmd(
+    cases: list[str] = typer.Argument(
+        ..., help="Two or more case directories (paths under /opt/EL/"
+                 "cases/). The earliest (by intake_utc) becomes the "
+                 "baseline when --baseline isn't given."),
+    baseline: str = typer.Option(
+        None, "--baseline", "-b",
+        help="Explicit baseline case dir. If omitted, the "
+             "chronologically earliest --cases entry is used."),
+    out: str = typer.Option(
+        None, "--out", "-o",
+        help="Output Markdown path. Default: "
+             "/tmp/el-memory-timeline-<ts>.md"),
+    top_n: int = typer.Option(
+        30, "--top-n",
+        help="Max novel / removed modules shown per snapshot. "
+             "Default 30 — full sets live in the source JSON."),
+) -> None:
+    """Diff memory-module inventories across cases (Roussev & Quates
+    2012, M57 Case 2). Produces a chronological narrative of what
+    executables / DLLs / drivers entered and left memory between
+    snapshots — often enough to see attacker tooling land and
+    disappear without any deep parsing.
+    """
+    from datetime import datetime, timezone
+    from el.skills.memory_timeline import build_timeline, render_markdown
+    if len(cases) < 2 and not baseline:
+        console.print(
+            "[red]need at least two case dirs (or one + --baseline)[/red]")
+        raise typer.Exit(2)
+    dirs = [Path(c) for c in cases]
+    for d in dirs + ([Path(baseline)] if baseline else []):
+        if not d.is_dir():
+            console.print(f"[red]not a directory: {d}[/red]")
+            raise typer.Exit(2)
+    tl = build_timeline(dirs, baseline=baseline)
+    md = render_markdown(tl, top_n=top_n)
+    if not out:
+        ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        out = f"/tmp/el-memory-timeline-{ts}.md"
+    Path(out).write_text(md)
+    console.print(f"[bold]baseline[/bold]: {tl.baseline_case_id} "
+                  f"({tl.baseline_count} modules)")
+    console.print(f"[bold]snapshots[/bold]: {len(tl.entries)}")
+    for e in tl.entries:
+        console.print(
+            f"  {e.case_id:<40} novel_vs_base={len(e.novel_vs_baseline):<5} "
+            f"novel_vs_prev={len(e.novel_vs_previous):<4} "
+            f"removed={len(e.removed_vs_previous)}")
+    console.print(f"[bold]report[/bold]: {out}")
+
+
 @app.command("hunt")
 def hunt_cmd(
     case_dir: str = typer.Argument(..., help="Path to a case directory"),

@@ -239,6 +239,14 @@ el serve --uninstall-service               # reverse
 el hunt /opt/EL/cases/wkstn-01
 el hunt /opt/EL/cases/wkstn-01 --rules /opt/signature-base/yara/
 
+# Memory timeline across multiple RAM-snapshot cases (Roussev & Quates
+# 2012 M57 Case-2 methodology): diff each snapshot's module inventory
+# against a baseline + against the previous snapshot to reveal what
+# executables / DLLs / drivers entered or left memory between snapshots.
+el timeline-memory /opt/EL/cases/host-day1 /opt/EL/cases/host-day3 \
+    --baseline /opt/EL/cases/host-baseline-disk
+el timeline-memory /opt/EL/cases/srl-*-memory    # earliest becomes baseline
+
 # Browse the findings ledger
 el ledger /opt/EL/cases/wkstn-01
 
