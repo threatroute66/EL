@@ -230,6 +230,38 @@ _JS = r"""
   let activeAgent = "all";
   let activeConf = "all";
 
+  // ----- Tier 4: live-update mode --------------------------------------
+  // Opt-in via ?watch=N (seconds; default 3) or ?watch=1. Plain reload —
+  // matches the design doc's "static-served, no websockets" constraint.
+  // When `el report --html --watch` is running on the same case dir, the
+  // page content updates on every ledger change.
+  function startWatch() {
+    const params = new URLSearchParams(window.location.search);
+    const raw = params.get("watch");
+    if (raw === null) return;
+    let interval = parseFloat(raw);
+    if (!(interval > 0) || interval < 1) interval = 3;
+    const badge = document.createElement("span");
+    badge.id = "watch-badge";
+    badge.textContent = "LIVE · " + interval + "s";
+    badge.style.cssText = "background:#f85149;color:white;font-size:11px;font-weight:600;padding:2px 8px;border-radius:10px;margin-left:10px;letter-spacing:0.03em;";
+    const h1 = document.querySelector("header.topbar h1");
+    if (h1) h1.appendChild(badge);
+    let counter = Math.floor(interval);
+    const tick = document.createElement("span");
+    tick.id = "watch-tick";
+    tick.style.cssText = "color:#8b949e;font-size:11px;margin-left:8px;font-family:monospace;";
+    if (h1) h1.appendChild(tick);
+    function update() {
+      tick.textContent = "reload in " + counter + "s";
+      counter -= 1;
+      if (counter < 0) { window.location.reload(); return; }
+      setTimeout(update, 1000);
+    }
+    update();
+  }
+  startWatch();
+
   // ----- Attack-chain graph (Tier 2) ------------------------------------
   const NODE_COLORS = {
     Host: "#58a6ff", User: "#d2a8ff", Process: "#7ee787",

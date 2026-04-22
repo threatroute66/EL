@@ -186,35 +186,22 @@ def provision_snapshot_cmd(
     console.print(f"[green]✓[/green] snapshot manifest: {p}")
 
 
-@app.command("report")
-def report_cmd(
-    case_dir: str = typer.Argument(..., help="Path to a case directory"),
-    html: bool = typer.Option(
-        False, "--html",
-        help="Also render a self-contained case.html web view alongside "
-             "the Markdown report (Tier 1 of docs/web-view-design.md)."),
-) -> None:
-    """Re-render the human report + STIX bundle from the existing ledger.
-
-    Deterministic projection — no agents are re-run, no LLM is invoked.
-    Use after manually editing iocs.json, after Plaso runs out-of-band,
-    or to refresh the report after the ledger has been augmented.
-    """
+def _render_case_once(cd: Path, *, html: bool, quiet: bool = False) -> None:
+    """Single-pass re-render: reads the ledger, recomputes ACH, IOC
+    catalog, ATT&CK map, and writes report.md + findings.json +
+    stix-bundle.json (+ case.html when html=True). Shared by `el
+    report` and by the --watch loop."""
     import json as _json
     from el.intel.ach import diagnostic_findings, score_findings, write_matrix
     from el.intel.attack_map import map_case
     from el.reporting.render import render_report
     from el.reporting.stix import emit_bundle
 
-    cd = Path(case_dir)
-    if not (cd / "manifest.json").exists():
-        console.print(f"[red]not a case directory: missing manifest.json[/red]")
-        raise typer.Exit(2)
     manifest = _json.loads((cd / "manifest.json").read_text())
     case_id = manifest["case_id"]
     rows = list_findings(cd, case_id=case_id)
     ranked, _ = score_findings(rows)
-    matrix_path = write_matrix(cd, ranked, rows)
+    write_matrix(cd, ranked, rows)
     techniques = map_case(rows)
 
     from el.skills import ioc_extract
@@ -227,22 +214,90 @@ def report_cmd(
     try:
         emit_bundle(case_id, rows, ioc_sets, stix_path)
     except Exception as e:
-        console.print(f"[yellow]STIX emission failed: {e}[/yellow]")
+        if not quiet:
+            console.print(f"[yellow]STIX emission failed: {e}[/yellow]")
         stix_path = None
 
     diag = diagnostic_findings(rows, top_n=5)
     p = render_report(cd, case_id, manifest, iocs=iocs,
-                       techniques=techniques, stix_path=stix_path,
-                       ach_ranking=ranked, diagnostic=diag)
-    console.print(f"[bold]report[/bold]: {p}")
-    if stix_path:
-        console.print(f"[bold]stix[/bold]: {stix_path}")
+                      techniques=techniques, stix_path=stix_path,
+                      ach_ranking=ranked, diagnostic=diag)
+    if not quiet:
+        console.print(f"[bold]report[/bold]: {p}")
+        if stix_path:
+            console.print(f"[bold]stix[/bold]: {stix_path}")
     if html:
         from el.reporting.html import render_html
         html_path = render_html(cd, case_id, manifest, findings=rows,
-                                  ach_ranking=ranked, iocs=iocs,
-                                  techniques=techniques)
-        console.print(f"[bold]html[/bold]: {html_path}")
+                                ach_ranking=ranked, iocs=iocs,
+                                techniques=techniques)
+        if not quiet:
+            console.print(f"[bold]html[/bold]: {html_path}")
+
+
+@app.command("report")
+def report_cmd(
+    case_dir: str = typer.Argument(..., help="Path to a case directory"),
+    html: bool = typer.Option(
+        False, "--html",
+        help="Also render a self-contained case.html web view alongside "
+             "the Markdown report (Tier 1 of docs/web-view-design.md)."),
+    watch: bool = typer.Option(
+        False, "--watch",
+        help="Re-render whenever findings.sqlite changes; run until "
+             "Ctrl-C (Tier 4 of docs/web-view-design.md). Open "
+             "case.html?watch=1 in a browser for auto-reload."),
+    poll: float = typer.Option(
+        1.5, "--poll",
+        help="--watch poll interval in seconds. Default 1.5."),
+) -> None:
+    """Re-render the human report + STIX bundle from the existing ledger.
+
+    Deterministic projection — no agents are re-run, no LLM is invoked.
+    Use after manually editing iocs.json, after Plaso runs out-of-band,
+    or to refresh the report after the ledger has been augmented.
+    """
+    cd = Path(case_dir)
+    if not (cd / "manifest.json").exists():
+        console.print(f"[red]not a case directory: missing manifest.json[/red]")
+        raise typer.Exit(2)
+
+    _render_case_once(cd, html=html)
+
+    if not watch:
+        return
+
+    # --watch loop: follow findings.sqlite mtime and re-render on change.
+    import time
+    from datetime import datetime, timezone
+    ledger = cd / "findings.sqlite"
+    if not ledger.exists():
+        console.print(f"[yellow]--watch: {ledger} does not exist yet; waiting…[/yellow]")
+    console.print(
+        f"[bold]watch[/bold]: polling {ledger.name} every {poll}s "
+        f"(Ctrl-C to stop). Open "
+        f"{cd}/reports/case.html?watch=1 for auto-reload.")
+    last_mtime = ledger.stat().st_mtime if ledger.exists() else 0.0
+    try:
+        while True:
+            time.sleep(poll)
+            if not ledger.exists():
+                continue
+            mtime = ledger.stat().st_mtime
+            if mtime == last_mtime:
+                continue
+            last_mtime = mtime
+            try:
+                _render_case_once(cd, html=html, quiet=True)
+                ts = datetime.now(timezone.utc).strftime("%H:%M:%S")
+                console.print(
+                    f"[dim]{ts} UTC[/dim] · re-rendered on "
+                    f"findings.sqlite change")
+            except Exception as e:
+                console.print(
+                    f"[yellow]watch: re-render failed: {e}[/yellow]")
+    except KeyboardInterrupt:
+        console.print("\n[dim]watch stopped[/dim]")
 
 
 @app.command("hunt")

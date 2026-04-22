@@ -249,6 +249,80 @@ def test_cli_report_emits_html_when_flag_set(tmp_path, monkeypatch):
     assert "cli-html" in content
 
 
+def test_html_ships_watch_mode_js_hook(tmp_path):
+    """Tier 4: the live-update JS snippet is always included so any
+    rendered page works with ?watch=N without needing a re-render
+    to enable it."""
+    out = render_html(tmp_path, "t-watch", {"case_id": "t-watch"},
+                      findings=[_mk_finding()])
+    text = out.read_text()
+    # Opt-in hook + URL param read
+    assert "URLSearchParams(window.location.search)" in text
+    assert '"watch"' in text
+    # LIVE badge text appears in the source (JS creates it on watch=1)
+    assert "LIVE" in text
+    # No network fetch — just plain reload, per design doc constraint
+    assert "location.reload" in text
+
+
+def test_cli_report_watch_reacts_to_mtime_change(tmp_path, monkeypatch):
+    """Tier 4 integration: --watch re-renders when findings.sqlite mtime
+    advances. Drives the loop by patching time.sleep to a few calls and
+    touching the ledger between polls."""
+    import os, time
+    from typer.testing import CliRunner
+    from el.cli import app
+    from el.evidence import intake as intake_mod
+    from el.evidence.ledger import insert as ledger_insert, open_ledger
+    from el.schemas.finding import Finding, EvidenceItem
+
+    monkeypatch.setattr(intake_mod, "CASE_ROOT", tmp_path / "cases")
+    src = tmp_path / "d.bin"; src.write_bytes(b"hi\n")
+    m = intake_mod.intake(src, case_id="cli-watch")
+    with open_ledger(m.case_dir):
+        pass
+    ledger_insert(m.case_dir, Finding(
+        case_id="cli-watch", agent="a", claim="first",
+        confidence="high",
+        evidence=[EvidenceItem(tool="t", version="0", command="x",
+                                 output_sha256="0"*64,
+                                 output_path="/tmp/x")]))
+
+    # Drive the loop: first sleep passes; during second sleep we insert
+    # another finding + bump mtime; third sleep raises KeyboardInterrupt.
+    call_n = {"n": 0}
+    ledger_file = Path(m.case_dir) / "findings.sqlite"
+    def fake_sleep(_s):
+        call_n["n"] += 1
+        if call_n["n"] == 2:
+            ledger_insert(m.case_dir, Finding(
+                case_id="cli-watch", agent="b", claim="second",
+                confidence="high",
+                evidence=[EvidenceItem(tool="t", version="0",
+                                         command="x",
+                                         output_sha256="1"*64,
+                                         output_path="/tmp/y")]))
+            # Force mtime advance in case the clock tick didn't change it
+            now = time.time()
+            os.utime(ledger_file, (now + 5, now + 5))
+        if call_n["n"] >= 3:
+            raise KeyboardInterrupt()
+    import time as _time
+    monkeypatch.setattr(_time, "sleep", fake_sleep)
+
+    runner = CliRunner()
+    result = runner.invoke(app, ["report", str(m.case_dir),
+                                 "--html", "--watch"])
+    assert result.exit_code == 0, result.output
+    # The watch loop printed its startup banner and at least one re-render
+    assert "watch:" in result.output or "watch" in result.output
+    assert "re-rendered" in result.output
+    # Both findings are in the output HTML
+    html_text = (Path(m.case_dir) / "reports" / "case.html").read_text()
+    assert "first" in html_text
+    assert "second" in html_text
+
+
 def test_cli_report_no_html_without_flag(tmp_path, monkeypatch):
     """Default `el report` does NOT emit case.html — keeps Markdown-only
     as the default surface."""
