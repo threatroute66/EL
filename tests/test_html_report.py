@@ -116,6 +116,63 @@ def test_render_embeds_graph_section(tmp_path):
     assert 'href="#graph"' in text
 
 
+def test_render_tier3_heatmap_groups_by_tactic(tmp_path):
+    """Tier 3: ATT&CK heatmap buckets techniques by primary tactic."""
+    techniques = {
+        "T1003.001": {"name": "LSASS Memory",
+                       "evidence_finding_ids": ["a", "b", "c"]},
+        "T1059.001": {"name": "PowerShell",
+                       "evidence_finding_ids": ["x"]},
+        "T1486":     {"name": "Data Encrypted for Impact",
+                       "evidence_finding_ids": ["y", "z", "w", "v", "u"]},
+    }
+    out = render_html(tmp_path, "t-heat", {"case_id": "t-heat"},
+                      findings=[_mk_finding()], techniques=techniques)
+    text = out.read_text()
+    # Section + tactic headings present
+    assert 'id="heatmap"' in text
+    assert "Credential Access" in text    # T1003.001 tactic
+    assert "Execution" in text             # T1059.001 tactic
+    assert "Impact" in text                # T1486 tactic
+    # Heat-colour class on a 5-count technique
+    assert "heat3" in text or "heat4" in text
+
+
+def test_render_tier3_diamond_projection(tmp_path):
+    """Tier 3: Diamond vertices populated from supporting findings + IOCs."""
+    findings = [
+        _mk_finding(claim="exfil via https", confidence="high",
+                     hypotheses_supported=["H_APT_ESPIONAGE"]),
+    ]
+    ach = [_FakeRank(hyp_id="H_APT_ESPIONAGE", name="APT espionage", score=7)]
+    iocs = {
+        "ipv4": ["10.0.0.1", "203.0.113.77"],
+        "domain": ["cmd.evil.example"],
+    }
+    out = render_html(tmp_path, "t-diam", {"case_id": "t-diam"},
+                      findings=findings, ach_ranking=ach, iocs=iocs)
+    text = out.read_text()
+    assert 'id="diamond"' in text
+    # Vertices present
+    for v in ("Adversary", "Capability", "Infrastructure", "Victim"):
+        assert v in text
+    # External IP + domain on Adversary side; internal IP on Infrastructure
+    assert "203.0.113.77" in text
+    assert "cmd.evil.example" in text
+    assert "10.0.0.1" in text
+    # Case id is the victim fallback
+    assert "t-diam" in text
+
+
+def test_render_tier3_handles_empty_techniques(tmp_path):
+    """Heatmap + Diamond both have graceful empty-state copy."""
+    out = render_html(tmp_path, "empty-t3", {"case_id": "empty-t3"},
+                      findings=[_mk_finding()])
+    text = out.read_text()
+    assert "No MITRE ATT&amp;CK techniques tagged" in text
+    assert "No ACH ranking yet" in text
+
+
 def test_render_with_explicit_graph(tmp_path):
     """Tier 2: caller can pass a prebuilt graph dict to skip the Kùzu query."""
     graph = {

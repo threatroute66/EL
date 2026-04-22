@@ -27,6 +27,7 @@ import json
 from datetime import datetime, timezone
 from pathlib import Path
 
+from el.intel.attack_tactics import TACTICS, group_by_tactic
 from el.reporting.graph_export import export_graph
 from el.schemas.finding import Finding
 
@@ -151,6 +152,42 @@ aside.drawer .evidence-item { background: #161b22; border: 1px solid #30363d; bo
     padding: 10px; margin-top: 6px; font-size: 12px; font-family: monospace; }
 aside.drawer .evidence-item .cmd { color: #7ee787; }
 aside.drawer .evidence-item .sha { color: #484f58; font-size: 11px; margin-top: 4px; }
+
+/* ATT&CK heatmap (Tier 3) */
+.attack-heatmap { display: grid; gap: 12px; margin-top: 16px; }
+.tactic-col { background: #161b22; border: 1px solid #30363d; border-radius: 6px;
+    padding: 10px 12px; }
+.tactic-col h3 { margin: 0 0 8px 0; font-size: 12px; color: #8b949e;
+    text-transform: uppercase; letter-spacing: 0.05em; font-weight: 600; }
+.tactic-col .tcount { color: #f0f6fc; margin-left: 4px; font-size: 11px;
+    background: #21262d; padding: 1px 6px; border-radius: 8px; }
+.tactic-col .t-row { display: flex; align-items: center; gap: 8px;
+    padding: 4px 0; border-bottom: 1px dotted #21262d; font-size: 12px; }
+.tactic-col .t-row:last-child { border-bottom: 0; }
+.tactic-col .t-row .tid { font-family: monospace; color: #58a6ff; width: 90px; flex: 0 0 90px; }
+.tactic-col .t-row .tname { color: #c9d1d9; flex: 1; }
+.tactic-col .t-row .fcount { font-family: monospace; color: #f0f6fc;
+    background: #238636; padding: 1px 8px; border-radius: 4px; font-size: 11px; }
+.tactic-col .t-row .fcount.heat1 { background: #0d4429; }
+.tactic-col .t-row .fcount.heat2 { background: #238636; }
+.tactic-col .t-row .fcount.heat3 { background: #d29922; color: #0d1117; }
+.tactic-col .t-row .fcount.heat4 { background: #f85149; }
+
+/* Diamond Model (Tier 3) */
+.diamond { display: grid; grid-template-columns: 1fr 1fr; gap: 12px;
+    margin-top: 16px; }
+.diamond .vertex { background: #161b22; border: 1px solid #30363d;
+    border-radius: 6px; padding: 14px; position: relative; }
+.diamond .vertex h3 { margin: 0 0 4px 0; color: #f0f6fc; font-size: 14px; }
+.diamond .vertex .sub { font-size: 11px; color: #8b949e; margin-bottom: 10px; }
+.diamond .vertex ul { margin: 0; padding-left: 16px; font-size: 12px; color: #c9d1d9; }
+.diamond .vertex li { font-family: monospace; margin-bottom: 3px;
+    word-break: break-all; }
+.diamond .vertex.adversary { border-left: 3px solid #f85149; }
+.diamond .vertex.capability { border-left: 3px solid #d29922; }
+.diamond .vertex.infrastructure { border-left: 3px solid #58a6ff; }
+.diamond .vertex.victim { border-left: 3px solid #7ee787; }
+.diamond .empty { color: #8b949e; font-style: italic; font-size: 12px; }
 
 /* Graph pane */
 #graph-pane { background: #161b22; border: 1px solid #30363d; border-radius: 6px;
@@ -457,6 +494,133 @@ _JS = r"""
 """
 
 
+def _heat_class(n: int) -> str:
+    if n <= 1:   return "heat1"
+    if n <= 3:   return "heat2"
+    if n <= 8:   return "heat3"
+    return "heat4"
+
+
+def _build_attack_heatmap_html(techniques: dict[str, dict]) -> str:
+    """Group the case's ATT&CK techniques by primary tactic and render
+    a tactic-per-column grid. Each cell shows technique id, name, and
+    finding count — heat-coloured by finding count."""
+    if not techniques:
+        return '<p style="color:#8b949e">No MITRE ATT&amp;CK techniques tagged on any finding.</p>'
+    grouped = group_by_tactic(techniques)
+    cols: list[str] = []
+    for tactic, items in grouped.items():
+        total = sum(len(info.get("evidence_finding_ids", []))
+                     for _tid, info in items)
+        rows: list[str] = []
+        for tid, info in items:
+            n = len(info.get("evidence_finding_ids", []))
+            name = info.get("name", "")
+            url = f"https://attack.mitre.org/techniques/{tid.replace('.', '/')}/"
+            rows.append(
+                f'<div class="t-row">'
+                f'<span class="tid"><a href="{html.escape(url)}" '
+                f'target="_blank" rel="noopener">{html.escape(tid)}</a></span>'
+                f'<span class="tname">{html.escape(name)}</span>'
+                f'<span class="fcount {_heat_class(n)}">{n}</span>'
+                f'</div>'
+            )
+        cols.append(
+            f'<div class="tactic-col"><h3>{html.escape(tactic)}'
+            f'<span class="tcount">{total}</span></h3>'
+            + "".join(rows) + '</div>'
+        )
+    return f'<div class="attack-heatmap">{"".join(cols)}</div>'
+
+
+def _build_diamond_html(
+    findings: list[Finding], ach_ranking: list,
+    iocs: dict[str, list[str]] | None, manifest: dict | None,
+) -> str:
+    """Diamond Model view for the leading hypothesis. Reuses the
+    projection logic from el.reporting.diamond (public IPs/domains
+    → Adversary + Infrastructure, technique IDs → Capability,
+    local hosts/users → Victim)."""
+    import ipaddress
+    from collections import Counter
+    if not ach_ranking:
+        return ('<p style="color:#8b949e">No ACH ranking yet — Diamond '
+                 'view renders for the leading hypothesis once the '
+                 'ACH engine has produced one.</p>')
+    leader = ach_ranking[0]
+    leader_hyp = leader.hyp_id
+    supporting = [f for f in findings
+                   if leader_hyp in f.hypotheses_supported]
+    # Adversary + Infrastructure from IOCs
+    pub_ips: set[str] = set()
+    int_ips: set[str] = set()
+    domains: set[str] = set()
+    for v in (iocs or {}).get("ipv4", []) + (iocs or {}).get("ipv6", []):
+        try:
+            ip = ipaddress.ip_address(v)
+            (int_ips if (ip.is_private or ip.is_loopback
+                         or ip.is_link_local) else pub_ips).add(v)
+        except ValueError:
+            continue
+    for d in (iocs or {}).get("domain", []):
+        domains.add(d)
+    # Capability from technique IDs on supporting findings
+    tech_counter: Counter = Counter()
+    for f in supporting:
+        for ev in f.evidence:
+            facts = ev.extracted_facts or {}
+            for tid in facts.get("attack_techniques") or []:
+                tech_counter[str(tid)] += 1
+            for tid in facts.get("attack_techniques_list") or []:
+                tech_counter[str(tid)] += 1
+    # Victim from manifest + principals in findings
+    victim_hosts: set[str] = set()
+    victim_users: set[str] = set()
+    if manifest and manifest.get("case_id"):
+        victim_hosts.add(str(manifest["case_id"]))
+    for f in supporting:
+        for ev in f.evidence:
+            facts = ev.extracted_facts or {}
+            for key in ("top_principals", "top_targets", "top_sources"):
+                for item in facts.get(key) or []:
+                    if isinstance(item, (list, tuple)) and item:
+                        name = str(item[0])
+                        if "@" in name or "\\" in name or name.lower().startswith("s-1-"):
+                            victim_users.add(name)
+
+    def _ul(items, cap=20):
+        if not items:
+            return '<div class="empty">_no entries surfaced yet_</div>'
+        shown = list(items)[:cap]
+        rest = len(items) - len(shown)
+        tail = f'<li>… +{rest} more</li>' if rest > 0 else ""
+        return "<ul>" + "".join(f"<li>{html.escape(str(x))}</li>"
+                                 for x in shown) + tail + "</ul>"
+
+    lead_label = (f'{html.escape(leader.name)} '
+                   f'({html.escape(leader.hyp_id)}, score {leader.score})')
+    return f"""
+<p style="color:#8b949e;margin-bottom:8px">Projection for leading hypothesis <b>{lead_label}</b> — {len(supporting)} supporting finding(s). Not attribution to a named actor; the Adversary vertex is the public attribution surface (public IPs + domains) observed in supporting findings.</p>
+<div class="diamond">
+  <div class="vertex adversary"><h3>Adversary</h3>
+    <div class="sub">public attribution surface — external IPs + domains</div>
+    {_ul(sorted(pub_ips | domains))}
+  </div>
+  <div class="vertex capability"><h3>Capability</h3>
+    <div class="sub">MITRE ATT&amp;CK techniques on supporting findings</div>
+    {_ul([f"{t} (×{n})" for t, n in tech_counter.most_common(20)])}
+  </div>
+  <div class="vertex infrastructure"><h3>Infrastructure</h3>
+    <div class="sub">pivot points — internal + external IPs + domains</div>
+    {_ul(sorted(int_ips) + sorted(pub_ips) + sorted(domains))}
+  </div>
+  <div class="vertex victim"><h3>Victim</h3>
+    <div class="sub">local hosts + principals named in findings</div>
+    {_ul(sorted(victim_hosts) + sorted(victim_users))}
+  </div>
+</div>"""
+
+
 def _finding_to_dict(f: Finding) -> dict:
     return {
         "finding_id": f.finding_id,
@@ -571,7 +735,7 @@ def render_html(
         '</thead><tbody>' + "\n".join(ioc_rows) + '</tbody></table>'
     ) if ioc_rows else '<p style="color:#8b949e">No IOCs extracted.</p>'
 
-    # ATT&CK table
+    # ATT&CK table (flat) — kept alongside the Tier-3 heatmap
     att_rows: list[str] = []
     for tid, info in sorted(techniques.items()):
         url = f"https://attack.mitre.org/techniques/{tid.replace('.', '/')}/"
@@ -588,6 +752,10 @@ def render_html(
         + "\n".join(att_rows) + '</tbody></table>'
     ) if att_rows else (
         '<p style="color:#8b949e">No MITRE ATT&amp;CK techniques mapped.</p>')
+
+    # Tier 3: ATT&CK heatmap grouped by tactic + Diamond Model view
+    heatmap_html = _build_attack_heatmap_html(techniques)
+    diamond_html = _build_diamond_html(findings, ach_ranking, iocs, manifest)
 
     # Summary cards
     total = len(findings)
@@ -616,6 +784,8 @@ def render_html(
     <a href="#findings">Findings</a>
     <a href="#iocs">IOCs</a>
     <a href="#attack">ATT&amp;CK</a>
+    <a href="#heatmap">Heatmap</a>
+    <a href="#diamond">Diamond</a>
   </nav>
 </header>
 <main>
@@ -657,6 +827,16 @@ def render_html(
 <section id="attack">
   <h2>MITRE ATT&amp;CK Techniques <span class="count">({len(techniques)})</span></h2>
   {att_html}
+</section>
+
+<section id="heatmap">
+  <h2>ATT&amp;CK Coverage Heatmap <span class="count">(by tactic — finding count per technique, heat-coloured)</span></h2>
+  {heatmap_html}
+</section>
+
+<section id="diamond">
+  <h2>Diamond Model <span class="count">(Caltagirone / Pendergast / Betz 2013 — four intrusion-analysis vertices)</span></h2>
+  {diamond_html}
 </section>
 
 </main>
