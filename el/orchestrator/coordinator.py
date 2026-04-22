@@ -48,6 +48,8 @@ from el.reporting.stix import emit_bundle
 from el.skills import ioc_extract
 
 
+from el.agents.android_forensicator import AndroidForensicatorAgent
+
 KIND_TO_AGENT: dict[str, type[Agent]] = {
     "pcap (libpcap)": NetworkAnalystAgent,
     "pcap (libpcap, big-endian)": NetworkAnalystAgent,
@@ -56,6 +58,7 @@ KIND_TO_AGENT: dict[str, type[Agent]] = {
     "EVTX (Windows Event Log)": LogAnalystAgent,
     "windows-artifacts-dir": WindowsArtifactAgent,
     "velociraptor-collection": EndpointAnalystAgent,
+    "android-fs-dir": AndroidForensicatorAgent,
 }
 
 

@@ -139,6 +139,18 @@ class TriageAgent(Agent):
         evtx_count = sum(1 for n in names if n.endswith(".evtx"))
         prefetch_dir = (d / "Prefetch").exists() or (d / "prefetch").exists()
 
+        # Android shape — distinctive combo of /data/system/packages.xml
+        # + /data/data/<pkg> subtree + /data/app/. Any two of those
+        # together is unambiguous; Windows / Velociraptor / macOS don't
+        # have this structure.
+        android_signals = (
+            (d / "data" / "system" / "packages.xml").is_file(),
+            (d / "data" / "app").is_dir(),
+            (d / "data" / "data").is_dir(),
+            (d / "storage" / "emulated").is_dir(),
+        )
+        is_android = sum(android_signals) >= 2
+
         listing_path = analysis / "directory-listing.txt"
         listing_path.write_text("\n".join(sorted(names))[:200_000])
         sha = hashlib.sha256(listing_path.read_bytes()).hexdigest()
@@ -154,7 +166,17 @@ class TriageAgent(Agent):
                              "prefetch_dir": prefetch_dir},
         )
 
-        if velo_hits >= 2:
+        if is_android:
+            ctx.shared["evidence_kind"] = "android-fs-dir"
+            out.append(self.emit(ctx, Finding(
+                case_id=ctx.case_id, agent=self.name, confidence="high",
+                claim=(f"Input directory looks like an extracted Android "
+                       f"filesystem tree (data/system/packages.xml + "
+                       f"data/data/ per-app subtree + /storage/emulated "
+                       f"signals matched)"),
+                evidence=[ev], hypotheses_supported=["H_DISK_ARTIFACTS"],
+            )))
+        elif velo_hits >= 2:
             ctx.shared["evidence_kind"] = "velociraptor-collection"
             out.append(self.emit(ctx, Finding(
                 case_id=ctx.case_id, agent=self.name, confidence="high",
