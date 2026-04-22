@@ -226,6 +226,15 @@ el serve                                   # http://127.0.0.1:8089/
 el serve --port 9000                       # custom port
 el serve --root /opt/EL/cases/srl-admin-memory  # single case
 
+# Install the viewer as a systemd --user service: auto-starts at
+# next login and survives reboots (once user-linger is enabled).
+# Ships the unit at ~/.config/systemd/user/el-serve.service with
+# hardening (NoNewPrivileges, ReadOnlyPaths=<root>, ProtectSystem=strict).
+el serve --install-service                 # idempotent
+./install.sh --with-serve                  # one-step: install + enable at bootstrap
+loginctl enable-linger $USER               # survive reboots even when not logged in
+el serve --uninstall-service               # reverse
+
 # Standalone YARA sweep over an existing case (auto-generates rules from iocs.json)
 el hunt /opt/EL/cases/wkstn-01
 el hunt /opt/EL/cases/wkstn-01 --rules /opt/signature-base/yara/

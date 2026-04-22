@@ -308,6 +308,62 @@ def test_cli_serve_exists(monkeypatch):
     assert "--bind" in result.output
     assert "--port" in result.output
     assert "127.0.0.1" in result.output
+    # Persistent-service flags exposed
+    assert "--install-service" in result.output
+    assert "--uninstall-service" in result.output
+
+
+def test_cli_serve_install_service_writes_unit(tmp_path, monkeypatch):
+    """--install-service writes a systemd --user unit under $HOME and
+    invokes systemctl --user enable. Patches HOME + subprocess so the
+    test never touches the real system."""
+    from typer.testing import CliRunner
+    from el.cli import app
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
+    calls = []
+    import subprocess as sp
+    def fake_run(cmd, *a, **kw):
+        calls.append(tuple(cmd))
+        class R: returncode = 0; stdout = ""; stderr = ""
+        return R()
+    monkeypatch.setattr(sp, "run", fake_run)
+    import shutil as _shutil
+    monkeypatch.setattr(_shutil, "which", lambda _: "/usr/bin/systemctl")
+    runner = CliRunner()
+    result = runner.invoke(app, ["serve", "--install-service",
+                                 "--port", "9090"])
+    assert result.exit_code == 0, result.output
+    unit = tmp_path / ".config" / "systemd" / "user" / "el-serve.service"
+    assert unit.is_file()
+    content = unit.read_text()
+    assert "ExecStart=" in content
+    assert "--port 9090" in content
+    assert "--bind 127.0.0.1" in content
+    assert "ReadOnlyPaths=/opt/EL/cases" in content
+    assert "NoNewPrivileges=true" in content
+    # systemctl daemon-reload + enable --now were called
+    assert any("daemon-reload" in c for c in calls)
+    assert any("enable" in c and "--now" in c for c in calls)
+
+
+def test_cli_serve_uninstall_service_removes_unit(tmp_path, monkeypatch):
+    from typer.testing import CliRunner
+    from el.cli import app
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
+    unit = tmp_path / ".config" / "systemd" / "user" / "el-serve.service"
+    unit.parent.mkdir(parents=True, exist_ok=True)
+    unit.write_text("# stub")
+    import subprocess as sp
+    monkeypatch.setattr(sp, "run",
+        lambda *a, **kw: type("R", (), {"returncode":0, "stdout":"", "stderr":""})())
+    import shutil as _shutil
+    monkeypatch.setattr(_shutil, "which", lambda _: "/usr/bin/systemctl")
+    runner = CliRunner()
+    result = runner.invoke(app, ["serve", "--uninstall-service"])
+    assert result.exit_code == 0, result.output
+    assert not unit.exists()
 
 
 def test_html_ships_watch_mode_js_hook(tmp_path):

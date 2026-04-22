@@ -300,6 +300,84 @@ def report_cmd(
         console.print("\n[dim]watch stopped[/dim]")
 
 
+_SYSTEMD_UNIT_TEMPLATE = """\
+[Unit]
+Description=EL case-report viewer (local HTTP)
+Documentation=https://github.com/threatroute66/EL
+After=network.target
+
+[Service]
+Type=simple
+ExecStart={exe} serve --bind {bind} --port {port} --root {root}
+Restart=on-failure
+RestartSec=5
+# Loopback-only by default, but defense-in-depth: no new privileges,
+# read-only access everywhere, no temp-dir isolation needed because
+# http.server only reads --root.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ReadOnlyPaths={root}
+ProtectHome=read-only
+
+[Install]
+WantedBy=default.target
+"""
+
+
+def _install_serve_service(exe: Path, root: Path, bind: str, port: int) -> int:
+    """Install + enable a systemd --user service so `el serve` starts
+    at login and survives reboots. Returns an exit code."""
+    import os
+    import shutil
+    import subprocess
+    unit_dir = Path.home() / ".config" / "systemd" / "user"
+    unit_dir.mkdir(parents=True, exist_ok=True)
+    unit_path = unit_dir / "el-serve.service"
+    unit_path.write_text(_SYSTEMD_UNIT_TEMPLATE.format(
+        exe=exe, root=root, bind=bind, port=port))
+    if not shutil.which("systemctl"):
+        console.print(
+            f"[yellow]systemctl not found — wrote {unit_path} but could not "
+            f"enable. Run `systemctl --user enable --now el-serve.service` "
+            f"manually.[/yellow]")
+        return 0
+    for cmd in (
+        ["systemctl", "--user", "daemon-reload"],
+        ["systemctl", "--user", "enable", "--now", "el-serve.service"],
+    ):
+        r = subprocess.run(cmd, capture_output=True, text=True)
+        if r.returncode != 0:
+            console.print(f"[red]{' '.join(cmd)} failed:[/red]\n{r.stderr}")
+            return r.returncode
+    console.print(f"[green]installed + started[/green]: {unit_path}")
+    console.print(
+        f"  survives reboots when linger is enabled for this user. "
+        f"If the service stops at logout, run: "
+        f"`loginctl enable-linger {os.environ.get('USER', '$USER')}`")
+    console.print(f"  status:  systemctl --user status el-serve.service")
+    console.print(f"  logs:    journalctl --user -u el-serve.service -f")
+    console.print(f"  url:     http://{bind}:{port}/")
+    return 0
+
+
+def _uninstall_serve_service() -> int:
+    import shutil
+    import subprocess
+    unit_path = Path.home() / ".config" / "systemd" / "user" / "el-serve.service"
+    if shutil.which("systemctl"):
+        subprocess.run(["systemctl", "--user", "disable", "--now",
+                         "el-serve.service"], capture_output=True)
+        subprocess.run(["systemctl", "--user", "daemon-reload"],
+                        capture_output=True)
+    if unit_path.exists():
+        unit_path.unlink()
+        console.print(f"[green]removed[/green]: {unit_path}")
+    else:
+        console.print(f"[dim]nothing to remove at {unit_path}[/dim]")
+    return 0
+
+
 @app.command("serve")
 def serve_cmd(
     root: str = typer.Option(
@@ -313,16 +391,39 @@ def serve_cmd(
         help="Interface to bind. Default 127.0.0.1 (loopback only). "
              "DO NOT bind to 0.0.0.0 on an investigation host — "
              "case dirs contain evidence paths + IOCs."),
+    install_service: bool = typer.Option(
+        False, "--install-service",
+        help="Install + enable a systemd --user unit so `el serve` "
+             "auto-starts at login and survives reboots. Idempotent."),
+    uninstall_service: bool = typer.Option(
+        False, "--uninstall-service",
+        help="Disable + remove the systemd user unit installed with "
+             "--install-service."),
 ) -> None:
     """Serve case reports over HTTP (Ubuntu snap-confined browsers like
     Chromium can't read /opt/ from file:// — this is the workaround).
 
-    Keeps the process in the foreground; Ctrl-C stops it. Listens on
-    loopback only by default. Files are served read-only.
+    Default: keep the process in the foreground; Ctrl-C stops it.
+    Listens on loopback only. Files are served read-only.
+
+    Install as a persistent service: `el serve --install-service` writes
+    a systemd --user unit at ~/.config/systemd/user/el-serve.service
+    and enables it so the server auto-starts at next login (and every
+    reboot once linger is enabled).
     """
     import http.server
     import socketserver
-    import threading
+
+    import sys
+    exe = Path(sys.executable).parent / "el"
+    if not exe.exists():
+        exe = Path(sys.argv[0] if sys.argv else "el")
+
+    if uninstall_service:
+        raise typer.Exit(_uninstall_serve_service())
+    if install_service:
+        raise typer.Exit(_install_serve_service(
+            exe=exe, root=Path(root), bind=bind, port=port))
 
     root_path = Path(root)
     if not root_path.is_dir():

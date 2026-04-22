@@ -19,9 +19,12 @@
 # operator can audit exactly what changed on the host.
 #
 # Usage:
-#   ./install.sh            # full bootstrap + snapshot
-#   ./install.sh --no-apt   # skip apt phase (assumes packages already present)
-#   ./install.sh --doctor   # only run the post-install verification
+#   ./install.sh             # full bootstrap + snapshot
+#   ./install.sh --no-apt    # skip apt phase (assumes packages already present)
+#   ./install.sh --doctor    # only run the post-install verification
+#   ./install.sh --with-serve  # also install + enable the el serve
+#                              # systemd --user unit (case-report viewer
+#                              # auto-starts at login, survives reboots)
 
 set -euo pipefail
 
@@ -36,10 +39,12 @@ log() { echo "[el-install $(date -u +%FT%TZ)] $*"; }
 
 skip_apt=0
 only_doctor=0
+with_serve=0
 for arg in "$@"; do
     case "$arg" in
         --no-apt) skip_apt=1 ;;
         --doctor) only_doctor=1 ;;
+        --with-serve) with_serve=1 ;;
         --help|-h)
             grep '^#' "$0" | sed 's/^# \?//'
             exit 0
@@ -117,4 +122,17 @@ fi
 log "running doctor for verification"
 "${EL_DIR}/.venv/bin/el" doctor || true
 
+if [[ ${with_serve} -eq 1 ]]; then
+    log "installing + enabling systemd --user unit for 'el serve'"
+    "${EL_DIR}/.venv/bin/el" serve --install-service || \
+        log "WARN: 'el serve --install-service' returned non-zero; skipping"
+    log "case-report viewer will auto-start at login. For reboot survival"
+    log "even when not logged in, run: loginctl enable-linger \$USER"
+    log "viewer URL: http://127.0.0.1:8089/"
+fi
+
 log "done. Snapshots in ${SNAP}/. Run './install.sh --doctor' anytime to re-verify."
+if [[ ${with_serve} -eq 0 ]]; then
+    log "to install the case-report viewer as a persistent service later,"
+    log "run: ./install.sh --with-serve  OR  el serve --install-service"
+fi
