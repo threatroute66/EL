@@ -126,23 +126,12 @@ class TriageAgent(Agent):
         import hashlib
         out: list[Finding] = []
         d = ctx.input_path
-        names = []
-        for p in d.rglob("*"):
-            if p.is_file() and len(names) < 5000:
-                names.append(p.name)
-        names_set = set(names)
 
-        velo_hits = sum(1 for n in names if any(n.startswith(h) for h in VELOCIRAPTOR_HINTS))
-        artifact_hits = sum(1 for n in names if any(h in n for h in
-                            ("$MFT", "Amcache.hve", "SYSTEM", "SOFTWARE", "NTUSER.DAT",
-                             "SRUDB.dat")))
-        evtx_count = sum(1 for n in names if n.endswith(".evtx"))
-        prefetch_dir = (d / "Prefetch").exists() or (d / "prefetch").exists()
-
-        # Android shape — distinctive combo of /data/system/packages.xml
-        # + /data/data/<pkg> subtree + /data/app/. Any two of those
-        # together is unambiguous; Windows / Velociraptor / macOS don't
-        # have this structure.
+        # Cheap path-shape checks FIRST. iOS/Android trees can contain
+        # hundreds of thousands of files across app-data subtrees; on a
+        # slow FUSE mount (e.g. VMware HGFS) the rglob walk below
+        # degrades into minutes of readdir. Mobile shapes can be
+        # recognised from a handful of `is_dir()` probes without walking.
         android_signals = (
             (d / "data" / "system" / "packages.xml").is_file(),
             (d / "data" / "app").is_dir(),
@@ -150,6 +139,33 @@ class TriageAgent(Agent):
             (d / "storage" / "emulated").is_dir(),
         )
         is_android = sum(android_signals) >= 2
+
+        ios_signals = (
+            (d / "private" / "var" / "mobile").is_dir(),
+            (d / "private" / "var" / "containers" / "Bundle"
+                 / "Application").is_dir(),
+            (d / "private" / "var" / "installd").is_dir(),
+            (d / "Applications" / "MobileSMS.app").is_dir()
+              or (d / "Applications" / "AppStore.app").is_dir(),
+        )
+        is_ios = sum(ios_signals) >= 2
+
+        # Only pay for the full rglob when we DIDN'T recognise a mobile
+        # shape — Windows / Velociraptor detection needs filename scans.
+        names: list[str] = []
+        if not (is_android or is_ios):
+            for p in d.rglob("*"):
+                if p.is_file():
+                    names.append(p.name)
+                    if len(names) >= 5000:
+                        break
+
+        velo_hits = sum(1 for n in names if any(n.startswith(h) for h in VELOCIRAPTOR_HINTS))
+        artifact_hits = sum(1 for n in names if any(h in n for h in
+                            ("$MFT", "Amcache.hve", "SYSTEM", "SOFTWARE", "NTUSER.DAT",
+                             "SRUDB.dat")))
+        evtx_count = sum(1 for n in names if n.endswith(".evtx"))
+        prefetch_dir = (d / "Prefetch").exists() or (d / "prefetch").exists()
 
         listing_path = analysis / "directory-listing.txt"
         listing_path.write_text("\n".join(sorted(names))[:200_000])
@@ -174,6 +190,16 @@ class TriageAgent(Agent):
                        f"filesystem tree (data/system/packages.xml + "
                        f"data/data/ per-app subtree + /storage/emulated "
                        f"signals matched)"),
+                evidence=[ev], hypotheses_supported=["H_DISK_ARTIFACTS"],
+            )))
+        elif is_ios:
+            ctx.shared["evidence_kind"] = "ios-fs-dir"
+            out.append(self.emit(ctx, Finding(
+                case_id=ctx.case_id, agent=self.name, confidence="high",
+                claim=(f"Input directory looks like an extracted iOS "
+                       f"filesystem tree (/private/var/mobile + "
+                       f"/private/var/containers/Bundle/Application + "
+                       f"/private/var/installd signals matched)"),
                 evidence=[ev], hypotheses_supported=["H_DISK_ARTIFACTS"],
             )))
         elif velo_hits >= 2:

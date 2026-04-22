@@ -49,6 +49,7 @@ from el.skills import ioc_extract
 
 
 from el.agents.android_forensicator import AndroidForensicatorAgent
+from el.agents.ios_forensicator import IOSForensicatorAgent
 
 KIND_TO_AGENT: dict[str, type[Agent]] = {
     "pcap (libpcap)": NetworkAnalystAgent,
@@ -59,6 +60,7 @@ KIND_TO_AGENT: dict[str, type[Agent]] = {
     "windows-artifacts-dir": WindowsArtifactAgent,
     "velociraptor-collection": EndpointAnalystAgent,
     "android-fs-dir": AndroidForensicatorAgent,
+    "ios-fs-dir": IOSForensicatorAgent,
 }
 
 

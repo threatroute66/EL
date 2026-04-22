@@ -37,22 +37,71 @@ def _hash_file(path: Path) -> tuple[str, str, str]:
     return sha256.hexdigest(), sha1.hexdigest(), md5.hexdigest()
 
 
+_DIR_HASH_MAX_FILES = 10_000
+_DIR_HASH_MAX_SECONDS = 60
+
+
 def _hash_directory(path: Path) -> tuple[str, str, str, int]:
-    """Stable Merkle-style hash over file contents in path-sorted order.
-    Returns (sha256, sha1, md5, total_bytes)."""
+    """Stable structural hash over (rel_path, size) tuples in sorted
+    order. Returns (sha256, sha1, md5, total_bytes).
+
+    Deliberately does NOT read file contents. Mobile/extract trees
+    can be 200 GB+ over a slow FUSE mount (VMware HGFS); content
+    hashing all files at intake dominates the investigation runtime
+    and blocks on readdir long before the investigator agents get to
+    run. File-path + file-size is a sufficient structural fingerprint
+    for chain-of-custody on directory inputs — any swap/truncation
+    perturbs one or the other. Files (non-directory inputs) still
+    get full content hashing via `_hash_file`.
+
+    Caps: stops the walk at either `_DIR_HASH_MAX_FILES` entries or
+    `_DIR_HASH_MAX_SECONDS` wall time, whichever comes first. iOS
+    filesystem trees have ~1M localization-resource files spread across
+    `.bundle/<locale>.lproj/` subtrees; walking them all over HGFS
+    would dominate the investigation. The partial manifest is still
+    deterministic for the files that were walked (os.walk is stable
+    across runs on the same mount).
+
+    Uses os.walk with onerror=None so a single unreadable subtree
+    (common on mobile extracts: /private/var/containers/Shared/
+    SystemGroup/.../Library) doesn't abort the whole hash.
+    """
+    import os as _os
+    import time as _time
     sha256, sha1, md5 = hashlib.sha256(), hashlib.sha1(), hashlib.md5()
     total = 0
-    files = sorted(p for p in path.rglob("*") if p.is_file())
-    for f in files:
-        rel = str(f.relative_to(path)).encode() + b"\x00"
-        sha256.update(rel); sha1.update(rel); md5.update(rel)
-        try:
-            with f.open("rb") as fh:
-                while chunk := fh.read(CHUNK):
-                    sha256.update(chunk); sha1.update(chunk); md5.update(chunk)
-                    total += len(chunk)
-        except Exception:
-            continue
+    collected: list[tuple[str, int]] = []
+    deadline = _time.monotonic() + _DIR_HASH_MAX_SECONDS
+    capped = False
+    try:
+        for dirpath, dirnames, filenames in _os.walk(
+            str(path), onerror=lambda e: None, followlinks=False,
+        ):
+            for fn in filenames:
+                full = Path(dirpath) / fn
+                try:
+                    st = full.stat()
+                except OSError:
+                    continue
+                rel = str(full.relative_to(path))
+                collected.append((rel, st.st_size))
+                if len(collected) >= _DIR_HASH_MAX_FILES:
+                    capped = True
+                    break
+            if capped or _time.monotonic() > deadline:
+                capped = True
+                break
+    except OSError:
+        pass
+    collected.sort()
+    for rel, sz in collected:
+        rec = rel.encode() + b"\x00" + str(sz).encode() + b"\n"
+        sha256.update(rec); sha1.update(rec); md5.update(rec)
+        total += sz
+    if capped:
+        cap_rec = (f"__CAPPED_AT_{len(collected)}_FILES__"
+                    .encode() + b"\n")
+        sha256.update(cap_rec); sha1.update(cap_rec); md5.update(cap_rec)
     return sha256.hexdigest(), sha1.hexdigest(), md5.hexdigest(), total
 
 
