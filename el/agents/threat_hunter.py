@@ -93,9 +93,82 @@ class ThreatHunterAgent(Agent):
                 evidence=[ev], hypotheses_supported=["H_IOC_CORROBORATED"],
             )))
 
+        # Tier 2 — steganography-carrier detection (paper's M57 Case 3).
+        # Walk every directory where a forensicator extracted images and
+        # flag pairs whose pixel content is near-identical (pHash
+        # Hamming ≤ 8) but sha256 differs — classic stego-tool
+        # signature (microscope.jpg vs microscope1.jpg).
+        out.extend(self._scan_stego_carriers(ctx))
+
         if not out:
             return [self.emit(ctx, Finding(
                 case_id=ctx.case_id, agent=self.name, confidence="insufficient",
                 claim="Threat hunt did not execute against any target",
             ))]
         return out
+
+    def _scan_stego_carriers(self, ctx: AgentContext) -> list[Finding]:
+        """Search image-producing export trees (mobile, disk carving,
+        email attachments) for stego-carrier candidate pairs."""
+        from el.skills.similarity_digest import detect_stego_carrier_pairs
+        from el.schemas.finding import EvidenceItem
+        import hashlib
+        findings: list[Finding] = []
+        # Candidate roots — any case that extracts images lands here.
+        # detect_stego_carrier_pairs is silent on missing dirs.
+        candidates = [
+            ctx.case_dir / "exports" / "ios-artifacts",
+            ctx.case_dir / "exports" / "android-artifacts",
+            ctx.case_dir / "exports" / "macos-artifacts",
+            ctx.case_dir / "exports" / "windows-artifacts",
+            ctx.case_dir / "exports" / "email",
+            ctx.case_dir / "exports" / "disk-carving",
+            ctx.input_path if ctx.input_path.is_dir() else None,
+        ]
+        all_pairs = []
+        for root in candidates:
+            if not root:
+                continue
+            try:
+                pairs = detect_stego_carrier_pairs(root)
+            except Exception:
+                continue
+            all_pairs.extend(pairs)
+        if not all_pairs:
+            return findings
+        sample = ", ".join(
+            f"{Path(p.path_a).name}↔{Path(p.path_b).name} "
+            f"(pHash Δ={p.hamming})"
+            for p in all_pairs[:3]
+        )
+        ev = EvidenceItem(
+            tool="el.similarity_digest", version="0.1.0",
+            command="detect_stego_carrier_pairs (pHash + sha256)",
+            output_sha256=hashlib.sha256(
+                "|".join(sorted(p.sha256_a + p.sha256_b for p in all_pairs))
+                .encode()).hexdigest(),
+            output_path=str(ctx.case_dir / "analysis" / self.name),
+            extracted_facts={
+                "pair_count": len(all_pairs),
+                "top_5_pairs": [
+                    {"a": p.path_a, "b": p.path_b,
+                     "hamming": p.hamming,
+                     "sha256_a": p.sha256_a[:16] + "…",
+                     "sha256_b": p.sha256_b[:16] + "…"}
+                    for p in all_pairs[:5]
+                ],
+            },
+        )
+        findings.append(self.emit(ctx, Finding(
+            case_id=ctx.case_id, agent=self.name, confidence="medium",
+            claim=(f"Steganography-carrier candidate(s): {len(all_pairs)} "
+                   f"image pair(s) with pHash Hamming ≤ 8 but differing "
+                   f"sha256 — visually identical, byte-different. "
+                   f"Classic stego-tool signature (Roussev & Quates 2012, "
+                   f"M57 Case 3). Sample: {sample}. Examine the pairs "
+                   f"with a steganalysis tool to confirm or rule out a "
+                   f"hidden payload."),
+            evidence=[ev],
+            hypotheses_supported=["H_INSIDER_EMAIL_EXFIL"],
+        )))
+        return findings

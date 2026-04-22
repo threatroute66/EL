@@ -55,6 +55,28 @@ CREATE TABLE IF NOT EXISTS family_attributions (
     PRIMARY KEY (family, case_id)
 );
 CREATE INDEX IF NOT EXISTS idx_attr_family ON family_attributions(family);
+
+-- Similarity-digest registry (Roussev/Quates 2012 content-triage
+-- methodology). Cross-case near-duplicate detection: "file X on case B
+-- resembles file Y on case A at ssdeep=68". Companion to the exact
+-- ioc_observations table, not a replacement. Sparse by design — only
+-- files that went through the dumped-PE / carved-file / image-extract
+-- path get rows (avoid storing a digest for every byte of every case).
+CREATE TABLE IF NOT EXISTS fuzzy_hashes (
+    case_id       TEXT NOT NULL,
+    sha256        TEXT NOT NULL,
+    ssdeep        TEXT,                 -- NULL when file < 4 KB
+    phash         TEXT,                 -- NULL when file is not an image
+    file_size     INTEGER,
+    source_path   TEXT,                 -- best-effort provenance
+    observed_utc  TEXT NOT NULL,
+    agent         TEXT NOT NULL,
+    sealed        INTEGER DEFAULT 0,
+    PRIMARY KEY (case_id, sha256)
+);
+CREATE INDEX IF NOT EXISTS idx_fuzzy_case   ON fuzzy_hashes(case_id);
+CREATE INDEX IF NOT EXISTS idx_fuzzy_sha    ON fuzzy_hashes(sha256);
+CREATE INDEX IF NOT EXISTS idx_fuzzy_phash  ON fuzzy_hashes(phash);
 """
 
 
@@ -90,6 +112,101 @@ def record_iocs(case_id: str, agent: str,
                 if cur.rowcount > 0:
                     inserted += 1
     return inserted
+
+
+def record_fuzzy_hash(case_id: str, agent: str, sha256: str,
+                       ssdeep: str | None = None,
+                       phash: str | None = None,
+                       file_size: int | None = None,
+                       source_path: str | None = None,
+                       db_path: Path | None = None) -> bool:
+    """Insert a fuzzy-hash row for a file in the current case.
+    Returns True if newly inserted. Stores ssdeep (for content-triage
+    cross-case similarity) and/or phash (for stego-carrier detection)
+    alongside the sha256 so exact + fuzzy lookups share the same row."""
+    if not sha256:
+        return False
+    now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    with open_db(db_path) as conn:
+        cur = conn.execute(
+            "INSERT OR IGNORE INTO fuzzy_hashes "
+            "(case_id, sha256, ssdeep, phash, file_size, source_path, "
+            " observed_utc, agent) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (case_id, sha256, ssdeep, phash, file_size, source_path,
+             now, agent),
+        )
+        return cur.rowcount > 0
+
+
+def lookup_similar_ssdeep(
+    ssdeep: str, current_case_id: str,
+    threshold: int = 20,
+    db_path: Path | None = None,
+) -> list[dict]:
+    """Return stored fuzzy hashes from OTHER cases whose ssdeep digest
+    resembles `ssdeep` at ≥ threshold (0-100). Default 20 = lower bound
+    of "marginal" per Roussev's scale — stricter than the 11 boundary
+    to keep false-positives low in a cross-case context."""
+    if not ssdeep:
+        return []
+    from el.skills.similarity_digest import ssdeep_compare, ssdeep_score_band
+    hits: list[dict] = []
+    with open_db(db_path) as conn:
+        # Can't SQL-compare ssdeep digests directly; pull candidate rows
+        # from other cases and score in Python. Realistic knowledge DB
+        # size: <= 100k rows, comparison is fast.
+        rows = conn.execute(
+            "SELECT case_id, sha256, ssdeep, source_path, observed_utc, "
+            "       agent "
+            "FROM fuzzy_hashes "
+            "WHERE ssdeep IS NOT NULL AND case_id != ?",
+            (current_case_id,),
+        ).fetchall()
+    for cid, sha, sd, path, ts, agent in rows:
+        score = ssdeep_compare(ssdeep, sd)
+        if score >= threshold:
+            hits.append({
+                "case_id": cid, "sha256": sha, "ssdeep": sd,
+                "source_path": path, "observed_utc": ts, "agent": agent,
+                "score": score, "band": ssdeep_score_band(score),
+            })
+    hits.sort(key=lambda h: -h["score"])
+    return hits
+
+
+def lookup_similar_phash(
+    phash: str, current_case_id: str,
+    hamming_threshold: int = 8,
+    db_path: Path | None = None,
+) -> list[dict]:
+    """Return stored fuzzy hashes from OTHER cases whose perceptual
+    hash is within `hamming_threshold` bits of `phash`. Default 8
+    of 64 bits is the imagehash library's standard strong-match
+    threshold — tight enough for stego-carrier confirmation across
+    cases without false-positiving on unrelated photos."""
+    if not phash:
+        return []
+    from el.skills.similarity_digest import phash_distance
+    hits: list[dict] = []
+    with open_db(db_path) as conn:
+        rows = conn.execute(
+            "SELECT case_id, sha256, phash, source_path, observed_utc, "
+            "       agent "
+            "FROM fuzzy_hashes "
+            "WHERE phash IS NOT NULL AND case_id != ?",
+            (current_case_id,),
+        ).fetchall()
+    for cid, sha, ph, path, ts, agent in rows:
+        d = phash_distance(phash, ph)
+        if d <= hamming_threshold:
+            hits.append({
+                "case_id": cid, "sha256": sha, "phash": ph,
+                "source_path": path, "observed_utc": ts, "agent": agent,
+                "hamming": d,
+            })
+    hits.sort(key=lambda h: h["hamming"])
+    return hits
 
 
 def record_family_attribution(case_id: str, agent: str, family: str,

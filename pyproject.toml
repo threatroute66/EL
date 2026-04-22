@@ -24,6 +24,12 @@ dependencies = [
     "stix2>=3.0",
     # BAM/DAM parser: SYSTEM-hive binary value walk. MIT licensed.
     "regipy>=5.0",
+    # Similarity digests (Roussev/Quates 2012 M57 content-triage): pure-
+    # Python ssdeep implementation. LGPL-3.0.
+    "ppdeep>=20200505",
+    # Perceptual image hashing for steganography-carrier detection
+    # (pairs of images visually identical but byte-different). BSD-2-Clause.
+    "imagehash>=4.3",
 ]
 
 [project.optional-dependencies]
