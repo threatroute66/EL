@@ -359,7 +359,7 @@ no disk-side hypothesis scoring.
 
 ## Author
 
-Created by **Murat Cakir** — [LinkedIn](https://tr.linkedin.com/in/cakirm).
+Created by **Murat Cakir**, [GSE #185](https://www.giac.org/certified-professional/Murat-Cakir/154250) — [LinkedIn](https://tr.linkedin.com/in/cakirm).
 
 ## License
 
