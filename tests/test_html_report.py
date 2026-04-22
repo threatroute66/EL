@@ -101,6 +101,42 @@ def test_render_embeds_data_as_json_script(tmp_path):
     assert data["case_id"] == "t-data"
     assert len(data["findings"]) == 1
     assert data["findings"][0]["claim"] == "exfil over https"
+    # Tier 2 addition: graph data is embedded (empty for this fixture)
+    assert "graph" in data
+    assert "nodes" in data["graph"]
+
+
+def test_render_embeds_graph_section(tmp_path):
+    """Tier 2: case.html must include the graph section + SVG pane hook."""
+    out = render_html(tmp_path, "t-graph", {"case_id": "t-graph"},
+                      findings=[_mk_finding()])
+    text = out.read_text()
+    assert 'id="graph"' in text
+    assert 'id="graph-pane"' in text
+    assert 'href="#graph"' in text
+
+
+def test_render_with_explicit_graph(tmp_path):
+    """Tier 2: caller can pass a prebuilt graph dict to skip the Kùzu query."""
+    graph = {
+        "nodes": [
+            {"id": "host:h1", "type": "Host", "label": "h1", "attrs": {}},
+            {"id": "ip:1.2.3.4", "type": "IPAddress",
+             "label": "1.2.3.4", "attrs": {"version": 4}},
+        ],
+        "edges": [{"from": "host:h1", "to": "ip:1.2.3.4", "type": "RUNS_ON"}],
+        "stats": {"total_nodes": 2, "total_edges": 1, "capped": False},
+    }
+    out = render_html(tmp_path, "t-g", {"case_id": "t-g"},
+                      findings=[_mk_finding()], graph=graph)
+    text = out.read_text()
+    # Graph JSON round-trips through the embedded data block
+    import re, json
+    m = re.search(r'<script id="data" type="application/json">(.+?)</script>',
+                   text, re.DOTALL)
+    data = json.loads(m.group(1))
+    assert data["graph"]["nodes"][0]["id"] == "host:h1"
+    assert data["graph"]["edges"][0]["type"] == "RUNS_ON"
 
 
 def test_render_no_external_fetch(tmp_path):

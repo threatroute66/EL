@@ -27,6 +27,7 @@ import json
 from datetime import datetime, timezone
 from pathlib import Path
 
+from el.reporting.graph_export import export_graph
 from el.schemas.finding import Finding
 
 
@@ -151,6 +152,31 @@ aside.drawer .evidence-item { background: #161b22; border: 1px solid #30363d; bo
 aside.drawer .evidence-item .cmd { color: #7ee787; }
 aside.drawer .evidence-item .sha { color: #484f58; font-size: 11px; margin-top: 4px; }
 
+/* Graph pane */
+#graph-pane { background: #161b22; border: 1px solid #30363d; border-radius: 6px;
+    height: 560px; margin-top: 16px; position: relative; overflow: hidden; }
+#graph-pane svg { width: 100%; height: 100%; cursor: grab; display: block; }
+#graph-pane svg:active { cursor: grabbing; }
+#graph-pane .empty { color: #8b949e; text-align: center; padding: 220px 24px;
+    font-size: 13px; }
+#graph-pane .legend { position: absolute; top: 10px; right: 10px;
+    background: rgba(13, 17, 23, 0.88); border: 1px solid #30363d;
+    border-radius: 4px; padding: 8px 10px; font-size: 11px; color: #8b949e; }
+#graph-pane .legend .sw { display: inline-block; width: 10px; height: 10px;
+    border-radius: 50%; margin-right: 6px; vertical-align: middle; }
+#graph-pane .controls { position: absolute; top: 10px; left: 10px;
+    display: flex; gap: 6px; }
+#graph-pane .controls button { background: #21262d; color: #c9d1d9;
+    border: 1px solid #30363d; border-radius: 4px; padding: 4px 10px;
+    font-size: 12px; cursor: pointer; }
+#graph-pane .controls button:hover { background: #30363d; }
+#graph-pane text { font-family: -apple-system, system-ui, sans-serif;
+    font-size: 10px; fill: #c9d1d9; pointer-events: none; }
+#graph-pane circle { cursor: pointer; stroke: #0d1117; stroke-width: 1.5; }
+#graph-pane circle:hover { stroke: #f0f6fc; stroke-width: 2; }
+#graph-pane circle.selected { stroke: #f85149; stroke-width: 3; }
+#graph-pane line { stroke: #30363d; stroke-opacity: 0.6; }
+
 /* Hidden sections */
 section[hidden] { display: none !important; }
 
@@ -166,6 +192,184 @@ _JS = r"""
   const findingsById = Object.fromEntries(data.findings.map(f => [f.finding_id, f]));
   let activeAgent = "all";
   let activeConf = "all";
+
+  // ----- Attack-chain graph (Tier 2) ------------------------------------
+  const NODE_COLORS = {
+    Host: "#58a6ff", User: "#d2a8ff", Process: "#7ee787",
+    File: "#ffa657", IPAddress: "#ff7b72", Domain: "#79c0ff",
+    Hash: "#8b949e", NetworkFlow: "#f0883e", Event: "#d29922",
+    RegistryKey: "#bc8cff",
+  };
+
+  function renderGraph() {
+    const pane = document.getElementById("graph-pane");
+    if (!pane) return;
+    const g = data.graph || {nodes: [], edges: [], stats: {total_nodes:0}};
+    if (!g.nodes.length) {
+      pane.innerHTML = '<div class="empty">No entities in this case\'s Kùzu graph yet. Agents that populate the graph (NetworkAnalyst, MemoryForensicator, LogAnalyst) haven\'t produced nodes for this evidence type.</div>';
+      return;
+    }
+    const W = pane.clientWidth, H = pane.clientHeight;
+    const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
+    svg.setAttribute("preserveAspectRatio", "xMidYMid meet");
+    pane.innerHTML = "";
+    pane.appendChild(svg);
+
+    // Legend
+    const typesPresent = Array.from(new Set(g.nodes.map(n => n.type))).sort();
+    const legend = document.createElement("div");
+    legend.className = "legend";
+    legend.innerHTML = `<div><b>${g.nodes.length}</b> nodes · <b>${g.edges.length}</b> edges${g.stats.capped ? ' · <span style="color:#d29922">capped from '+g.stats.total_nodes+'</span>' : ''}</div>` +
+      typesPresent.map(t => `<div><span class="sw" style="background:${NODE_COLORS[t]||"#8b949e"}"></span>${t}</div>`).join("");
+    pane.appendChild(legend);
+
+    // Init node positions in a circle
+    const nodes = g.nodes.map((n, i) => {
+      const angle = (2 * Math.PI * i) / g.nodes.length;
+      const r = Math.min(W, H) * 0.35;
+      return {...n, x: W/2 + r*Math.cos(angle), y: H/2 + r*Math.sin(angle),
+              vx: 0, vy: 0};
+    });
+    const nodeById = Object.fromEntries(nodes.map(n => [n.id, n]));
+    const edges = g.edges.filter(e => nodeById[e.from] && nodeById[e.to]);
+
+    // Degree-based radius (more connections = bigger)
+    const degree = {};
+    edges.forEach(e => {
+      degree[e.from] = (degree[e.from]||0) + 1;
+      degree[e.to] = (degree[e.to]||0) + 1;
+    });
+    nodes.forEach(n => {
+      n.r = Math.min(16, 4 + Math.sqrt(degree[n.id]||0) * 2);
+    });
+
+    // SVG elements
+    const gEdges = document.createElementNS("http://www.w3.org/2000/svg", "g");
+    const gNodes = document.createElementNS("http://www.w3.org/2000/svg", "g");
+    const gLabels = document.createElementNS("http://www.w3.org/2000/svg", "g");
+    svg.appendChild(gEdges); svg.appendChild(gNodes); svg.appendChild(gLabels);
+
+    const lineEls = edges.map(e => {
+      const l = document.createElementNS("http://www.w3.org/2000/svg", "line");
+      gEdges.appendChild(l);
+      return l;
+    });
+    const circleEls = nodes.map(n => {
+      const c = document.createElementNS("http://www.w3.org/2000/svg", "circle");
+      c.setAttribute("r", n.r);
+      c.setAttribute("fill", NODE_COLORS[n.type] || "#8b949e");
+      c.addEventListener("click", (ev) => { ev.stopPropagation(); selectNode(n); });
+      gNodes.appendChild(c);
+      return c;
+    });
+    const labelEls = nodes.map(n => {
+      const t = document.createElementNS("http://www.w3.org/2000/svg", "text");
+      t.setAttribute("text-anchor", "start");
+      t.textContent = (n.label || "").slice(0, 24);
+      gLabels.appendChild(t);
+      return t;
+    });
+
+    function selectNode(n) {
+      circleEls.forEach(c => c.classList.remove("selected"));
+      const idx = nodes.indexOf(n);
+      if (idx >= 0) circleEls[idx].classList.add("selected");
+      openNodeDrawer(n);
+    }
+
+    // Simple force-directed step
+    const LINK_DIST = 70, LINK_K = 0.02, REPEL = 1200, CENTER_K = 0.005,
+          DAMP = 0.82, STEPS = 180;
+    function step() {
+      for (let i=0; i<nodes.length; i++) {
+        for (let j=i+1; j<nodes.length; j++) {
+          const a=nodes[i], b=nodes[j];
+          const dx=b.x-a.x, dy=b.y-a.y;
+          let d2 = dx*dx+dy*dy; if (d2<1) d2=1;
+          const f = REPEL / d2;
+          const d = Math.sqrt(d2);
+          const fx = (dx/d)*f, fy = (dy/d)*f;
+          a.vx -= fx; a.vy -= fy; b.vx += fx; b.vy += fy;
+        }
+      }
+      edges.forEach(e => {
+        const a=nodeById[e.from], b=nodeById[e.to];
+        const dx=b.x-a.x, dy=b.y-a.y;
+        const d=Math.sqrt(dx*dx+dy*dy)||1;
+        const f = (d - LINK_DIST) * LINK_K;
+        const fx=(dx/d)*f, fy=(dy/d)*f;
+        a.vx += fx; a.vy += fy; b.vx -= fx; b.vy -= fy;
+      });
+      nodes.forEach(n => {
+        n.vx += (W/2 - n.x) * CENTER_K;
+        n.vy += (H/2 - n.y) * CENTER_K;
+        n.vx *= DAMP; n.vy *= DAMP;
+        n.x += n.vx; n.y += n.vy;
+      });
+    }
+    function draw() {
+      nodes.forEach((n, i) => {
+        circleEls[i].setAttribute("cx", n.x);
+        circleEls[i].setAttribute("cy", n.y);
+        labelEls[i].setAttribute("x", n.x + n.r + 2);
+        labelEls[i].setAttribute("y", n.y + 3);
+      });
+      edges.forEach((e, i) => {
+        const a=nodeById[e.from], b=nodeById[e.to];
+        lineEls[i].setAttribute("x1", a.x);
+        lineEls[i].setAttribute("y1", a.y);
+        lineEls[i].setAttribute("x2", b.x);
+        lineEls[i].setAttribute("y2", b.y);
+      });
+    }
+    for (let s=0; s<STEPS; s++) step();
+    draw();
+
+    // Pan + zoom
+    let viewX=0, viewY=0, viewK=1, dragging=false, dragX=0, dragY=0;
+    function applyView() {
+      gEdges.setAttribute("transform", `translate(${viewX},${viewY}) scale(${viewK})`);
+      gNodes.setAttribute("transform", `translate(${viewX},${viewY}) scale(${viewK})`);
+      gLabels.setAttribute("transform", `translate(${viewX},${viewY}) scale(${viewK})`);
+    }
+    svg.addEventListener("mousedown", e => { dragging=true; dragX=e.clientX; dragY=e.clientY; });
+    svg.addEventListener("mousemove", e => {
+      if (!dragging) return;
+      viewX += (e.clientX - dragX); viewY += (e.clientY - dragY);
+      dragX=e.clientX; dragY=e.clientY; applyView();
+    });
+    svg.addEventListener("mouseup", () => dragging=false);
+    svg.addEventListener("mouseleave", () => dragging=false);
+    svg.addEventListener("wheel", e => {
+      e.preventDefault();
+      const k = e.deltaY < 0 ? 1.1 : 0.9;
+      viewK = Math.max(0.2, Math.min(5, viewK * k));
+      applyView();
+    });
+
+    // Controls
+    const controls = document.createElement("div");
+    controls.className = "controls";
+    controls.innerHTML = '<button id="graph-reset">Reset view</button>';
+    pane.appendChild(controls);
+    document.getElementById("graph-reset").addEventListener("click", () => {
+      viewX=0; viewY=0; viewK=1; applyView();
+    });
+  }
+
+  function openNodeDrawer(n) {
+    const d = document.getElementById("drawer");
+    const body = document.getElementById("drawer-body");
+    const attrs = Object.entries(n.attrs || {}).map(([k,v]) =>
+      `<div class="field"><div class="label">${esc(k)}</div><div class="val">${esc(String(v))}</div></div>`).join("");
+    body.innerHTML = `
+      <h3>${esc(n.label || n.id)}</h3>
+      <div class="sub">${esc(n.type)} · ${esc(n.id)}</div>
+      ${attrs}
+      <div class="field"><div class="label">Source</div><div class="val">Kùzu entity graph (graph.kuzu)</div></div>`;
+    d.classList.add("open");
+  }
 
   // Render findings list
   function renderFindings() {
@@ -242,6 +446,7 @@ _JS = r"""
   document.addEventListener("keydown", e => { if (e.key === "Escape") closeDrawer(); });
 
   renderFindings();
+  renderGraph();
 
   // Deep-link: case.html#<finding_id> opens drawer
   if (window.location.hash) {
@@ -281,6 +486,7 @@ def render_html(
     ach_ranking: list | None = None,
     iocs: dict[str, list[str]] | None = None,
     techniques: dict[str, dict] | None = None,
+    graph: dict | None = None,
 ) -> Path:
     case_dir = Path(case_dir)
     reports = case_dir / "reports"
@@ -290,6 +496,12 @@ def render_html(
     ach_ranking = ach_ranking or []
     iocs = iocs or {}
     techniques = techniques or {}
+    # Export Kùzu graph on demand when not supplied (Tier 2).
+    if graph is None:
+        try:
+            graph = export_graph(case_dir)
+        except Exception:
+            graph = {"nodes": [], "edges": [], "stats": {"total_nodes": 0}}
 
     by_conf: dict[str, int] = {"high": 0, "medium": 0, "low": 0,
                                  "insufficient": 0}
@@ -307,6 +519,7 @@ def render_html(
         "generated_utc": datetime.now(timezone.utc).isoformat(),
         "manifest": {k: str(v) for k, v in manifest.items()},
         "findings": [_finding_to_dict(f) for f in findings],
+        "graph": graph,
     }
     data_json = json.dumps(data, separators=(",", ":"))
 
@@ -399,6 +612,7 @@ def render_html(
   <nav>
     <a href="#summary">Summary</a>
     <a href="#ach">ACH</a>
+    <a href="#graph">Graph</a>
     <a href="#findings">Findings</a>
     <a href="#iocs">IOCs</a>
     <a href="#attack">ATT&amp;CK</a>
@@ -419,6 +633,11 @@ def render_html(
 <section id="ach">
   <h2>Hypothesis Ranking <span class="count">(Heuer ACH — highest = leading, never declared 'true')</span></h2>
   {ach_html}
+</section>
+
+<section id="graph">
+  <h2>Entity Graph <span class="count">(Locard contacts — hosts, users, processes, IPs, domains, flows)</span></h2>
+  <div id="graph-pane"></div>
 </section>
 
 <section id="findings">
