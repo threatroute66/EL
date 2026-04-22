@@ -189,6 +189,10 @@ def provision_snapshot_cmd(
 @app.command("report")
 def report_cmd(
     case_dir: str = typer.Argument(..., help="Path to a case directory"),
+    html: bool = typer.Option(
+        False, "--html",
+        help="Also render a self-contained case.html web view alongside "
+             "the Markdown report (Tier 1 of docs/web-view-design.md)."),
 ) -> None:
     """Re-render the human report + STIX bundle from the existing ledger.
 
@@ -233,6 +237,12 @@ def report_cmd(
     console.print(f"[bold]report[/bold]: {p}")
     if stix_path:
         console.print(f"[bold]stix[/bold]: {stix_path}")
+    if html:
+        from el.reporting.html import render_html
+        html_path = render_html(cd, case_id, manifest, findings=rows,
+                                  ach_ranking=ranked, iocs=iocs,
+                                  techniques=techniques)
+        console.print(f"[bold]html[/bold]: {html_path}")
 
 
 @app.command("hunt")
