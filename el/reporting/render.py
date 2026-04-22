@@ -40,6 +40,28 @@ def render_report(
     lines.append(f"# EL Case Report — {case_id}")
     lines.append(f"_Generated {datetime.now(timezone.utc).isoformat()} UTC_")
     lines.append("")
+
+    # Executive Narrative — six-beat story of what happened, prose
+    # synthesised from the Findings + ACH ranking. Always renders
+    # before the structured projections below, because the prose
+    # version is what a non-DFIR stakeholder (legal / exec / IR lead)
+    # reads first. Honest gap statements when a beat is empty.
+    from el.reporting.narrative import synthesize as _nar_synth
+    try:
+        narrative = _nar_synth(
+            case_id=case_id, findings=findings,
+            ach_ranking=ach_ranking, iocs=iocs, manifest=manifest,
+        )
+        lines.append(narrative.as_markdown())
+        lines.append("")
+        lines.append("---")
+        lines.append("")
+        narrative_path = reports / "narrative.md"
+        narrative_path.write_text(narrative.as_markdown())
+    except Exception as e:
+        lines.append(f"_(Narrative synthesis skipped: {e})_")
+        lines.append("")
+
     lines.append("## Executive Summary")
     lines.append("")
     lines.append(f"- Findings recorded: **{len(findings)}** "

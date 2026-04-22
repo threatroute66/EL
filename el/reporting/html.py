@@ -29,6 +29,7 @@ from pathlib import Path
 
 from el.intel.attack_tactics import TACTICS, group_by_tactic
 from el.reporting.graph_export import export_graph
+from el.reporting.narrative import synthesize as _narrative_synth
 from el.schemas.finding import Finding
 
 
@@ -152,6 +153,35 @@ aside.drawer .evidence-item { background: #161b22; border: 1px solid #30363d; bo
     padding: 10px; margin-top: 6px; font-size: 12px; font-family: monospace; }
 aside.drawer .evidence-item .cmd { color: #7ee787; }
 aside.drawer .evidence-item .sha { color: #484f58; font-size: 11px; margin-top: 4px; }
+
+/* Executive Narrative (prose — answers "what happened") */
+.narrative { background: #161b22; border: 1px solid #30363d; border-left: 3px solid #d2a8ff;
+    border-radius: 6px; padding: 18px 22px; margin-top: 16px; font-size: 14px;
+    line-height: 1.55; color: #e6edf3; }
+.narrative h3 { color: #f0f6fc; font-size: 15px; margin-top: 16px;
+    margin-bottom: 6px; }
+.narrative h3:first-child { margin-top: 0; }
+.narrative .earliest { color: #8b949e; font-size: 11px;
+    font-family: monospace; margin-bottom: 4px; }
+.narrative p { margin: 6px 0 10px 0; }
+.narrative .lead { color: #c9d1d9; margin-bottom: 12px;
+    padding-bottom: 10px; border-bottom: 1px solid #30363d; font-weight: 500; }
+.narrative .gap-warn { color: #d29922; background: #3a2a0a;
+    border: 1px solid #5a420c; padding: 8px 12px; border-radius: 4px;
+    margin-bottom: 12px; font-size: 13px; }
+.narrative ul { padding-left: 20px; margin: 6px 0; }
+.narrative li { margin-bottom: 4px; font-size: 13px; }
+.narrative a.cite { color: #58a6ff; text-decoration: none;
+    font-family: monospace; font-size: 11px;
+    background: #21262d; padding: 1px 6px; border-radius: 3px; }
+.narrative a.cite:hover { background: #1f6feb; color: white; }
+.narrative .alt-section { margin-top: 18px; padding-top: 14px;
+    border-top: 2px dashed #30363d; }
+.narrative .alt-section h2 { color: #d2a8ff; font-size: 15px;
+    margin-bottom: 8px; }
+.narrative .gap-statement { color: #ffa657; font-style: italic;
+    background: #2a1c0a; padding: 6px 10px; border-radius: 4px;
+    border-left: 2px solid #d29922; }
 
 /* Timeline (narrative) */
 .timeline { border-left: 2px solid #30363d; margin-left: 20px; padding-left: 20px;
@@ -705,6 +735,106 @@ _JS = r"""
 """
 
 
+def _build_narrative_html(narrative) -> str:
+    """Server-render the NarrativeReport. Each `[finding_id]` citation
+    in the prose becomes a clickable anchor that opens the finding
+    drawer via the existing hash-fragment handler."""
+    if narrative is None:
+        return '<p style="color:#8b949e">No narrative synthesized.</p>'
+    parts: list[str] = []
+    lead_html = (
+        f'Leading hypothesis: <b>{html.escape(str(narrative.leading_hypothesis))}</b> '
+        f'(score {narrative.leading_score})'
+    )
+    if narrative.runner_up_hypothesis:
+        lead_html += (
+            f', runner-up <b>{html.escape(str(narrative.runner_up_hypothesis))}</b> '
+            f'(score {narrative.runner_up_score}, gap {narrative.leading_gap})'
+        )
+    parts.append(f'<div class="lead">{lead_html}.</div>')
+    if narrative.leading_gap < 3 and narrative.runner_up_hypothesis:
+        parts.append(
+            '<div class="gap-warn">⚠ Hypothesis gap is small — evidence '
+            'supports more than one theory. Both narratives render; a '
+            'report that advocates only one is sycophantic.</div>')
+
+    def _render_paragraph(text: str) -> str:
+        # Turn [<finding_id>] citations into clickable anchors
+        import re
+        def _link(m):
+            fid = m.group(1)
+            return (f'<a class="cite" href="#{html.escape(fid)}" '
+                    f'data-fid="{html.escape(fid)}">{html.escape(fid)}</a>')
+        # Preserve markdown-ish bold + escape otherwise
+        safe = html.escape(text)
+        safe = re.sub(r'\[(01[A-Z0-9]{24})\]', _link, safe)
+        safe = re.sub(r'\*\*([^*]+)\*\*', r'<b>\1</b>', safe)
+        # Newlines → <br>; bullet lines → list
+        lines = safe.split("\n")
+        out: list[str] = []
+        in_ul = False
+        for ln in lines:
+            if ln.startswith("- "):
+                if not in_ul:
+                    out.append("<ul>"); in_ul = True
+                out.append(f"<li>{ln[2:]}</li>")
+            else:
+                if in_ul:
+                    out.append("</ul>"); in_ul = False
+                if ln.strip():
+                    out.append(f"<p>{ln}</p>")
+        if in_ul:
+            out.append("</ul>")
+        return "\n".join(out)
+
+    for block in narrative.beats:
+        if block.finding_count == 0 and block.beat not in (
+                "trigger", "impact"):
+            continue
+        parts.append(f'<h3>{html.escape(block.heading)}</h3>')
+        if block.earliest:
+            parts.append(f'<div class="earliest">Earliest evidence: '
+                         f'{html.escape(block.earliest)}</div>')
+        if not block.paragraph and block.beat in ("trigger", "impact"):
+            # Honest gap statement for empty critical beats — surface
+            # with distinct styling so the analyst sees the missing link
+            parts.append(
+                f'<div class="gap-statement">No findings in this beat — '
+                f'the {html.escape(block.heading.lower())} step is not '
+                f'reconstructible from the available evidence.</div>')
+        elif block.paragraph:
+            parts.append(_render_paragraph(block.paragraph))
+
+    if narrative.alt_beats:
+        parts.append('<div class="alt-section">')
+        parts.append(
+            f'<h2>Alternative narrative — '
+            f'{html.escape(str(narrative.runner_up_hypothesis))}</h2>')
+        parts.append(
+            '<p style="color:#8b949e;font-size:13px">'
+            'Evidence subset that would SUPPORT this runner-up hypothesis, '
+            'had the analyst chosen it as the leading theory instead.</p>')
+        for block in narrative.alt_beats:
+            parts.append(f'<h3>{html.escape(block.heading)}</h3>')
+            if block.paragraph:
+                parts.append(_render_paragraph(block.paragraph))
+        parts.append('</div>')
+
+    if narrative.unresolved_count or narrative.insufficient_count:
+        parts.append('<h3>Open questions</h3><ul>')
+        if narrative.unresolved_count:
+            parts.append(
+                f'<li><b>{narrative.unresolved_count}</b> finding(s) '
+                f'with red_review status = unresolved.</li>')
+        if narrative.insufficient_count:
+            parts.append(
+                f'<li><b>{narrative.insufficient_count}</b> finding(s) '
+                f'at confidence = insufficient — documented gaps.</li>')
+        parts.append('</ul>')
+
+    return f'<div class="narrative">{"".join(parts)}</div>'
+
+
 def _heat_class(n: int) -> str:
     if n <= 1:   return "heat1"
     if n <= 3:   return "heat2"
@@ -980,6 +1110,16 @@ def render_html(
     heatmap_html = _build_attack_heatmap_html(techniques)
     diamond_html = _build_diamond_html(findings, ach_ranking, iocs, manifest)
 
+    # Tier 5: Executive Narrative — six-beat prose "what happened"
+    try:
+        narrative = _narrative_synth(
+            case_id=case_id, findings=findings,
+            ach_ranking=ach_ranking, iocs=iocs, manifest=manifest)
+        narrative_html = _build_narrative_html(narrative)
+    except Exception:
+        narrative_html = ('<p style="color:#8b949e">narrative unavailable'
+                          '</p>')
+
     # Summary cards
     total = len(findings)
     lead_html = (
@@ -1001,6 +1141,7 @@ def render_html(
   <h1>EL<span class="case-id">{html.escape(case_id)}</span></h1>
   <div class="meta">Leading: {lead_html} · Generated {data['generated_utc']}</div>
   <nav>
+    <a href="#narrative">Narrative</a>
     <a href="#summary">Summary</a>
     <a href="#ach">ACH</a>
     <a href="#timeline">Timeline</a>
@@ -1015,6 +1156,11 @@ def render_html(
   </nav>
 </header>
 <main>
+
+<section id="narrative">
+  <h2>Executive Narrative <span class="count">(what happened, in prose — every factual claim cites the finding_id it rests on)</span></h2>
+  {narrative_html}
+</section>
 
 <section id="summary">
   <h2>Executive Summary</h2>
