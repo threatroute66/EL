@@ -107,7 +107,9 @@ def _h_ransomware(f: Finding) -> int:
     if _claim_contains("vssadmin", "shadowcopy", "shadows /all", "delete shadows",
                        "wbadmin", ".lock", ".enc", "readme",
                        "ransom note", "ransom demand", "ransomware.",
-                       "encrypt", "chacha", "rsa public")(f):
+                       "files encrypted", "files have been encrypted",
+                       "encrypt your files", "encrypting files",
+                       "chacha", "rsa public")(f):
         s += 3
     if _has_tag("H_INITIAL_ACCESS_DOC_MACRO")(f): s += 1
     if _has_tag("H_LIVING_OFF_THE_LAND")(f): s += 1
