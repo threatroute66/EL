@@ -219,6 +219,13 @@ el report /opt/EL/cases/wkstn-01 --html
 # case.html?watch=3 in a browser for auto-reload every 3 s.
 el report /opt/EL/cases/wkstn-01 --html --watch
 
+# Browse all case reports via a local HTTP server — needed when the
+# default browser is a snap (Chromium on Ubuntu) that can't read
+# /opt/ from file://. Loopback-only by default.
+el serve                                   # http://127.0.0.1:8089/
+el serve --port 9000                       # custom port
+el serve --root /opt/EL/cases/srl-admin-memory  # single case
+
 # Standalone YARA sweep over an existing case (auto-generates rules from iocs.json)
 el hunt /opt/EL/cases/wkstn-01
 el hunt /opt/EL/cases/wkstn-01 --rules /opt/signature-base/yara/
@@ -374,9 +381,14 @@ Rolled out in four tiers per
 [docs/web-view-design.md](./docs/web-view-design.md):
 
 1. **Static render** — executive summary, ACH ranking as horizontal
-   bars, findings grid filterable by agent + confidence, per-finding
-   detail drawer on click, IOC table, ATT&CK table. Deep-linkable by
-   finding_id: `case.html#01KPMZC32QYA976TVHC026F5K0`.
+   bars, **chronological timeline** of findings, **Most Diagnostic
+   Findings** (Heuer — highest ACH score-delta spread), **ACH
+   consistency matrix** (finding × hypothesis grid), findings grid
+   filterable by agent + confidence, per-finding detail drawer with
+   evidence sha256s, extracted-facts, ACH Δ, and the disconfirming
+   checklist from the Red Reviewer, IOC table, ATT&CK table.
+   Deep-linkable by finding_id:
+   `case.html#01KPMZC32QYA976TVHC026F5K0`.
 2. **Attack-chain graph** — SVG force-directed layout of the per-case
    Kùzu substrate (Host / User / Process / File / IPAddress / Domain
    / Hash / NetworkFlow / Event nodes, 13 edge types). Pan + zoom +

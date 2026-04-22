@@ -153,6 +153,70 @@ aside.drawer .evidence-item { background: #161b22; border: 1px solid #30363d; bo
 aside.drawer .evidence-item .cmd { color: #7ee787; }
 aside.drawer .evidence-item .sha { color: #484f58; font-size: 11px; margin-top: 4px; }
 
+/* Timeline (narrative) */
+.timeline { border-left: 2px solid #30363d; margin-left: 20px; padding-left: 20px;
+    margin-top: 16px; }
+.tl-item { position: relative; margin-bottom: 10px; background: #161b22;
+    border: 1px solid #30363d; border-radius: 4px; padding: 10px 14px; cursor: pointer; }
+.tl-item:hover { background: #1c2128; border-color: #484f58; }
+.tl-item::before { content: ""; position: absolute; left: -26px; top: 16px;
+    width: 10px; height: 10px; background: #58a6ff; border: 2px solid #0d1117;
+    border-radius: 50%; }
+.tl-item.conf-high::before { background: #f85149; }
+.tl-item.conf-medium::before { background: #d29922; }
+.tl-item.conf-low::before { background: #58a6ff; }
+.tl-item.conf-insufficient::before { background: #484f58; }
+.tl-item .ts { font-family: monospace; color: #8b949e; font-size: 11px;
+    margin-right: 10px; }
+.tl-item .agent { color: #7ee787; font-family: monospace; font-size: 11px;
+    margin-right: 10px; }
+.tl-item .cnf { font-size: 10px; color: #0d1117; padding: 1px 6px;
+    border-radius: 8px; font-weight: 600; text-transform: uppercase;
+    letter-spacing: 0.05em; }
+.tl-item.conf-high .cnf    { background: #f85149; color: white; }
+.tl-item.conf-medium .cnf  { background: #d29922; }
+.tl-item.conf-low .cnf     { background: #58a6ff; color: white; }
+.tl-item.conf-insufficient .cnf { background: #484f58; color: #c9d1d9; }
+.tl-item .claim { margin-top: 4px; color: #e6edf3; font-size: 13px; }
+
+/* Diagnostic findings (Heuer — high score-delta spread) */
+.diagnostic-list { margin-top: 16px; display: flex; flex-direction: column; gap: 8px; }
+.diag-card { background: #161b22; border: 1px solid #30363d; border-left: 3px solid #d2a8ff;
+    border-radius: 4px; padding: 12px 14px; cursor: pointer; }
+.diag-card:hover { background: #1c2128; }
+.diag-card .head { display: flex; gap: 10px; align-items: baseline; }
+.diag-card .fid { font-family: monospace; color: #8b949e; font-size: 11px; }
+.diag-card .agent { color: #7ee787; font-family: monospace; font-size: 11px; }
+.diag-card .claim { margin-top: 4px; color: #e6edf3; }
+.diag-card .deltas { margin-top: 6px; display: flex; flex-wrap: wrap; gap: 4px; }
+.diag-card .delta { font-family: monospace; font-size: 11px; padding: 1px 8px;
+    border-radius: 3px; background: #21262d; color: #c9d1d9; }
+.diag-card .delta.pos { background: #0d4429; color: #7ee787; }
+.diag-card .delta.neg { background: #4a1111; color: #ff9d8d; }
+
+/* ACH consistency matrix (Heuer standard grid) */
+.ach-matrix { overflow-x: auto; margin-top: 16px; }
+table.ach-mat { border-collapse: collapse; width: 100%; font-size: 11px; }
+table.ach-mat th, table.ach-mat td { border: 1px solid #30363d; padding: 4px 8px;
+    vertical-align: middle; text-align: center; }
+table.ach-mat th { background: #161b22; color: #8b949e; font-weight: 500;
+    font-size: 10px; text-transform: uppercase; letter-spacing: 0.04em; }
+table.ach-mat th.hyp { text-align: left; font-family: monospace; color: #58a6ff;
+    font-size: 10px; writing-mode: vertical-rl; transform: rotate(180deg);
+    height: 120px; padding: 8px 4px; }
+table.ach-mat th.fid { text-align: left; font-family: monospace; color: #c9d1d9;
+    font-size: 11px; max-width: 220px; overflow: hidden; text-overflow: ellipsis;
+    white-space: nowrap; cursor: pointer; text-transform: none; letter-spacing: 0; }
+table.ach-mat th.fid:hover { background: #1f6feb; color: white; }
+table.ach-mat td.pos { background: #0d4429; color: #7ee787; }
+table.ach-mat td.neg { background: #4a1111; color: #ff9d8d; }
+table.ach-mat td.zero { color: #484f58; }
+
+/* Drawer — disconfirming checklist */
+aside.drawer ul.checklist { margin: 6px 0 0 0; padding-left: 20px; }
+aside.drawer ul.checklist li { color: #c9d1d9; font-size: 12px;
+    margin-bottom: 4px; list-style-type: square; }
+
 /* ATT&CK heatmap (Tier 3) */
 .attack-heatmap { display: grid; gap: 12px; margin-top: 16px; }
 .tactic-col { background: #161b22; border: 1px solid #30363d; border-radius: 6px;
@@ -476,21 +540,133 @@ _JS = r"""
   function openDrawer(f) {
     const d = document.getElementById("drawer");
     const body = document.getElementById("drawer-body");
-    const evidenceHtml = (f.evidence || []).map(e => `
-      <div class="evidence-item">
+    const evidenceHtml = (f.evidence || []).map(e => {
+      const facts = e.extracted_facts || {};
+      const factList = Object.entries(facts).slice(0, 8).map(([k,v]) =>
+        `<div style="margin-top:4px;font-size:11px;color:#8b949e">${esc(k)}: <span style="color:#c9d1d9">${esc(String(v)).slice(0,160)}</span></div>`).join("");
+      return `<div class="evidence-item">
         <div class="cmd">${esc(e.tool)} ${esc(e.version)} — ${esc(e.command)}</div>
         <div class="sha">sha256=${esc((e.output_sha256 || "").slice(0,16))}… path=${esc(e.output_path || "")}</div>
-      </div>`).join("");
+        ${factList}
+      </div>`;
+    }).join("");
+    const deltaHtml = (() => {
+      const d = f.ach_score_delta || {};
+      const keys = Object.keys(d).sort();
+      if (!keys.length) return "";
+      const rows = keys.map(k => {
+        const v = d[k];
+        const cls = v > 0 ? "pos" : v < 0 ? "neg" : "";
+        const sign = v > 0 ? "+" : "";
+        return `<span class="delta ${cls}">${esc(k)} ${sign}${v}</span>`;
+      }).join(" ");
+      return `<div class="field"><div class="label">ACH score Δ</div><div class="deltas" style="display:flex;flex-wrap:wrap;gap:4px">${rows}</div></div>`;
+    })();
+    const rr = f.red_review;
+    const checklistHtml = (rr && rr.disconfirming_checklist && rr.disconfirming_checklist.length)
+      ? `<div class="field"><div class="label">Disconfirming checklist</div><ul class="checklist">${rr.disconfirming_checklist.map(x => `<li>${esc(x)}</li>`).join("")}</ul></div>`
+      : "";
     body.innerHTML = `
       <h3>${esc(f.claim)}</h3>
       <div class="sub">${esc(f.finding_id)} · ${esc(f.agent)} · ${esc(f.confidence)}</div>
       <div class="field"><div class="label">Created (UTC)</div><div class="val">${esc(f.created_utc || "")}</div></div>
       ${f.hypotheses_supported.length ? `<div class="field"><div class="label">Supports</div><div class="val">${f.hypotheses_supported.map(esc).join(", ")}</div></div>` : ""}
       ${f.hypotheses_refuted.length ? `<div class="field"><div class="label">Refutes</div><div class="val">${f.hypotheses_refuted.map(esc).join(", ")}</div></div>` : ""}
+      ${deltaHtml}
       ${evidenceHtml ? `<div class="field"><div class="label">Evidence (${f.evidence.length})</div>${evidenceHtml}</div>` : ""}
-      ${f.red_review ? `<div class="field"><div class="label">Red Review</div><div class="val">status=${esc(f.red_review.status || "")} ${f.red_review.challenger_notes ? "— " + esc(f.red_review.challenger_notes) : ""}</div></div>` : ""}`;
+      ${rr ? `<div class="field"><div class="label">Red Review</div><div class="val">status=${esc(rr.status || "")} ${rr.challenger_notes ? "— " + esc(rr.challenger_notes) : ""}</div></div>` : ""}
+      ${checklistHtml}`;
     d.classList.add("open");
     history.replaceState(null, "", "#" + f.finding_id);
+  }
+
+  // ----- Timeline / diagnostic / matrix (narrative) --------------------
+  function renderTimeline() {
+    const pane = document.getElementById("tl-list");
+    if (!pane) return;
+    const ordered = [...data.findings].sort((a, b) =>
+      (a.created_utc || "").localeCompare(b.created_utc || "") ||
+      a.finding_id.localeCompare(b.finding_id));
+    pane.innerHTML = ordered.map(f => `
+      <div class="tl-item conf-${f.confidence}" data-fid="${esc(f.finding_id)}">
+        <span class="ts">${esc((f.created_utc || "").replace("T"," ").slice(0,19))}</span>
+        <span class="agent">${esc(f.agent)}</span>
+        <span class="cnf">${esc(f.confidence)}</span>
+        <div class="claim">${esc(f.claim)}</div>
+      </div>`).join("") ||
+      '<div style="color:#8b949e">No findings to lay on a timeline yet.</div>';
+    pane.querySelectorAll(".tl-item").forEach(el => {
+      el.addEventListener("click", () =>
+        openDrawer(findingsById[el.dataset.fid]));
+    });
+  }
+
+  function renderDiagnostic() {
+    const pane = document.getElementById("diag-list");
+    if (!pane) return;
+    // Top-N findings by ACH score-delta spread (max(pos) - min(neg))
+    // — Heuer's "most diagnostic" are the ones whose presence shifts
+    // the ranking the hardest.
+    const scored = data.findings.map(f => {
+      const d = f.ach_score_delta || {};
+      const vals = Object.values(d);
+      if (!vals.length) return null;
+      const spread = (Math.max(0, ...vals)) - (Math.min(0, ...vals));
+      return {f, spread};
+    }).filter(Boolean).sort((a,b) => b.spread - a.spread).slice(0, 10);
+    if (!scored.length) {
+      pane.innerHTML = '<div style="color:#8b949e">No ACH score-deltas recorded — diagnostic ranking populates once the ACH engine emits score-shift findings.</div>';
+      return;
+    }
+    pane.innerHTML = scored.map(({f, spread}) => {
+      const d = f.ach_score_delta || {};
+      const deltas = Object.entries(d).sort()
+        .map(([k, v]) => `<span class="delta ${v > 0 ? 'pos' : v < 0 ? 'neg' : ''}">${esc(k)} ${v > 0 ? '+' : ''}${v}</span>`).join(" ");
+      return `<div class="diag-card" data-fid="${esc(f.finding_id)}">
+        <div class="head"><span class="agent">${esc(f.agent)}</span>
+          <span class="fid">${esc(f.finding_id)}</span>
+          <span class="fid">spread=${spread}</span></div>
+        <div class="claim">${esc(f.claim)}</div>
+        <div class="deltas">${deltas}</div>
+      </div>`;
+    }).join("");
+    pane.querySelectorAll(".diag-card").forEach(el => {
+      el.addEventListener("click", () =>
+        openDrawer(findingsById[el.dataset.fid]));
+    });
+  }
+
+  function renderAchMatrix() {
+    const pane = document.getElementById("ach-mat");
+    if (!pane) return;
+    const scoring = data.findings.filter(f =>
+      f.ach_score_delta && Object.keys(f.ach_score_delta).length);
+    if (!scoring.length) {
+      pane.innerHTML = '<div style="color:#8b949e">No scoring deltas to matrix.</div>';
+      return;
+    }
+    // Collect unique hypothesis ids across all scoring findings
+    const hyps = Array.from(new Set(scoring.flatMap(f =>
+      Object.keys(f.ach_score_delta)))).sort();
+    // Limit to the top-20 most-diagnostic findings to keep the grid readable
+    const ranked = scoring.map(f => {
+      const v = Object.values(f.ach_score_delta);
+      return {f, spread: Math.max(0, ...v) - Math.min(0, ...v)};
+    }).sort((a,b) => b.spread - a.spread).slice(0, 20).map(x => x.f);
+    const head = hyps.map(h => `<th class="hyp">${esc(h)}</th>`).join("");
+    const rows = ranked.map(f => {
+      const cells = hyps.map(h => {
+        const v = (f.ach_score_delta || {})[h];
+        if (v === undefined || v === 0) return '<td class="zero">·</td>';
+        return `<td class="${v > 0 ? 'pos' : 'neg'}">${v > 0 ? '+' : ''}${v}</td>`;
+      }).join("");
+      return `<tr><th class="fid" data-fid="${esc(f.finding_id)}">${esc(f.claim).slice(0, 60)}…</th>${cells}</tr>`;
+    }).join("");
+    pane.innerHTML = `<table class="ach-mat"><thead><tr><th style="text-align:left">Finding ↓ / Hypothesis →</th>${head}</tr></thead><tbody>${rows}</tbody></table>`;
+    pane.querySelectorAll("th.fid").forEach(el => {
+      el.addEventListener("click", () =>
+        openDrawer(findingsById[el.dataset.fid]));
+    });
   }
 
   function closeDrawer() {
@@ -516,6 +692,9 @@ _JS = r"""
 
   renderFindings();
   renderGraph();
+  renderTimeline();
+  renderDiagnostic();
+  renderAchMatrix();
 
   // Deep-link: case.html#<finding_id> opens drawer
   if (window.location.hash) {
@@ -654,6 +833,8 @@ def _build_diamond_html(
 
 
 def _finding_to_dict(f: Finding) -> dict:
+    delta = getattr(f, "ach_score_delta", None) or {}
+    rr = f.red_review
     return {
         "finding_id": f.finding_id,
         "case_id": f.case_id,
@@ -662,15 +843,25 @@ def _finding_to_dict(f: Finding) -> dict:
         "confidence": f.confidence,
         "evidence": [
             {"tool": e.tool, "version": e.version, "command": e.command,
-             "output_sha256": e.output_sha256, "output_path": e.output_path}
+             "output_sha256": e.output_sha256,
+             "output_path": e.output_path,
+             "extracted_facts": {
+                 k: v for k, v in (e.extracted_facts or {}).items()
+                 # Keep JSON small — only surface the lighter facts
+                 if isinstance(v, (str, int, float, bool, list))
+                 and len(str(v)) < 400
+             }}
             for e in f.evidence
         ],
         "hypotheses_supported": list(f.hypotheses_supported),
         "hypotheses_refuted": list(f.hypotheses_refuted),
+        "ach_score_delta": {k: int(v) for k, v in delta.items()},
         "red_review": {
-            "status": f.red_review.status,
-            "challenger_notes": f.red_review.challenger_notes or "",
-        } if f.red_review else None,
+            "status": rr.status,
+            "challenger_notes": rr.challenger_notes or "",
+            "disconfirming_checklist":
+                list(rr.disconfirming_checklist or []),
+        } if rr else None,
         "created_utc": f.created_utc.isoformat()
                           if getattr(f, "created_utc", None) else "",
     }
@@ -812,6 +1003,9 @@ def render_html(
   <nav>
     <a href="#summary">Summary</a>
     <a href="#ach">ACH</a>
+    <a href="#timeline">Timeline</a>
+    <a href="#diagnostic">Diagnostic</a>
+    <a href="#matrix">Matrix</a>
     <a href="#graph">Graph</a>
     <a href="#findings">Findings</a>
     <a href="#iocs">IOCs</a>
@@ -835,6 +1029,21 @@ def render_html(
 <section id="ach">
   <h2>Hypothesis Ranking <span class="count">(Heuer ACH — highest = leading, never declared 'true')</span></h2>
   {ach_html}
+</section>
+
+<section id="timeline">
+  <h2>Timeline <span class="count">(findings in chronological order of discovery — click to open detail)</span></h2>
+  <div class="timeline" id="tl-list"></div>
+</section>
+
+<section id="diagnostic">
+  <h2>Most Diagnostic Findings <span class="count">(Heuer — top-10 by ACH score-delta spread; these are the findings whose presence or absence most shifts the hypothesis ranking)</span></h2>
+  <div class="diagnostic-list" id="diag-list"></div>
+</section>
+
+<section id="matrix">
+  <h2>ACH Consistency Matrix <span class="count">(finding × hypothesis score-delta grid — Heuer's standard view)</span></h2>
+  <div class="ach-matrix" id="ach-mat"></div>
 </section>
 
 <section id="graph">

@@ -249,6 +249,67 @@ def test_cli_report_emits_html_when_flag_set(tmp_path, monkeypatch):
     assert "cli-html" in content
 
 
+def test_html_has_narrative_sections(tmp_path):
+    """Narrative completion: the HTML must include timeline + diagnostic
+    + ACH consistency matrix sections and nav entries to them."""
+    out = render_html(tmp_path, "t-narr", {"case_id": "t-narr"},
+                      findings=[_mk_finding()])
+    text = out.read_text()
+    for section_id in ("timeline", "diagnostic", "matrix"):
+        assert f'id="{section_id}"' in text
+        assert f'href="#{section_id}"' in text
+    # JS renderer hooks
+    assert 'renderTimeline' in text
+    assert 'renderDiagnostic' in text
+    assert 'renderAchMatrix' in text
+
+
+def test_html_drawer_shows_disconfirming_checklist(tmp_path):
+    """Drawer must surface the per-finding disconfirming checklist and
+    ACH score-delta — the Markdown report has these; parity matters."""
+    from el.schemas.finding import RedReview
+    f = _mk_finding(
+        ach_score_delta={"H_APT_ESPIONAGE": 3, "H_BENIGN_NO_INCIDENT": -3},
+        red_review=RedReview(
+            status="challenged",
+            challenger_notes="single evidence item",
+            disconfirming_checklist=[
+                "Corroborate with EVTX 4688 for the same PID",
+                "Verify PE timestamp against Amcache",
+            ],
+        ),
+    )
+    out = render_html(tmp_path, "t-dis", {"case_id": "t-dis"},
+                      findings=[f])
+    text = out.read_text()
+    # Finding JSON carries the checklist + ach_score_delta
+    import re, json
+    m = re.search(r'<script id="data" type="application/json">(.+?)</script>',
+                   text, re.DOTALL)
+    d = json.loads(m.group(1))
+    f0 = d["findings"][0]
+    assert f0["red_review"]["disconfirming_checklist"] == [
+        "Corroborate with EVTX 4688 for the same PID",
+        "Verify PE timestamp against Amcache",
+    ]
+    assert f0["ach_score_delta"]["H_APT_ESPIONAGE"] == 3
+    # JS renderer references the fields
+    assert "disconfirming_checklist" in text
+    assert "ach_score_delta" in text
+
+
+def test_cli_serve_exists(monkeypatch):
+    """`el serve` must be a registered command with --bind localhost default."""
+    from typer.testing import CliRunner
+    from el.cli import app
+    runner = CliRunner()
+    result = runner.invoke(app, ["serve", "--help"])
+    assert result.exit_code == 0
+    assert "--bind" in result.output
+    assert "--port" in result.output
+    assert "127.0.0.1" in result.output
+
+
 def test_html_ships_watch_mode_js_hook(tmp_path):
     """Tier 4: the live-update JS snippet is always included so any
     rendered page works with ?watch=N without needing a re-render

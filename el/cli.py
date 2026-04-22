@@ -300,6 +300,68 @@ def report_cmd(
         console.print("\n[dim]watch stopped[/dim]")
 
 
+@app.command("serve")
+def serve_cmd(
+    root: str = typer.Option(
+        "/opt/EL/cases", "--root", "-r",
+        help="Directory to serve. Default: /opt/EL/cases."),
+    port: int = typer.Option(
+        8089, "--port", "-p",
+        help="TCP port (default 8089)."),
+    bind: str = typer.Option(
+        "127.0.0.1", "--bind",
+        help="Interface to bind. Default 127.0.0.1 (loopback only). "
+             "DO NOT bind to 0.0.0.0 on an investigation host — "
+             "case dirs contain evidence paths + IOCs."),
+) -> None:
+    """Serve case reports over HTTP (Ubuntu snap-confined browsers like
+    Chromium can't read /opt/ from file:// — this is the workaround).
+
+    Keeps the process in the foreground; Ctrl-C stops it. Listens on
+    loopback only by default. Files are served read-only.
+    """
+    import http.server
+    import socketserver
+    import threading
+
+    root_path = Path(root)
+    if not root_path.is_dir():
+        console.print(f"[red]not a directory: {root_path}[/red]")
+        raise typer.Exit(2)
+
+    # Quick per-case HTML index helps the analyst navigate
+    index_cases = sorted(
+        d.name for d in root_path.iterdir()
+        if d.is_dir() and (d / "reports" / "case.html").is_file()
+    )
+
+    class CaseHandler(http.server.SimpleHTTPRequestHandler):
+        def __init__(self, *args, **kw):
+            super().__init__(*args, directory=str(root_path), **kw)
+
+        def log_message(self, fmt, *args):
+            # Quiet per-request logs; keep only errors
+            return
+
+    console.print(f"[bold]serving[/bold]: {root_path}")
+    console.print(f"[bold]  URL[/bold]: http://{bind}:{port}/")
+    console.print(f"[bold]  cases with case.html[/bold]: "
+                  f"{len(index_cases)}")
+    if index_cases:
+        console.print("  top 5 by directory name:")
+        for n in index_cases[:5]:
+            console.print(
+                f"    http://{bind}:{port}/{n}/reports/case.html")
+    console.print("[dim]Ctrl-C to stop[/dim]\n")
+
+    with socketserver.ThreadingTCPServer((bind, port), CaseHandler) as s:
+        s.allow_reuse_address = True
+        try:
+            s.serve_forever()
+        except KeyboardInterrupt:
+            console.print("\n[dim]server stopped[/dim]")
+
+
 @app.command("hunt")
 def hunt_cmd(
     case_dir: str = typer.Argument(..., help="Path to a case directory"),
