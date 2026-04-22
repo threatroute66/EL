@@ -41,7 +41,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 
 from el.schemas.finding import Finding
@@ -373,7 +373,7 @@ def synthesize(
     for b in BEATS:
         by_beat[b].sort(
             key=lambda f: (-_diagnostic_score(f),
-                            evidence_time(f) or datetime.max))
+                            evidence_time(f) or datetime.max.replace(tzinfo=timezone.utc)))
 
     beats: list[BeatBlock] = []
     for beat in BEATS:
@@ -402,7 +402,7 @@ def synthesize(
         for b in BEATS:
             alt_by_beat[b].sort(
                 key=lambda f: (-_diagnostic_score(f),
-                                evidence_time(f) or datetime.max))
+                                evidence_time(f) or datetime.max.replace(tzinfo=timezone.utc)))
         for beat in BEATS:
             fs = alt_by_beat[beat]
             if not fs:
