@@ -338,6 +338,123 @@ existing `el report` CLI.
 None of these are committed to. They're a menu informed by the posters;
 shakedown evidence on the next real cases should still drive ordering.
 
+## Untested image / log / format types (tracker)
+
+_Running list of evidence shapes EL either (a) claims to support but
+has not been exercised on real data, or (b) does not yet parse at all.
+Each entry is an actionable search term for corpus hunting. Update
+rows as evidence lands and a case completes end-to-end._
+
+### Disk images / filesystems
+
+| Format | Status | Where to find a sample |
+|---|---|---|
+| VMDK (VMware) | untested — Sleuth Kit should work flat; split `-s00?.vmdk` unverified | Evidence Locker, HELK labs, or any VMware lab export |
+| VHD / VHDX (Microsoft) | untested — `qemu-nbd` path not validated | Azure VM exports, Hyper-V checkpoints, FOR500 teaching |
+| VDI (VirtualBox) | untested | DFIR training VMs, public CTFs |
+| APFS encrypted container | **not supported** — needs FileVault recovery key ingestion | Operator-supplied key case |
+| BitLocker-encrypted NTFS / ReFS | untested — `dislocker` path exists but no validated case | SANS FOR500/FOR508 course images with BitLocker on |
+| ReFS (incl. Dev Drive on Win11) | **not supported** — Sleuth Kit ReFS support is limited | Microsoft-published Dev Drive lab, ReFS server images |
+| LUKS / LUKS2 | untested — needs mapper in `sleuthkit.mount_linux_ro` | Ubuntu full-disk-encrypted images, TryHackMe Linux boxes |
+| FileVault (CoreStorage legacy) | **not supported** | Pre-APFS macOS 10.12 images |
+| btrfs / xfs / zfs | **not supported** — extractor assumes ext* | Fedora / openSUSE / Proxmox disk images |
+| exFAT | untested — fls may be limited | SD-card / external-drive images |
+| E01 multi-part (`.E01 .E02 .E03`) | untested — `libewf` should handle; not validated | FTK exports larger than 2 GB |
+| L01 logical evidence container | untested — `LVF` magic recognised but no reader path | EnCase logical exports |
+| AFF4 | **not supported** | Volatility project example datasets |
+| Ex01 (EWF v2) | untested — magic recognised, reader path unverified | Modern FTK + Tableau exports |
+| .ad1 (AccessData) | **not supported** | FTK-only exports (commercial) |
+
+### Memory images
+
+| Format | Status | Where to find a sample |
+|---|---|---|
+| LiME (`.lime`, Linux) | **not supported** — vol3 symbol + profile path untested | LiME repo examples, Chris Lonerz talks |
+| AVML (Microsoft Linux) | **not supported** | Azure Defender examples |
+| VMware `.vmem` + `.vmss` + `.vmsn` | untested — vol3 can read flat vmem, snapshot side unverified | Any VMware suspend-state |
+| Hyper-V `.bin` + `.vsv` | **not supported** | Hyper-V checkpoints |
+| Apple XNU core / kernel panic | **not supported** | macOS `/cores/` dumps |
+| iOS memory (checkra1n dump) | **not supported** | GrayKey / Cellebrite Advanced Services output |
+| Android LiME from RAM | **not supported** | MSAB / forensic labs |
+| HPAK (F-Response) | untested | F-Response commercial acquisitions |
+
+### Log formats / telemetry
+
+| Source | Status | Where to find a sample |
+|---|---|---|
+| systemd journal binary (`.journal`) | **not supported** — `journalctl -o json` export path exists | Any modern Linux image |
+| auditd raw (`audit.log`) | partial — pattern scan only, no `ausearch` normalization | RHEL / Ubuntu server images |
+| Linux `utmp` / `wtmp` / `btmp` | **not supported** — binary struct parse not written | Any Linux image |
+| IIS W3C logs | **not supported** | Windows Server IIS case images |
+| Apache / nginx access logs | mentioned in linux-forensicator doc but no detector | Public webserver breach samples |
+| Zeek `conn.log` / `http.log` etc. (batch ingest) | partial — pcap-derived Zeek runs validated, standalone Zeek corpus ingest untested | Zeek-published training data, LANL-netflow |
+| Suricata EVE JSON | **not supported** | Open-source IDS labs |
+| AWS VPC Flow Logs (v3/v5 fields) | v2 shipped, v5 extended fields untested | AWS sample datasets |
+| AWS GuardDuty JSON | **not supported** — CTI-feed candidate | AWS test-finding datasets |
+| Google Workspace Admin / Drive / Gmail audit | **not supported** — in roadmap | Workspace admin export labs |
+| Okta System Log JSON | **not supported** | Okta developer sandbox exports |
+| JamF / Intune MDM | **not supported** | Endpoint-management vendor labs |
+| GitHub / GitLab audit log | **not supported** | Any enterprise tenant export |
+| Kubernetes audit log | **not supported** | `kind` / `minikube` + audit-policy demo |
+| Docker daemon log + container stdout | **not supported** | Any container forensics lab |
+| ESXi host `vmkernel.log` / `hostd.log` | **not supported** | VMware vSphere images |
+| Exchange / Postfix message-trace logs | **not supported** — overlaps M365 UAL MailItemsAccessed | On-prem Exchange case images |
+| pfSense / OPNsense logs | **not supported** | Home-lab firewall captures |
+
+### Collection / acquisition bundles
+
+| Format | Status | Where to find a sample |
+|---|---|---|
+| KAPE output tree (complete target set) | untested — only partial Windows-artifacts subset validated | SANS KAPE labs |
+| CyLR output | untested — similar shape to Velociraptor | CyLR GitHub release labs |
+| Magnet AXIOM `.mfdb` / `.case` | **not supported** — commercial proprietary | AXIOM trial exports |
+| Cellebrite UFDR (`.ufd`) | **not supported** — commercial; need export-to-open-format step | UFED demo datasets |
+| Autopsy case directory | **not supported** | Public Autopsy teaching cases |
+| Velociraptor VFS download (offline) | untested — only JSONL artifact bundles validated | Rapid7 Velociraptor demos |
+| CrowdStrike RTR / SentinelOne / Carbon Black exports | **not supported** | Vendor case studies, DFIR-exported tickets |
+| FTK Imager `.ad1` logical | **not supported** | FTK labs |
+
+### Mobile
+
+| Format | Status | Where to find a sample |
+|---|---|---|
+| iTunes / Finder unencrypted backup | **not supported** — in roadmap | iPhone SE lab on any Mac |
+| iTunes / Finder encrypted backup + passcode | **not supported** — in roadmap | Same + known passcode |
+| Android ADB tar stream | **not supported** — in roadmap | `adb backup` of any dev device |
+| iOS `.ipa` sideloaded app | partial — presence detected via our Bundle/Application walk, but no in-bundle plist / Mach-O parsing | Developer-signed IPAs |
+| Android APK (on-tree, unpacked) | partial — presence + installer-source checks, no Manifest.xml parse | Any malware-APK corpus |
+| checkra1n / GrayKey file-system image | untested — we handle the unpacked tree, not the raw acquisition container | Forensic service outputs |
+| Xiaomi / Huawei brand partitions | untested | Vendor-specific ROMs |
+
+### Application artifacts (Windows-Apps poster follow-ups)
+
+| App | Status | Where to find a sample |
+|---|---|---|
+| Microsoft Teams (LevelDB + IndexedDB) | **not supported** — deferred, needs LevelDB dep | Any Teams-using workstation image |
+| Slack (same Electron LevelDB shape) | **not supported** | Slack desktop on any dev workstation |
+| Microsoft Edge User Data | **not supported** — shares Chrome schema, parser reachable | Any Edge-using workstation |
+| OneDrive `SyncEngine.log` + `AppLock` | **not supported** | Enterprise Windows image |
+| Dropbox `sync_history.db` / `config.dbx` | **not supported** | Dropbox-using workstation |
+| Discord IndexedDB | **not supported** | Consumer dev workstation |
+| 1Password / Bitwarden state (existence, not content) | **not supported** | Any endpoint with password manager |
+| iCloud (on Windows) `CloudStorage.db` | **not supported** | Mac-sync-to-PC workstation |
+
+### Cloud breadth gaps (explicit extras)
+
+| Source | Status | Where to find a sample |
+|---|---|---|
+| Azure Storage blob / file access logs | **not supported** | Azure public sample-logs bucket |
+| GCP Cloud Storage audit | **not supported** | GCP public sample logs |
+| Azure Firewall / WAF logs | **not supported** | Azure diagnostic-log exports |
+| AWS Config / CloudWatch Logs subscription | **not supported** | AWS sample environments |
+| Duo / Ping / Auth0 audit | **not supported** | Identity-vendor dev sandboxes |
+
+_Maintenance rule: when a new format lands with a validated end-to-end
+case, move it out of this table and into the "Validated on real
+evidence" section of [README.md](../README.md). When a format proves
+to need a new agent or skill rather than a detector tweak, link the
+corresponding row to the pull request._
+
 ## Test-corpus sourcing
 
 Primary image source for extending coverage:
