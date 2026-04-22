@@ -475,6 +475,37 @@ Coverage additions that don't need evidence (SIGMA rule ingestion,
 `capa`/`FLOSS` wrappers, cloud-log parsers) can proceed independently
 of corpus sourcing.
 
+## M57-Jean validation April 2026 + remaining gaps
+
+Ran EL against the `nps-2008-jean.E01 + .E02` pair (digitalcorpora.org
+M57-Jean scenario) to stress-test the Executive Narrative layer. EL
+arrived at **H_BEC_ACCOUNT_TAKEOVER** (score 30, gap +17) as the leading
+hypothesis — the canonical scenario answer (Jean was socially-engineered
+via a fake "Alison/President" email thread and sent `m57biz.xls` to
+`tuckgorge@gmail.com`). Neither of the two public GitHub writeups
+([Basilmellow](https://github.com/Basilmellow/Autopsy-M57-Linux-Forensics),
+[jynxora](https://github.com/jynxora/M57-Jean-Case-Analysis)) reached
+that conclusion; one invented USB-insider details, the other landed on
+browser-compromise-plus-AIM6-bundleware. EL's `email_forensicator`
+display-name vs SMTP-mismatch detector fired on two outbound messages
+(RE: "Please send me the information now" + RE: "Thanks!"), with the
+actual attachment `1_m57biz.xls (291840B)` named inline.
+
+Real gaps surfaced by the M57 run (none are blockers — the narrative is
+complete and correct — but each is worth addressing on the next pass):
+
+| Gap | Symptom on M57 | Fix sketch |
+|---|---|---|
+| Inbound-phishing detector | Narrative says "initial compromise vector not reconstructible" even though the spoofed-Alison inbound email that Jean replied to is literally in her Inbox | Extend `email_forensicator` to flag INBOUND messages whose From-display-name and From-SMTP-address mismatch, or whose Subject later appears in an outbound "RE:" with the mismatch detector above → tag H_INITIAL_ACCESS_PHISHING |
+| XP EVT (pre-Vista event logs) | `credential_analyst` + `lateral_movement_analyst` both emit confidence=insufficient because no `evtx_parsed.csv` was produced — EvtxECmd handles only EVTX, not EVT | Add a `.evt` → `.evtx` conversion step or wrap the legacy `grokevt`/`evtexport` path when XP `.evt` files are detected at intake |
+| IE5 Content.IE5 cache parsing | jynxora's session-hijack + `userSynchronization.htm` finding came from this subtree — EL currently doesn't parse `Content.IE5` index.dat records | New skill `el/skills/ie_cache.py` — walk `Content.IE5` subdirs, parse `index.dat` binary format for visited URLs, cookies, and form data |
+| Anti-forensics signal strength | jynxora flagged mass-zeroed system binaries (`debug.exe`, `ipconfig.exe`, `wscntfy.exe` with size=0, timestamps=0000-00-00) — EL's `disk_anomaly` sees executables in Temp but doesn't flag system-binary tampering | Extend `disk_anomaly` patterns with a "system-binary zero-size OR zero-timestamp" detector keyed to `/WINDOWS/system32/` + `/dllcache/` + `/ServicePackFiles/` |
+
+Net: EL's narrative already out-performs the public writeups on this
+specific scenario. The gaps above would make the narrative's opening
+beat ("Initial compromise") explicitly cite the inbound phishing email
+instead of declaring the vector unreconstructible.
+
 ## Category extras shipped April 2026 (no-corpus chain)
 
 Beyond the Tier 1–4 shortlist, the following category items landed:
