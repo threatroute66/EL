@@ -506,6 +506,24 @@ specific scenario. The gaps above would make the narrative's opening
 beat ("Initial compromise") explicitly cite the inbound phishing email
 instead of declaring the vector unreconstructible.
 
+### Update (validated — m57-jean-r7)
+
+All four gaps closed; validated end-to-end. Final ACH leader
+**H_BEC_ACCOUNT_TAKEOVER score 57 (gap +44 over runner-up
+H_INSIDER_EMAIL_EXFIL 13)** — up from score 30 pre-fix. Closures
+land in commits `450da13` + `dbb0868` + `c77cb43` + `7850e51`:
+
+| Gap | How it fires now |
+|---|---|
+| Inbound-phishing detector | 4 findings in the "Initial compromise" beat: two "Inbound precursor" (heuristic B: reply-chain correlation → pretexting-email inbound in Inbox matches an outbound mismatch reply) + two "Inbound phishing / spoofed From" (heuristic A: direct From display/SMTP mismatch). Subjects `"Thanks!"` and `"Please send me the information now"` both caught. |
+| XP `.evt` parsing | `el/skills/xp_evt.py` wraps `evtexport`; `windows_artifact._evtx` falls back automatically when no `.evtx` found. Parsed 575 records from the M57 AppEvent + SysEvent pair (SecEvent empty = log cleared, flagged separately). Downstream credential / lateral / sigma / powershell analysts now report "parsed evtx_parsed.csv but no pattern crossed threshold" instead of "no CSV to consume" — i.e. they can now reason honestly about the absence of evidence. |
+| IE5 Content.IE5 cache | `el/skills/ie_cache.py` wraps `msiecfexport`; `sleuthkit.extract_windows_artifacts` pulls 9 index.dat files (3 users × Content.IE5 / Cookies / History.IE5). Parsed 4778 records across all three Jean/Administrator/Devon profiles, flagged 116 suspicious URLs (24 tracker-sync including the jynxora M57-Jean `__utm` / session-sync signal). |
+| Zero-size / zero-timestamp anti-forensics | `disk_anomaly._scan_bodyfile_rowwise` flags 15 zero-size + 15 zero-timestamp Windows system binaries (pdh.dll, auditusr.exe, ciadmin.dll, etc. — matches jynxora's mass-wipe signature). |
+
+Bonus gap (graph): empty Kùzu graph on email-only case fixed by the
+Email node type + 4 new edges in `graph.py` + email_forensicator's
+`_populate_graph` method — 15 entity nodes + 13 edges on M57-Jean.
+
 ## Category extras shipped April 2026 (no-corpus chain)
 
 Beyond the Tier 1–4 shortlist, the following category items landed:
