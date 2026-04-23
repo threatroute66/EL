@@ -24,7 +24,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from el.agents.base import Agent, AgentContext
-from el.schemas.finding import Finding
+from el.schemas.finding import EvidenceItem, Finding
 from el.skills import ezt
 
 
