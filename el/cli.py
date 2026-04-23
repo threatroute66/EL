@@ -313,6 +313,13 @@ def combined_report_cmd(
         None, "--name",
         help="Combined case name. Defaults to longest common case_id prefix "
              "(e.g. 'srl2015') or 'combined-case'."),
+    render_html: bool = typer.Option(
+        False, "--html",
+        help="Also render a combined.html multi-host dashboard alongside "
+             "the markdown. Includes joint ACH matrix (heatmap), unified "
+             "swim-lane timeline, merged cross-host graph, and per-case "
+             "narrative blocks. Links into each host's case.html for "
+             "drill-down."),
 ) -> None:
     """Stitch N per-case ledgers into a single multi-host report.
 
@@ -354,8 +361,12 @@ def combined_report_cmd(
     written = render_combined(dirs, out_path, name=name)
     console.print(
         f"[green]wrote combined report:[/green] {written}\n"
-        f"  cases: {len(dirs)}\n"
-        f"  (open in your Markdown viewer of choice)")
+        f"  cases: {len(dirs)}")
+    if render_html:
+        from el.reporting.combined_html import render_combined_html
+        html_path = out_path.with_name("combined.html")
+        render_combined_html(dirs, html_path, name=name)
+        console.print(f"[green]wrote combined HTML:[/green] {html_path}")
 
 
 _SYSTEMD_UNIT_TEMPLATE = """\
