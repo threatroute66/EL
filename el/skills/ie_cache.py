@@ -91,32 +91,39 @@ def parse(index_dat: str | Path,
                        rc=r.returncode, items=items)
 
 
-_URL_RE = re.compile(r"^URL\s*:\s*(\S.*)$", re.MULTILINE)
-_HITS_RE = re.compile(r"^Number of hits\s*:\s*(\d+)", re.MULTILINE)
-_MOD_RE = re.compile(r"^Last modification time\s*:\s*(\S.*)$",
-                      re.MULTILINE)
+_LOCATION_RE = re.compile(r"^Location\s*:\s*(\S.*)$", re.MULTILINE)
+_PRIMARY_RE = re.compile(r"^Primary time\s*:\s*(\S.*)$", re.MULTILINE)
 _EXP_RE = re.compile(r"^Expiration time\s*:\s*(\S.*)$", re.MULTILINE)
 _FNAME_RE = re.compile(r"^Filename\s*:\s*(\S.*)$", re.MULTILINE)
 
 
 def _parse_stdout(text: str) -> list[IEItem]:
-    """msiecfexport's default format is a sequence of blank-line
-    separated records, each with key: value lines. Parse records
-    heuristically — the library sometimes emits 'URL' alongside
-    'Type' / 'Primary date' depending on record type."""
+    """msiecfexport default-format record shape:
+
+        Record type         : URL
+        Offset range        : 24576 - 24960 (384)
+        Location            : http://media.npr.org/.../nprlogo.gif
+        Primary time        : Jul 20, 2008 05:05:00.156000000
+        Secondary time      : Jun 13, 2008 19:14:36.000000000
+        Expiration time     : Jul 10, 2008 07:53:50
+        Last checked time   : Jul 20, 2008 05:05:02
+        Filename            : nprlogo[1].gif
+        Cache directory index : 0 (0x00)(IVK9GB0V)
+
+    Records separated by a blank line. We key on `Location:` as the
+    URL anchor (populated for URL / REDR record types); skip records
+    without a location.
+    """
     items: list[IEItem] = []
-    # Split on blank lines between records
     for block in re.split(r"\n\s*\n", text):
-        url_m = _URL_RE.search(block)
-        if not url_m:
+        loc_m = _LOCATION_RE.search(block)
+        if not loc_m:
             continue
         items.append(IEItem(
-            url=url_m.group(1).strip(),
-            hits=int((_HITS_RE.search(block)
-                       or re.match("x", "x")).group(1))
-                if _HITS_RE.search(block) else 0,
-            modified_utc=(_MOD_RE.search(block).group(1).strip()
-                           if _MOD_RE.search(block) else ""),
+            url=loc_m.group(1).strip(),
+            hits=0,
+            modified_utc=(_PRIMARY_RE.search(block).group(1).strip()
+                           if _PRIMARY_RE.search(block) else ""),
             expiration_utc=(_EXP_RE.search(block).group(1).strip()
                              if _EXP_RE.search(block) else ""),
             filename=(_FNAME_RE.search(block).group(1).strip()

@@ -235,7 +235,11 @@ def convert_all_evt(evt_dir: str | Path,
                       rc=-1, event_count=0)
     all_records: list[tuple[str, dict]] = []
     rc_sum = 0
-    for evt in sorted(root.rglob("*.evt")) + sorted(root.rglob("*.EVT")):
+    # Case-insensitive .evt match (XP filenames like SecEvent.Evt are
+    # mixed-case and case-sensitive on Linux)
+    evt_files = sorted([p for p in root.rglob("*")
+                        if p.is_file() and p.suffix.lower() == ".evt"])
+    for evt in evt_files:
         raw_path, rc = _export_stdout(evt, ad)
         rc_sum = max(rc_sum, rc if rc >= 0 else abs(rc))
         if rc != 0:
