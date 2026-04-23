@@ -94,6 +94,8 @@ TECHNIQUE_TACTIC: dict[str, str] = {
     "T1478":      "Defense Evasion",  # Mobile: Install Insecure Config
     "T1556.006":  "Defense Evasion",
     "T1565.001":  "Defense Evasion",   # Stored Data Manipulation
+    "T1622":      "Defense Evasion",   # Debugger Evasion
+    "T1547.001":  "Persistence",       # Registry Run Keys / Startup Folder
     "T1562.001":  "Defense Evasion",
     "T1562.007":  "Defense Evasion",
     "T1564.001":  "Defense Evasion",
