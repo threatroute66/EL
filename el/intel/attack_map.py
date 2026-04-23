@@ -41,6 +41,10 @@ HYPOTHESIS_MAP: dict[str, list[Technique]] = {
         ("T1071", "Application Layer Protocol"),
         ("T1571", "Non-Standard Port"),
     ],
+    "H_SCAN_RECON": [
+        ("T1595", "Active Scanning"),
+        ("T1046", "Network Service Discovery"),
+    ],
     "H_CREDENTIAL_ACCESS": [
         ("T1003.001", "OS Credential Dumping: LSASS Memory"),
         ("T1003", "OS Credential Dumping"),

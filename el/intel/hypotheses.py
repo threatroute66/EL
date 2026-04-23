@@ -244,6 +244,43 @@ def _h_cloud_persistence(f: Finding) -> int:
     return s
 
 
+def _h_scan_recon(f: Finding) -> int:
+    """Automated scanning / probing / reconnaissance traffic. Distinct from
+    C2 because the evidence shape is opposite: wide fan-out to many
+    destinations with high 4xx rate and scripted User-Agents, rather than
+    periodic low-volume beacons to a single infrastructure. Added because
+    /loop runs over the scans-and-probes corpus kept ranking H_C2_BEACONING
+    first — the 'suspicious destination ports' signal alone is ambiguous
+    between scan and C2, and without this hypothesis there was no better
+    target for the HTTP_ERROR_HEAVY + HTTP_SCRIPTED_UA evidence.
+    """
+    if not _filename_safe(f):
+        return 0
+    s = 0
+    # Tag-based lift — network_anomaly.py tags HTTP_ERROR_HEAVY and
+    # HTTP_SCRIPTED_UA with H_SCAN_RECON directly.
+    if _has_tag("H_SCAN_RECON")(f):
+        s += 3
+    # Strong lift — network_analyst's HTTP_ERROR_HEAVY anomaly literally
+    # says "Scan / discovery / broken C2 pattern" in the claim body.
+    if _claim_contains("http_error_heavy", "scan / discovery")(f):
+        s += 3
+    # Scripted-client UAs (go-http-client, curl, python-requests, masscan,
+    # zgrab, nmap, zmap). Scripted automation, not a human browser.
+    if _claim_contains("http_scripted_ua", "scripted-client user-agent",
+                       "go-http-client", "python-requests", "python-urllib",
+                       "masscan", "zgrab", "zmap",
+                       "nmap scripting engine")(f):
+        s += 2
+    # Protocol-violation / stack-fingerprint noise that accompanies scanners.
+    # Weak alone — just corroborates.
+    if _claim_contains("syn_with_data", "syn_after_reset",
+                       "dns_conn_count_too_large", "dns_truncated_len",
+                       "protocol anomalies frequently accompany")(f):
+        s += 1
+    return s
+
+
 def _h_c2_beaconing(f: Finding) -> int:
     """Only lift on EXPLICIT C2-shaped tags or strongly-typed keywords.
     Earlier version keyword-matched 'tcp'/'udp' which lifted H_C2 on every
@@ -301,6 +338,12 @@ HYPOTHESES: list[Hypothesis] = [
                "Active command-and-control beaconing",
                "Established C2 channel; periodic outbound communication to attacker infrastructure.",
                _h_c2_beaconing),
+    Hypothesis("H_SCAN_RECON",
+               "Automated scanning / probing / reconnaissance",
+               "Internet-wide scanner or attacker reconnaissance traffic: high 4xx "
+               "rate, scripted User-Agents, wide port fan-out. Typical for "
+               "public-facing hosts capturing background scan noise.",
+               _h_scan_recon),
     Hypothesis("H_BRUTE_FORCE",
                "Brute-force / password-spray",
                "High volume of failed authentications against accounts.",

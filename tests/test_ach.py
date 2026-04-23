@@ -80,3 +80,34 @@ def test_hypothesis_library_has_minimum_three_with_null():
     ids = {h.hyp_id for h in HYPOTHESES}
     assert "H_BENIGN_NO_INCIDENT" in ids
     assert len(HYPOTHESES) >= 3
+
+
+def test_scan_recon_outranks_c2_on_scan_probe_traffic():
+    """Evidence shape from the /mnt/hgfs/pcaps three-days-of-scans corpus:
+    HTTP_ERROR_HEAVY + HTTP_SCRIPTED_UA + suspicious-port fan-out. Without
+    H_SCAN_RECON the ACH engine lifted H_C2_BEACONING on every scan pcap
+    (4 of 4 in the final batch). H_SCAN_RECON should now dominate."""
+    findings = [
+        Finding(case_id="c", agent="network_analyst", confidence="medium",
+                claim=("Network anomaly [HTTP_ERROR_HEAVY]: HTTP error rate 62% — "
+                       "367 x 4xx, 0 x 5xx out of 595 responses. "
+                       "Scan / discovery / broken C2 pattern."),
+                evidence=[_ev()]),
+        Finding(case_id="c", agent="network_analyst", confidence="medium",
+                claim=("Network anomaly [HTTP_SCRIPTED_UA]: Scripted-client "
+                       "User-Agent(s) observed: go-http-client=38, curl/=33, "
+                       "python-requests/=17."),
+                evidence=[_ev()]),
+        Finding(case_id="c", agent="network_analyst", confidence="medium",
+                claim=("Connections observed to suspicious destination ports: "
+                       "{5555: 57, 9001: 47, 8888: 139}"),
+                evidence=[_ev()]),
+    ]
+    ranked, _ = score_findings(findings)
+    leader = ranked[0]
+    scan = next(r for r in ranked if r.hyp_id == "H_SCAN_RECON")
+    c2 = next(r for r in ranked if r.hyp_id == "H_C2_BEACONING")
+    assert leader.hyp_id == "H_SCAN_RECON", (
+        f"expected H_SCAN_RECON leader; got {leader.hyp_id} "
+        f"(scan={scan.score}, c2={c2.score})")
+    assert scan.score > c2.score

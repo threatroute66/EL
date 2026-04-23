@@ -148,7 +148,7 @@ def detect_http_error_rate(http_rows: list[dict],
                      f"{fivexx} × 5xx out of {n} responses. Scan / "
                      f"discovery / broken C2 pattern."),
             confidence="medium",
-            hypotheses=["H_C2_OR_REVERSE_SHELL"],
+            hypotheses=["H_SCAN_RECON"],
             attack=[("T1595", "Active Scanning")],
             facts={"count_4xx": fourxx, "count_5xx": fivexx,
                    "total_responses": n, "error_share": round(err_share, 3)},
@@ -198,8 +198,9 @@ def detect_http_user_agent_anomalies(
                      f"python-requests / go-http-client — these are "
                      f"automation or malware indicators."),
             confidence="medium",
-            hypotheses=["H_OPPORTUNISTIC_COMMODITY", "H_C2_OR_REVERSE_SHELL"],
-            attack=[("T1071.001", "Application Layer Protocol: Web Protocols")],
+            hypotheses=["H_SCAN_RECON"],
+            attack=[("T1071.001", "Application Layer Protocol: Web Protocols"),
+                    ("T1595", "Active Scanning")],
             facts={"scripted_ua_counts": dict(scripted_counts)},
         ))
     # (b) single-UA dominance — only fires when the dominant UA is NOT a

@@ -140,7 +140,7 @@ def test_scripted_ua_fires(tmp_path):
     hits = na.run_all(tmp_path)
     assert any(h.anomaly_id == "HTTP_SCRIPTED_UA" for h in hits)
     scripted = [h for h in hits if h.anomaly_id == "HTTP_SCRIPTED_UA"][0]
-    assert "H_OPPORTUNISTIC_COMMODITY" in scripted.hypotheses
+    assert "H_SCAN_RECON" in scripted.hypotheses
 
 
 def test_python_requests_ua_fires(tmp_path):
