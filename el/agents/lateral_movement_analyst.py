@@ -124,6 +124,11 @@ class LateralMovementAnalystAgent(Agent):
                 hypotheses_supported=hyps,
             )))
 
+        # Graph population: Event nodes per lateral-movement hit, linked
+        # to the Host. Each hit carries first_seen + channels — perfect
+        # for surfacing the attack timeline in the case.html graph pane.
+        self._populate_graph(ctx, hits)
+
         # Aggregate finding if 2+ techniques fired — that's the strongest
         # possible LM signal (ATT&CK chain across multiple techniques).
         if len(techniques_fired) >= 2:
@@ -147,3 +152,45 @@ class LateralMovementAnalystAgent(Agent):
                 hypotheses_supported=["H_LATERAL_MOVEMENT", "H_APT_ESPIONAGE"],
             )))
         return out
+
+    def _populate_graph(self, ctx: AgentContext, hits: list) -> None:
+        """Emit Host + Event nodes for each lateral-movement hit so the
+        case.html entity graph shows the attack timeline. Event→Host
+        via an implicit `host` field; no direct Host rel in the schema
+        for Event so we keep Event nodes self-contained."""
+        from el.evidence.graph import open_graph
+        try:
+            db, conn = open_graph(ctx.case_dir)
+        except Exception:
+            return
+        def _esc(s: str) -> str:
+            return (s or "").replace("'", "''").replace("\\", "\\\\")
+        host_id = ctx.case_id or "unknown-host"
+        try:
+            conn.execute(
+                f"MERGE (h:Host {{name: '{_esc(host_id)}'}}) "
+                f"SET h.os='Windows'")
+            for h in hits:
+                for sample_ev in h.sample_events[:3]:
+                    ts = getattr(sample_ev, "time_created", "") or ""
+                    eid_val = getattr(sample_ev, "event_id", 0)
+                    try:
+                        eid_int = int(eid_val)
+                    except (TypeError, ValueError):
+                        eid_int = 0
+                    eid_str = (f"{host_id}:{h.technique}:"
+                                f"{eid_int}:{ts}")[:180]
+                    conn.execute(
+                        f"MERGE (e:Event {{event_id: '{_esc(eid_str)}'}}) "
+                        f"SET e.source='lateral_movement', "
+                        f"e.channel='{_esc(sample_ev.channel)}', "
+                        f"e.eid={eid_int}, "
+                        f"e.ts_utc='{_esc(ts)}', "
+                        f"e.host='{_esc(host_id)}'")
+        except Exception:
+            pass
+        finally:
+            try: del conn
+            except: pass
+            try: del db
+            except: pass

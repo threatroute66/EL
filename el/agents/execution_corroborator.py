@@ -161,4 +161,63 @@ class ExecutionCorroboratorAgent(Agent):
                 evidence=[ev],
                 hypotheses_supported=hyps,
             )))
+        # Graph population: Host + Process + File nodes with RUNS_ON /
+        # LOADED edges. Makes the case.html entity-graph pane
+        # meaningful on disk-only cases (previously empty unless a
+        # memory/network/EVTX agent had populated it).
+        self._populate_graph(ctx, entries)
         return out
+
+    def _populate_graph(self, ctx: AgentContext, entries: dict) -> None:
+        """Write Host + Process + File nodes to the Kùzu graph.
+        Silent on any failure — graph population never blocks findings
+        emission."""
+        from el.evidence.graph import open_graph
+        try:
+            db, conn = open_graph(ctx.case_dir)
+        except Exception:
+            return
+        def _esc(s: str) -> str:
+            return (s or "").replace("'", "''").replace("\\", "\\\\")
+        host_id = ctx.case_id or "unknown-host"
+        try:
+            conn.execute(
+                f"MERGE (h:Host {{name: '{_esc(host_id)}'}}) "
+                f"SET h.os='Windows'")
+            pid_seed = 0
+            for name, entry in entries.items():
+                if entry.corroboration < 2:
+                    continue
+                # Deterministic synthetic pid from basename hash — lets
+                # the graph remain stable across re-runs.
+                import hashlib
+                pid_seed = int(hashlib.sha256(
+                    name.encode()).hexdigest()[:12], 16) % 2147483000
+                cmd_sample = sorted(entry.paths)[0] if entry.paths else ""
+                conn.execute(
+                    f"MERGE (p:Process {{pid: {pid_seed}}}) "
+                    f"SET p.name='{_esc(name)}', "
+                    f"p.cmdline='{_esc(cmd_sample[:200])}', "
+                    f"p.host='{_esc(host_id)}', "
+                    f"p.ppid=0, p.start_utc=''")
+                conn.execute(
+                    f"MATCH (p:Process {{pid: {pid_seed}}}), "
+                    f"      (h:Host {{name: '{_esc(host_id)}'}}) "
+                    f"MERGE (p)-[:RUNS_ON]->(h)")
+                for path in sorted(entry.paths)[:3]:
+                    path_key = path[:180]
+                    conn.execute(
+                        f"MERGE (f:File {{path: '{_esc(path_key)}'}}) "
+                        f"SET f.host='{_esc(host_id)}', "
+                        f"f.sha256='', f.size=0")
+                    conn.execute(
+                        f"MATCH (p:Process {{pid: {pid_seed}}}), "
+                        f"      (f:File {{path: '{_esc(path_key)}'}}) "
+                        f"MERGE (p)-[:LOADED]->(f)")
+        except Exception:
+            pass
+        finally:
+            try: del conn
+            except: pass
+            try: del db
+            except: pass
