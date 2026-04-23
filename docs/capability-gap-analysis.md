@@ -355,11 +355,11 @@ rows as evidence lands and a case completes end-to-end._
 | APFS encrypted container | **not supported** — needs FileVault recovery key ingestion | Operator-supplied key case |
 | BitLocker-encrypted NTFS / ReFS | untested — `dislocker` path exists but no validated case | SANS FOR500/FOR508 course images with BitLocker on |
 | ReFS (incl. Dev Drive on Win11) | **not supported** — Sleuth Kit ReFS support is limited | Microsoft-published Dev Drive lab, ReFS server images |
-| LUKS / LUKS2 | untested — needs mapper in `sleuthkit.mount_linux_ro` | Ubuntu full-disk-encrypted images, TryHackMe Linux boxes |
+| ~~LUKS / LUKS2~~ ✅ | Shipped `mount_luks_ro` + `umount_luks` in `el/skills/sleuthkit.py`; `mount_linux_ro` auto-raises with a hint when a LUKS header is detected instead of returning the kernel's opaque `wrong fs type` error. Validated end-to-end: 32 MiB LUKS1 container → ext4 inside → unlock → read canary → RO-write-blocked assertion. `cryptsetup-bin` + `losetup` already on SIFT. | — |
 | FileVault (CoreStorage legacy) | **not supported** | Pre-APFS macOS 10.12 images |
 | btrfs / xfs / zfs | **not supported** — extractor assumes ext* | Fedora / openSUSE / Proxmox disk images |
 | exFAT | untested — fls may be limited | SD-card / external-drive images |
-| E01 multi-part (`.E01 .E02 .E03`) | untested — `libewf` should handle; not validated | FTK exports larger than 2 GB |
+| ~~E01 multi-part (`.E01 .E02 .E03`)~~ ✅ | Validated end-to-end on the M57-Jean image (`nps-2008-jean.E01 + .E02`, 3 GB split across two parts). `libewf` transparently presents the multi-part set as a single ewf1 stream. `m57-jean-r7` completed final_state=done with H_BEC_ACCOUNT_TAKEOVER score 57. | — |
 | L01 logical evidence container | untested — `LVF` magic recognised but no reader path | EnCase logical exports |
 | AFF4 | **not supported** | Volatility project example datasets |
 | Ex01 (EWF v2) | untested — magic recognised, reader path unverified | Modern FTK + Tableau exports |

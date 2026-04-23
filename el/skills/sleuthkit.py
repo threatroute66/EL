@@ -576,10 +576,18 @@ def mount_linux_ro(raw_image: Path, start_sector: int,
     ext-family filesystems auto-detect via blkid; for other Linux
     filesystems the caller can pass `fstype` via kwargs once we need
     that (e.g. xfs images).
+
+    Raises SleuthkitError with a hint pointing at `mount_luks_ro` when
+    the target partition turns out to be a LUKS container.
     """
     mount_point = Path(mount_point)
     mount_point.mkdir(parents=True, exist_ok=True)
     offset = start_sector * sector_size
+    if _peek_luks_magic(raw_image, offset):
+        raise SleuthkitError(
+            "target partition is a LUKS container — use "
+            "`mount_luks_ro(raw_image, start_sector, mount_point, "
+            "passphrase=...)` to unlock first")
     cmd = ["sudo", "mount", "-o",
            f"ro,noexec,loop,offset={offset}",
            str(raw_image), str(mount_point)]
@@ -591,6 +599,154 @@ def mount_linux_ro(raw_image: Path, start_sector: int,
     if r.returncode != 0:
         raise SleuthkitError(
             f"Linux mount failed (rc={r.returncode}): {r.stderr[:500]}")
+
+
+# LUKS-v1 magic `LUKS\xba\xbe` lives at offset 0 of the LUKS header;
+# LUKS2 magic is `LUKS\xba\xbe` at offset 0 too (version distinguishes
+# them via the 16-bit version field). Detecting v1 magic is enough to
+# route to cryptsetup.
+_LUKS_MAGIC = b"LUKS\xba\xbe"
+
+
+def _peek_luks_magic(raw_image: Path, byte_offset: int) -> bool:
+    """True when the first 6 bytes at `byte_offset` into `raw_image`
+    are the LUKS magic. Used by mount_linux_ro to fail with a
+    targeted error instead of the kernel's generic `wrong fs type`."""
+    try:
+        with open(raw_image, "rb") as f:
+            f.seek(byte_offset)
+            return f.read(6) == _LUKS_MAGIC
+    except OSError:
+        return False
+
+
+def mount_luks_ro(raw_image: Path, start_sector: int,
+                   mount_point: Path,
+                   passphrase: str | None = None,
+                   key_file: Path | None = None,
+                   sector_size: int = 512,
+                   mapper_name: str | None = None,
+                   timeout: int = 120) -> dict:
+    """Unlock a LUKS-encrypted partition and mount its decrypted
+    mapper read-only. Flow:
+
+      1. losetup --read-only --offset N --find --show <raw>  →  /dev/loopN
+      2. cryptsetup open --type luks --readonly --key-file|<pw-stdin>
+         /dev/loopN <mapper>
+      3. mount -o ro /dev/mapper/<mapper> <mount_point>
+
+    Returns a dict of {'loop', 'mapper', 'mount_point'} so the caller
+    can tear the stack down in reverse via `umount_luks`.
+
+    Raises SleuthkitError with a clear message when:
+      - cryptsetup is not installed (`apt install cryptsetup-bin`)
+      - neither `passphrase` nor `key_file` is supplied
+      - the partition isn't actually a LUKS container
+      - any step of the losetup/cryptsetup/mount chain fails.
+    """
+    import shutil as _shutil
+    if not _shutil.which("cryptsetup"):
+        raise SleuthkitError(
+            "cryptsetup not on PATH — apt install cryptsetup-bin")
+    if not _shutil.which("losetup"):
+        raise SleuthkitError("losetup not on PATH — kernel-util package missing")
+    if passphrase is None and key_file is None:
+        raise SleuthkitError(
+            "LUKS unlock needs a passphrase (str) or key_file (path); both None")
+    if key_file is not None and not Path(key_file).is_file():
+        raise SleuthkitError(f"LUKS key_file not found: {key_file}")
+
+    mount_point = Path(mount_point)
+    mount_point.mkdir(parents=True, exist_ok=True)
+    offset_bytes = start_sector * sector_size
+    if not _peek_luks_magic(raw_image, offset_bytes):
+        raise SleuthkitError(
+            f"partition at sector {start_sector} is not a LUKS container "
+            f"(no LUKS magic at byte {offset_bytes})")
+
+    # 1. losetup the image as a read-only loop device at the partition offset
+    loop_cmd = ["sudo", "losetup", "--read-only",
+                "--offset", str(offset_bytes),
+                "--find", "--show", str(raw_image)]
+    try:
+        r = subprocess.run(loop_cmd, capture_output=True, text=True,
+                           timeout=timeout)
+    except subprocess.TimeoutExpired as e:
+        raise SleuthkitError("losetup timeout") from e
+    if r.returncode != 0:
+        raise SleuthkitError(
+            f"losetup failed (rc={r.returncode}): {r.stderr[:500]}")
+    loop_dev = r.stdout.strip()
+    if not loop_dev.startswith("/dev/"):
+        raise SleuthkitError(f"losetup returned unexpected stdout: {loop_dev!r}")
+
+    # 2. cryptsetup open
+    if not mapper_name:
+        mapper_name = f"el_luks_{mount_point.name}"
+    cs_cmd = ["sudo", "cryptsetup", "open", "--type", "luks",
+              "--readonly", loop_dev, mapper_name]
+    stdin_data = None
+    if key_file is not None:
+        cs_cmd[2:2] = ["--key-file", str(key_file)]
+    else:
+        stdin_data = (passphrase or "").encode() + b"\n"
+    try:
+        r = subprocess.run(cs_cmd, input=stdin_data,
+                           capture_output=True, timeout=timeout)
+    except subprocess.TimeoutExpired as e:
+        # Best-effort loop-device cleanup
+        subprocess.run(["sudo", "losetup", "-d", loop_dev],
+                        capture_output=True)
+        raise SleuthkitError("cryptsetup timeout") from e
+    if r.returncode != 0:
+        subprocess.run(["sudo", "losetup", "-d", loop_dev],
+                        capture_output=True)
+        err = (r.stderr or b"").decode("utf-8", errors="replace")[:500]
+        raise SleuthkitError(
+            f"cryptsetup open failed (rc={r.returncode}): {err}")
+
+    # 3. mount the decrypted mapper read-only
+    mapper_dev = f"/dev/mapper/{mapper_name}"
+    mount_cmd = ["sudo", "mount", "-o", "ro,noexec",
+                 mapper_dev, str(mount_point)]
+    try:
+        r = subprocess.run(mount_cmd, capture_output=True, text=True,
+                           timeout=timeout)
+    except subprocess.TimeoutExpired as e:
+        subprocess.run(["sudo", "cryptsetup", "close", mapper_name],
+                        capture_output=True)
+        subprocess.run(["sudo", "losetup", "-d", loop_dev],
+                        capture_output=True)
+        raise SleuthkitError("mount timeout") from e
+    if r.returncode != 0:
+        subprocess.run(["sudo", "cryptsetup", "close", mapper_name],
+                        capture_output=True)
+        subprocess.run(["sudo", "losetup", "-d", loop_dev],
+                        capture_output=True)
+        raise SleuthkitError(
+            f"mount of decrypted mapper failed (rc={r.returncode}): "
+            f"{r.stderr[:500]}")
+    return {"loop": loop_dev, "mapper": mapper_name,
+            "mount_point": str(mount_point)}
+
+
+def umount_luks(state: dict, timeout: int = 60) -> None:
+    """Reverse of `mount_luks_ro`: umount, cryptsetup close, losetup -d.
+    Best-effort — logs but does not re-raise if a step fails (tear-down
+    should never block a run even when the OS has already reclaimed
+    pieces of the stack). `state` is the dict mount_luks_ro returned."""
+    mp = state.get("mount_point")
+    mapper = state.get("mapper")
+    loop = state.get("loop")
+    if mp:
+        subprocess.run(["sudo", "umount", str(mp)],
+                        capture_output=True, timeout=timeout)
+    if mapper:
+        subprocess.run(["sudo", "cryptsetup", "close", mapper],
+                        capture_output=True, timeout=timeout)
+    if loop:
+        subprocess.run(["sudo", "losetup", "-d", loop],
+                        capture_output=True, timeout=timeout)
 
 
 def mount_apfs_ro(raw_image: Path, start_sector: int,
