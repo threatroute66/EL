@@ -174,4 +174,49 @@ class BrowserForensicatorAgent(Agent):
                        f"was available on the device."),
                 evidence=[ev],
             )))
+
+        # Narcotic-lexicon + BTC cross-reference over URL + page title.
+        # Surfaces vendor-panel / order-tracking / wallet-copy pages that
+        # the category buckets above don't catch.
+        from el.skills import narcotic_lexicon as nl
+        from el.skills import ioc_extract as iex
+        narco_visits: list[browser.Visit] = []
+        btc_visits: list[tuple[browser.Visit, set[str]]] = []
+        for v in run.visits:
+            text = f"{v.url} {v.title or ''}"
+            m = nl.scan_text(text)
+            if m is not None:
+                narco_visits.append(v)
+            btcs = iex.extract(text).get("btc", set())
+            if btcs:
+                btc_visits.append((v, btcs))
+        if narco_visits:
+            ev = run.as_evidence(facts={"category": "narcotic_lexicon",
+                                        "url_count": len(narco_visits),
+                                        "sample_urls": [v.url for v in narco_visits[:5]]})
+            out.append(self.emit(ctx, Finding(
+                case_id=ctx.case_id, agent=self.name, confidence="medium",
+                claim=(f"Browser history → narcotic-lexicon match(es) "
+                       f"({places_sqlite.name}): {len(narco_visits)} "
+                       f"URL(s) with strain/unit/price markers. Pivot "
+                       f"against firefox downloads + mbox for corroboration."),
+                evidence=[ev],
+                hypotheses_supported=["H_INSIDER_DATA_EXFIL",
+                                       "H_OPPORTUNISTIC_COMMODITY"],
+            )))
+        if btc_visits:
+            btc_set = {b for _, bs in btc_visits for b in bs}
+            ev = run.as_evidence(facts={"category": "btc_wallet",
+                                        "url_count": len(btc_visits),
+                                        "btc_addresses": sorted(btc_set)[:10],
+                                        "sample_urls": [v.url for v, _ in btc_visits[:5]]})
+            out.append(self.emit(ctx, Finding(
+                case_id=ctx.case_id, agent=self.name, confidence="medium",
+                claim=(f"Browser history → BTC wallet address(es) "
+                       f"({places_sqlite.name}): {len(btc_visits)} URL(s) "
+                       f"carry {len(btc_set)} distinct wallet(s). "
+                       f"Sample: {sorted(btc_set)[:3]}."),
+                evidence=[ev],
+                hypotheses_supported=["H_INSIDER_DATA_EXFIL"],
+            )))
         return out

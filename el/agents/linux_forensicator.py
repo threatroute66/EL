@@ -118,6 +118,12 @@ class LinuxForensicatorAgent(Agent):
         out.extend(self._analyze_dotfile_concealment(ctx, exports))
         # Encrypted ZIP archives (password-locked members)
         out.extend(self._analyze_encrypted_archives(ctx, exports))
+        # Extension-vs-MIME mismatch (extension-mangling concealment)
+        out.extend(self._analyze_magic_mismatch(ctx, exports))
+        # Narcotic-lexicon keyword scan over user-home text files
+        out.extend(self._analyze_narcotic_lexicon(ctx, exports))
+        # Thunderbird mbox walker — attachments + narcotic/BTC in bodies
+        out.extend(self._analyze_thunderbird_mbox(ctx, exports))
         return out
 
     def _analyze_utmp_family(self, ctx: AgentContext,
@@ -440,4 +446,138 @@ class LinuxForensicatorAgent(Agent):
                 evidence=[h.as_evidence()],
                 hypotheses_supported=["H_INSIDER_DATA_EXFIL"],
             )))
+        return out
+
+    def _analyze_magic_mismatch(self, ctx: AgentContext,
+                                 exports: Path) -> list[Finding]:
+        """Flag files whose declared extension disagrees with the MIME
+        type that `file(1)` detects. Only surface when ≥1 hit fires."""
+        from el.skills import magic_mismatch as mm
+        try:
+            hits = mm.walk(exports)
+        except mm.MagicError as e:
+            return [self.emit(ctx, Finding(
+                case_id=ctx.case_id, agent=self.name,
+                confidence="insufficient",
+                claim=f"magic_mismatch: {e} — skip extension-mangling scan.",
+            ))]
+        out: list[Finding] = []
+        # Collapse bulk findings — one finding per case summarizing N
+        # mismatches, plus a compact sample. Avoids findings-storm when
+        # the image has thousands of spurious mismatches (it won't;
+        # the MIME allow-list is narrow).
+        if not hits:
+            return out
+        sample = [(str(h.path.name), h.declared_ext, h.detected_mime)
+                   for h in hits[:5]]
+        # Hash of the hit list for reproducibility
+        import hashlib as _h
+        seed = "\n".join(f"{h.path}|{h.declared_ext}|{h.detected_mime}"
+                          for h in hits).encode()
+        ev = EvidenceItem(
+            tool="file(1)", version=mm._file_version(),
+            command="file --mime-type (walk)",
+            output_sha256=_h.sha256(seed).hexdigest(),
+            output_path=str(exports),
+            extracted_facts={"mismatch_count": len(hits),
+                              "sample": sample,
+                              "paths": [str(h.path) for h in hits[:25]]},
+        )
+        out.append(self.emit(ctx, Finding(
+            case_id=ctx.case_id, agent=self.name, confidence="medium",
+            claim=(f"Extension-vs-MIME mismatch: {len(hits)} file(s) "
+                   f"declared one extension but were detected as a "
+                   f"different format by file(1). Sample: {sample}. "
+                   f"Extension mangling is a deliberate concealment move."),
+            evidence=[ev],
+            hypotheses_supported=["H_INSIDER_DATA_EXFIL"],
+        )))
+        return out
+
+    def _analyze_narcotic_lexicon(self, ctx: AgentContext,
+                                    exports: Path) -> list[Finding]:
+        """Scan user text files for narcotic-trade keywords (strain names,
+        unit/weight markers, price-per-unit patterns, emoji ciphers)."""
+        from el.skills import narcotic_lexicon as nl
+        homes = exports / "home"
+        if not homes.is_dir():
+            return []
+        hits = nl.walk_files(homes)
+        out: list[Finding] = []
+        for m in hits:
+            sig = m.signal_strength
+            conf = "high" if sig == "high" else "medium"
+            sample_strains = ", ".join(m.strain_hits[:3]) or "-"
+            sample_units = ", ".join(m.unit_hits[:3]) or "-"
+            out.append(self.emit(ctx, Finding(
+                case_id=ctx.case_id, agent=self.name, confidence=conf,
+                claim=(f"Narcotic-lexicon match in {m.path.name}: "
+                       f"{len(m.strain_hits)} strain/product term(s), "
+                       f"{len(m.unit_hits)} weight marker(s), "
+                       f"{len(m.price_hits)} price-per-unit pattern(s). "
+                       f"Strains: [{sample_strains}]. "
+                       f"Units: [{sample_units}]."),
+                evidence=[m.as_evidence()],
+                hypotheses_supported=["H_INSIDER_DATA_EXFIL",
+                                       "H_OPPORTUNISTIC_COMMODITY"],
+            )))
+        return out
+
+    def _analyze_thunderbird_mbox(self, ctx: AgentContext,
+                                   exports: Path) -> list[Finding]:
+        """Walk Thunderbird mbox trees under /home/*/.thunderbird/ and
+        surface messages with attachments; flag bodies matching
+        narcotic-lexicon or BTC regex as a second pass."""
+        from el.skills import thunderbird_mbox as tb
+        from el.skills import narcotic_lexicon as nl
+        from el.skills import ioc_extract as iex
+        profiles = sorted((exports / "home").glob("*/.thunderbird"))
+        if not profiles:
+            return []
+        out: list[Finding] = []
+        for prof in profiles:
+            run = tb.walk(prof)
+            if not run.messages:
+                continue
+            attached = [m for m in run.messages if m.has_attachments]
+            out.append(self.emit(ctx, Finding(
+                case_id=ctx.case_id, agent=self.name, confidence="high",
+                claim=(f"Thunderbird mail parsed "
+                       f"({prof.parent.name}): {len(run.messages)} "
+                       f"message(s) across {len(run.mbox_paths)} mbox "
+                       f"file(s), {len(attached)} with attachment(s)."),
+                evidence=[run.as_evidence()],
+                hypotheses_supported=[],
+            )))
+            # Second-pass: narcotic / BTC in body + attachment names
+            for m in run.messages:
+                body = " ".join([m.subject] + [a.filename
+                                                for a in m.attachments])
+                nmatch = nl.scan_text(body, source=m.mbox_path)
+                btcs = iex.extract(body).get("btc", set())
+                if nmatch is None and not btcs:
+                    continue
+                iocs = []
+                if nmatch is not None:
+                    iocs.append(f"strains={nmatch.strain_hits[:3]}"
+                                 if nmatch.strain_hits else "")
+                    iocs.append(f"units={nmatch.unit_hits[:3]}"
+                                 if nmatch.unit_hits else "")
+                if btcs:
+                    iocs.append(f"btc={sorted(btcs)[:3]}")
+                out.append(self.emit(ctx, Finding(
+                    case_id=ctx.case_id, agent=self.name, confidence="medium",
+                    claim=(f"Thunderbird message with narcotic/BTC "
+                           f"signal — folder={m.folder!r}, "
+                           f"subject={m.subject[:80]!r}. "
+                           f"{', '.join(x for x in iocs if x)}."),
+                    evidence=[run.as_evidence(facts={
+                        "match_folder": m.folder,
+                        "match_subject": m.subject[:200],
+                        "match_message_id": m.message_id,
+                        "attachment_count": len(m.attachments),
+                    })],
+                    hypotheses_supported=["H_INSIDER_DATA_EXFIL",
+                                           "H_OPPORTUNISTIC_COMMODITY"],
+                )))
         return out
