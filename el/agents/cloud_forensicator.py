@@ -82,11 +82,23 @@ def _detect_kind(path: Path) -> str:
     """Sniff the first 16 KB to route the log to the right parser.
     Order matters: most-specific signatures first so an Azure Activity
     Log that contains the substring "eventName" in a nested property
-    doesn't misroute as CloudTrail."""
+    doesn't misroute as CloudTrail. Accepts a file OR a directory —
+    for directories, samples the first .json/.gz/.log child."""
+    head = b""
     try:
-        with path.open("rb") as f:
-            head = f.read(16_384)
+        if path.is_dir():
+            for child in sorted(path.iterdir()):
+                if child.is_file() and child.suffix in (".json", ".gz",
+                                                          ".log", ".ndjson"):
+                    with child.open("rb") as f:
+                        head = f.read(16_384)
+                    break
+        else:
+            with path.open("rb") as f:
+                head = f.read(16_384)
     except OSError:
+        return "unreadable"
+    if not head:
         return "unreadable"
     # Sign-in log first — it has userPrincipalName + appDisplayName
     if asl.looks_like_signin_log(head):

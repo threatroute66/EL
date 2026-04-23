@@ -66,20 +66,29 @@ KIND_TO_AGENT: dict[str, type[Agent]] = {
 }
 
 
-def _looks_like_cloudtrail(path: Path) -> bool:
+def _sample_head(path: Path, n: int = 8192) -> bytes:
+    """Read up to *n* bytes from *path*, or from the first .json/.gz
+    child if *path* is a directory. Returns b"" on any failure."""
     try:
-        head = path.read_bytes()[:8192]
+        if path.is_dir():
+            for child in sorted(path.iterdir()):
+                if child.is_file() and child.suffix in (".json", ".gz",
+                                                          ".log", ".ndjson"):
+                    return child.read_bytes()[:n]
+            return b""
+        return path.read_bytes()[:n]
     except Exception:
-        return False
+        return b""
+
+
+def _looks_like_cloudtrail(path: Path) -> bool:
+    head = _sample_head(path)
     return b'"eventName"' in head or b'"eventSource"' in head
 
 
 def _looks_like_k8s_audit(path: Path) -> bool:
-    from el.skills.k8s_audit import looks_like_k8s_audit
-    try:
-        return looks_like_k8s_audit(path)
-    except Exception:
-        return False
+    head = _sample_head(path)
+    return b'"audit.k8s.io/' in head and b'"auditID"' in head
 
 
 @dataclass
