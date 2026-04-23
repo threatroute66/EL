@@ -140,8 +140,15 @@ def detect_os(image: str | Path, out_dir: str | Path) -> tuple[str | None, Plugi
     """Best-effort OS family detection by trying banner plugins.
 
     Returns (os_family, run) where os_family in {'windows','linux','mac', None}.
+
+    Timeout is generous (600 s) because PDB scanning reads most of the
+    memory image; under host contention (parallel investigations) the
+    scanner may need several minutes on a 2-4 GB dump. Previously capped
+    at 120 s, which falsely reported "no banner plugin produced usable
+    output" on perfectly valid images whenever the host was loaded.
     """
     out_dir = Path(out_dir)
+    errors: list[str] = []
     for plugin, family in (
         ("windows.info.Info", "windows"),
         ("linux.bash.Bash", "linux"),
@@ -149,8 +156,9 @@ def detect_os(image: str | Path, out_dir: str | Path) -> tuple[str | None, Plugi
         ("banners.Banners", None),
     ):
         try:
-            r = run_plugin(image, plugin, out_dir, timeout=120)
-        except Vol3Error:
+            r = run_plugin(image, plugin, out_dir, timeout=600)
+        except Vol3Error as e:
+            errors.append(f"{plugin}: {e}")
             continue
         if r.rc == 0 and r.rows:
             if family:
@@ -163,4 +171,7 @@ def detect_os(image: str | Path, out_dir: str | Path) -> tuple[str | None, Plugi
             if "darwin" in txt or "xnu" in txt:
                 return "mac", r
             return None, r
-    raise Vol3Error("no banner plugin produced usable output")
+    raise Vol3Error(
+        "no banner plugin produced usable output "
+        f"(attempted: {'; '.join(errors) if errors else 'all plugins returned empty output'})"
+    )
