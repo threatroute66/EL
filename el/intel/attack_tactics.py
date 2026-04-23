@@ -36,6 +36,7 @@ TECHNIQUE_TACTIC: dict[str, str] = {
     # Initial Access
     "T1078":      "Initial Access",
     "T1078.004":  "Initial Access",
+    "T1133":      "Initial Access",
     "T1189":      "Initial Access",
     "T1190":      "Initial Access",
     "T1566.001":  "Initial Access",
@@ -55,6 +56,7 @@ TECHNIQUE_TACTIC: dict[str, str] = {
     "T1204.002":  "Execution",
     "T1569":      "Execution",
     "T1569.002":  "Execution",
+    "T1609":      "Execution",            # Container Administration Command
     # Persistence
     "T1098":      "Persistence",
     "T1098.001":  "Persistence",
@@ -108,6 +110,7 @@ TECHNIQUE_TACTIC: dict[str, str] = {
     "T1110.003":  "Credential Access",
     "T1528":      "Credential Access",
     "T1552.001":  "Credential Access",
+    "T1552.007":  "Credential Access",   # Unsecured Credentials: Container API
     "T1555":      "Credential Access",
     "T1555.006":  "Credential Access",
     "T1558.001":  "Credential Access",

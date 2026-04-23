@@ -50,6 +50,7 @@ from el.skills import ioc_extract
 
 from el.agents.android_forensicator import AndroidForensicatorAgent
 from el.agents.ios_forensicator import IOSForensicatorAgent
+from el.agents.k8s_audit_analyst import K8sAuditAnalystAgent
 
 KIND_TO_AGENT: dict[str, type[Agent]] = {
     "pcap (libpcap)": NetworkAnalystAgent,
@@ -61,6 +62,7 @@ KIND_TO_AGENT: dict[str, type[Agent]] = {
     "velociraptor-collection": EndpointAnalystAgent,
     "android-fs-dir": AndroidForensicatorAgent,
     "ios-fs-dir": IOSForensicatorAgent,
+    "k8s-audit-log": K8sAuditAnalystAgent,
 }
 
 
@@ -70,6 +72,14 @@ def _looks_like_cloudtrail(path: Path) -> bool:
     except Exception:
         return False
     return b'"eventName"' in head or b'"eventSource"' in head
+
+
+def _looks_like_k8s_audit(path: Path) -> bool:
+    from el.skills.k8s_audit import looks_like_k8s_audit
+    try:
+        return looks_like_k8s_audit(path)
+    except Exception:
+        return False
 
 
 @dataclass
@@ -175,6 +185,9 @@ class Coordinator:
         kind = ctx.shared.get("evidence_kind")
         if kind and kind in KIND_TO_AGENT:
             return KIND_TO_AGENT[kind]()
+        if _looks_like_k8s_audit(ctx.input_path):
+            ctx.shared["evidence_kind"] = "k8s-audit-log"
+            return K8sAuditAnalystAgent()
         if _looks_like_cloudtrail(ctx.input_path):
             ctx.shared["evidence_kind"] = "AWS CloudTrail"
             return CloudForensicatorAgent()
