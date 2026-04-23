@@ -147,12 +147,13 @@ Three architectural mechanisms, all tested and fired on real cases:
   (GPL-2 — **note flag below**), `stix2` (BSD-3), `kuzu` (MIT),
   `ppdeep` (LGPL-3), `imagehash` (BSD-2). EL's own source is
   Apache-2.0.
-- ⚠ **Flag**: `scapy` is GPL-2. EL wraps it via subprocess-style
-  function calls rather than static linking, so the combined work
-  license concern is limited, but judges should be aware this is
-  the one non-BSD-family dependency. If required, the
-  `NetworkAnalyst` agent can fall back to Zeek-only (Zeek is
-  BSD-3-Clause) and `scapy` can be dropped from the closed submission.
+- ✅ **scapy GPL-2 flag is now explicit in README** (commit `6bf5b68`)
+  under a "Third-party dependency license notices" section. Table
+  enumerates every pip dependency with license; the scapy row is
+  called out with the fallback path (remove `scapy` from
+  `pyproject.toml` → `NetworkAnalyst` runs Zeek-only, still
+  BSD-3-Clause). No runtime dependency on scapy exists outside
+  `el/skills/scapy_pcap.py` — verifiable by grep.
 
 ---
 
@@ -190,7 +191,7 @@ Lives in `README.md` — "What it does", "Architecture", "The
 contract", "Analyst web view", "Cross-case institutional knowledge"
 sections cover every feature. Also this document.
 
-### 2.5 Demo video ❌ **NOT YET MADE**
+### 2.5 Demo video ❌ **NOT YET MADE — postponed per submission plan**
 
 - Needs: <5-min screencast with audio, terminal execution against
   real evidence, at least one self-correction sequence.
@@ -203,14 +204,18 @@ sections cover every feature. Also this document.
   moment**, (5) `traceability_matrix.md` to show the judge-required
   audit trail.
 
-### 2.6 Architecture diagram ⚠ **ASCII ONLY**
+### 2.6 Architecture diagram ✅ **Mermaid diagram in README (commit `6bf5b68`)**
 
-- The README has an ASCII-art diagram in the "Architecture" section.
-  It conveys coordinator → triage → specialist agents → graph +
-  ledger → correlator → ACH → red reviewer → reporter. Passable for
-  text-first judges but a proper SVG/PNG would be stronger.
-- **Gap**: render a cleaner diagram. Candidates: draw.io export,
-  Mermaid block in README, or a hand-drawn SVG via Excalidraw.
+Full pipeline rendered as a Mermaid `flowchart TB`: 12 evidence-input
+types → Intake (hash + manifest + read-only enforcement) → Triage →
+Coordinator state machine → 24 specialist agents (subgraph) →
+shared per-case substrate (findings.sqlite + graph.kuzu +
+~/.el/knowledge.sqlite) → Correlator → ACH Engine → Red Reviewer
+(with the loop-back to Coordinator when a Finding remains
+unresolved) → Reporter → judge-facing outputs (report.md +
+narrative.md + case.html + stix-bundle.json + findings.json + the
+three execution-log artefacts + seal.json). Renders inline on
+GitHub; degrades to readable Mermaid markup elsewhere.
 
 ### 2.7 Evidence dataset documentation ✅
 
@@ -224,26 +229,25 @@ sections cover every feature. Also this document.
 - `docs/SRL-2018-shakedown.md` documents the SRL-2018 Stark
   Research Labs corpus sweep results.
 
-### 2.8 Accuracy report ⚠ **DISTRIBUTED — NEEDS CONSOLIDATION**
+### 2.8 Accuracy report ✅ **CONSOLIDATED at `docs/accuracy_report.md` (commit `d25a95b`)**
 
-Currently the accuracy posture is spread across:
-- `README.md` "Across these cases, EL surfaced 40+ bugs…" paragraph
-  listing real false-positive fixes (IOC false-positives across 6
-  distinct categories, ACH tool-failure scoring, etc.)
-- `docs/capability-gap-analysis.md` "M57-Jean validation" section
-  enumerating the four gaps that fix-commits later closed
-- Per-case `CLAUDE.md` briefings inside each `cases/<id>/` directory
-- The `el seal-verify` integrity check is the runtime self-audit
-
-**Gap**: collect into a single `docs/accuracy_report.md` with:
-- Confirmed findings per real case + their tool-trace
-- Known false-positive classes we've already fixed (regression-
-  test references)
-- Honest "misses" — formats EL can't parse yet (from the capability-
-  gap tracker), ransomware_hypothesis "encrypt" keyword over-match
-  pre-fix, etc.
-- Cross-case knowledge-store false-positive suppression (ubiquitous-
-  IOC filter).
+Judge-facing document covering:
+- Three-layer accuracy architecture (schema + Red Reviewer +
+  rarity bucketing)
+- Validated real-case results including M57-Jean scoreboard vs.
+  two public writeups, LoneWolf paired disk+memory, SRL-2018
+  corpus top scores, mobile + macOS baselines
+- **8 known false-positive classes** with root cause, fix, and
+  the regression-test file locking each in (IOC noise in 6
+  categories + disk-anomaly FPs + hypothesis-scorer filename
+  leaks + empty-pslist hidden-process + ACH tool-failure scoring
+  + family-fingerprint context scoping + IOC feedback-loop guard
+  + Zeek/tshark tool-output header noise). **90+ targeted
+  assertions across 13 test files.**
+- Known honest misses (format-by-format severity table)
+- Hallucination posture — why EL cannot invent a claim
+- Judge reproduction steps with concrete `pytest` + `jq` +
+  `sha256sum` commands
 
 ### 2.9 Agent execution logs ✅
 
@@ -404,32 +408,30 @@ decision path for evidence extraction.
 
 ---
 
-## Explicit gap list — to close before submission
+## Gap list — updated status
 
-| # | Gap | Impact | Fix |
+| # | Gap | Status | Reference |
 |---|---|---|---|
-| 1 | **Demo video** | Hard-required per submission rules | ~30 min screencast: `el doctor` → `el investigate` on M57 or LoneWolf → highlight Red-Reviewer self-correction → `el serve` + browser walk-through of narrative + traceability matrix |
-| 2 | **Consolidated Accuracy Report** | Required per submission rules; currently distributed | New `docs/accuracy_report.md` aggregating: per-case confirmed-vs-inferred count, known FP classes w/ regression-test refs, honest misses (untested formats), real-case scores vs reference solutions (M57 BEC vs public writeups) |
-| 3 | **Architecture diagram upgrade** | Required; ASCII works but a proper image is stronger | Render a Mermaid diagram in README + export as `docs/architecture.svg`; show evidence → coordinator → 24 agents → shared graph/ledger → correlator → ACH → red-reviewer → reporter |
-| 4 | Scapy (GPL-2) dependency flag | License compatibility with Apache-2.0 repo; minor but should be honest | Either: document it explicitly in README + LICENSE-NOTICES, or split `NetworkAnalyst` so scapy is an optional install only used when explicitly enabled |
-| 5 | MCP-server integration | "supported case data type… remote endpoints via MCP" is listed; we don't ship MCP yet | Optional: `.mcp.json` scaffold is present but no MCP server in repo. Write a minimal `el/mcp/server.py` exposing `investigate`, `report`, `knowledge lookup` as MCP tools |
-| 6 | Live `demo_case` evidence | Judges need a concrete thing to run EL on | Script that fetches M57-Jean into `/cases/demo/` (if licensing allows) OR ship a synthetic 50-MB disk image with a known inject chain; `make demo` runs the full pipeline |
+| 1 | **Demo video** | ❌ Not recorded — postponed | Requires a prepared sequence incl. self-correction scene |
+| 2 | Consolidated Accuracy Report | ✅ **Closed** | `docs/accuracy_report.md`, commit `d25a95b` |
+| 3 | Architecture diagram upgrade | ✅ **Closed** | Mermaid block in `README.md` "Architecture", commit `6bf5b68` |
+| 4 | Scapy (GPL-2) dependency flag | ✅ **Closed** | README "Third-party dependency license notices" section, commit `6bf5b68` |
+| 5 | MCP-server integration | ❌ Not shipped — postponed | `.mcp.json` scaffold exists; no `el/mcp/server.py` yet |
+| 6 | Live `demo_case` evidence | ❌ Not shipped — postponed | Script to seed `/cases/demo/` awaits |
 
 ---
 
-## Recommended submission checklist (chronological)
+## Recommended submission checklist (updated)
 
-1. **Close gap #2** (consolidated accuracy report) — highest signal to
-   the "IR Accuracy" judging criterion.
-2. **Close gap #3** (architecture diagram) — low effort, improves
-   first-impression scoring.
-3. **Close gap #4** (scapy license note) — one-paragraph addition to
-   README; no code change strictly required.
-4. **Close gap #6** (demo case) — judges need something runnable.
-5. **Produce gap #1** (video) last, after the rest of the repo is
-   frozen.
-6. Optional: gap #5 (MCP) — nice-to-have, not required; only attempt
-   if time permits.
+Complete:
+1. ✅ Consolidated Accuracy Report (gap #2) — commit `d25a95b`
+2. ✅ Architecture diagram upgrade (gap #3) — commit `6bf5b68`
+3. ✅ Scapy GPL-2 license flag (gap #4) — commit `6bf5b68`
+
+Remaining (postponed for separate sessions):
+4. Ship a runnable demo case (gap #6)
+5. Record the demo video (gap #1) — last, after repo is frozen
+6. Optional: MCP server (gap #5)
 
 Submission-day validation: `./install.sh --doctor` on a fresh SIFT
 VM, then run the demo case and confirm `reports/traceability_matrix.md`
