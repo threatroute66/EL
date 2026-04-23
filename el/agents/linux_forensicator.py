@@ -58,16 +58,19 @@ class LinuxForensicatorAgent(Agent):
         exports = Path(exports)
 
         hits = lt.run_all(exports)
+        out: list[Finding] = []
         if not hits:
-            return [self.emit(ctx, Finding(
+            out.append(self.emit(ctx, Finding(
                 case_id=ctx.case_id, agent=self.name,
                 confidence="insufficient",
                 claim=(f"LinuxForensicator: walked extracted artifacts at "
                        f"{exports.name}/ — no malicious-pattern / "
                        f"brute-force / preload / authorized-key / "
-                       f"cron-suspicious hits. Absence of evidence; not "
-                       f"evidence of absence."),
-            ))]
+                       f"cron-suspicious hits from the linux_triage "
+                       f"pattern library. Absence of evidence; not "
+                       f"evidence of absence. utmp/wtmp/btmp + "
+                       f"systemd-journal passes below still run."),
+            )))
 
         # Shared evidence — hash the MANIFEST.txt the extractor wrote
         manifest = exports / "MANIFEST.txt"
@@ -75,7 +78,6 @@ class LinuxForensicatorAgent(Agent):
         if manifest.is_file():
             sha = hashlib.sha256(manifest.read_bytes()).hexdigest()
 
-        out: list[Finding] = []
         for h in hits:
             confidence = "high" if h.family in _HIGH_FAMILIES else "medium"
             facts = {
