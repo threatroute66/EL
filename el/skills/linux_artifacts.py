@@ -247,6 +247,28 @@ def extract_linux_artifacts(mount_point: Path,
                 if n:
                     out["webserver_log_files"] = (
                         out.get("webserver_log_files", 0) + n)
+        # /var/log/journal/<machine-id>/*.journal — systemd binary
+        # journal. Pull all .journal files so journalctl --file can
+        # replay them in the analysis host.
+        journal = _child_ci(var_log, "journal")
+        if journal and journal.is_dir():
+            for machine_dir in journal.iterdir():
+                if not machine_dir.is_dir():
+                    continue
+                n = _cp_glob(machine_dir,
+                             log_out / "journal" / machine_dir.name,
+                             "*.journal")
+                if n:
+                    out["systemd_journal_files"] = (
+                        out.get("systemd_journal_files", 0) + n)
+
+    # /var/run/utmp — currently-active sessions (may be stale on an
+    # acquired image; copy anyway, cheap)
+    var_run_utmp = _resolve(mount_point, "var", "run", "utmp")
+    if var_run_utmp and var_run_utmp.is_file():
+        dst = exports_dir / "var" / "run" / "utmp"
+        if _sudo_cp(var_run_utmp, dst):
+            out["utmp_file"] = 1
 
     # Per-user artifacts — shell histories + SSH dir
     # Roots: /home/<user> AND /root
