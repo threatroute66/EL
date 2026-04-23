@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import typer
@@ -298,6 +299,63 @@ def report_cmd(
                     f"[yellow]watch: re-render failed: {e}[/yellow]")
     except KeyboardInterrupt:
         console.print("\n[dim]watch stopped[/dim]")
+
+
+@app.command("combined-report")
+def combined_report_cmd(
+    case_dirs: list[str] = typer.Argument(
+        ..., help="Two or more case directories to stitch into one report."),
+    out: str = typer.Option(
+        None, "--out",
+        help="Output markdown path. Defaults to "
+             "/opt/EL/cases/_combined/<name>/report.md"),
+    name: str = typer.Option(
+        None, "--name",
+        help="Combined case name. Defaults to longest common case_id prefix "
+             "(e.g. 'srl2015') or 'combined-case'."),
+) -> None:
+    """Stitch N per-case ledgers into a single multi-host report.
+
+    Use this when a scenario spans multiple hosts (e.g. an enterprise
+    APT intrusion with 4 host images) and the per-case reports — one
+    per input — don't show the attacker's cross-host story. This
+    command is a deterministic projection of the stitched ledgers
+    (no LLM): it produces a single Markdown report with a per-host
+    leading-hypothesis table, cross-host signal matrix, unified
+    ATT&CK coverage, cross-case IOC overlap from the Layer-3
+    knowledge DB, and compact per-host summaries.
+
+    Example:
+      el combined-report /opt/EL/cases/srl2015-dc-memory-r2 \\
+                          /opt/EL/cases/srl2015-dc-disk \\
+                          /opt/EL/cases/srl2015-nromanoff-memory \\
+                          /opt/EL/cases/srl2015-nromanoff-disk \\
+                          --name srl2015-enterprise
+    """
+    from el.reporting.combined import render_combined
+    dirs = [Path(d) for d in case_dirs]
+    missing = [d for d in dirs if not (d / "manifest.json").exists()]
+    if missing:
+        for d in missing:
+            console.print(f"[red]not a case directory: {d}[/red]")
+        raise typer.Exit(2)
+    if len(dirs) < 2:
+        console.print(
+            "[yellow]Only one case supplied — combined report is designed "
+            "for multi-host scenarios. Proceeding anyway.[/yellow]")
+    if not name:
+        ids = [json.loads((d/"manifest.json").read_text()).get("case_id", d.name)
+               for d in dirs]
+        common = os.path.commonprefix(ids).rstrip("-_")
+        name = common or "combined-case"
+    if not out:
+        out = str(Path("/opt/EL/cases/_combined") / name / "report.md")
+    out_path = Path(out)
+    written = render_combined(dirs, out_path, name=name)
+    console.print(
+        f"[green]wrote combined report:[/green] {written}\n"
+        f"  cases: {len(dirs)}\n"
+        f"  (open in your Markdown viewer of choice)")
 
 
 _SYSTEMD_UNIT_TEMPLATE = """\
