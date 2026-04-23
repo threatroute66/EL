@@ -29,7 +29,10 @@ from pathlib import Path
 
 from el.intel.attack_tactics import TACTICS, group_by_tactic
 from el.reporting.graph_export import export_graph
-from el.reporting.narrative import synthesize as _narrative_synth
+from el.reporting.narrative import (
+    evidence_time as _nar_evidence_time,
+    synthesize as _narrative_synth,
+)
 from el.schemas.finding import Finding
 
 
@@ -208,6 +211,33 @@ aside.drawer .evidence-item .sha { color: #484f58; font-size: 11px; margin-top: 
 .tl-item.conf-low .cnf     { background: #58a6ff; color: white; }
 .tl-item.conf-insufficient .cnf { background: #484f58; color: #c9d1d9; }
 .tl-item .claim { margin-top: 4px; color: #e6edf3; font-size: 13px; }
+
+/* Attack Timeline — ordered by artifact time, not EL wall clock */
+.attack-tl { border-left: 2px solid #f85149; margin-left: 24px;
+    padding-left: 20px; margin-top: 16px; }
+.atl-item { position: relative; margin-bottom: 10px; background: #161b22;
+    border: 1px solid #30363d; border-left: 3px solid #f85149;
+    border-radius: 4px; padding: 10px 14px; cursor: pointer; transition: background 0.1s; }
+.atl-item:hover { background: #1c2128; border-color: #f85149; }
+.atl-item::before { content: ""; position: absolute; left: -30px; top: 18px;
+    width: 12px; height: 12px; background: #f85149; border: 3px solid #0d1117;
+    border-radius: 50%; }
+.atl-item.conf-medium::before { background: #d29922; }
+.atl-item.conf-low::before { background: #58a6ff; }
+.atl-item .evtime { font-family: monospace; color: #f0f6fc; font-size: 13px;
+    font-weight: 600; background: #21262d; padding: 2px 8px;
+    border-radius: 3px; margin-right: 10px; }
+.atl-item .agent { color: #7ee787; font-family: monospace; font-size: 11px;
+    margin-right: 8px; }
+.atl-item .cnf { font-size: 10px; padding: 1px 6px; border-radius: 8px;
+    font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; }
+.atl-item.conf-high .cnf    { background: #f85149; color: white; }
+.atl-item.conf-medium .cnf  { background: #d29922; }
+.atl-item.conf-low .cnf     { background: #58a6ff; color: white; }
+.atl-item .claim { margin-top: 6px; color: #e6edf3; font-size: 13px; }
+.atl-empty { color: #8b949e; font-style: italic; padding: 16px;
+    background: #161b22; border: 1px dashed #30363d; border-radius: 6px;
+    margin-top: 10px; font-size: 13px; }
 
 /* Diagnostic findings (Heuer — high score-delta spread) */
 .diagnostic-list { margin-top: 16px; display: flex; flex-direction: column; gap: 8px; }
@@ -631,6 +661,36 @@ _JS = r"""
     });
   }
 
+  function renderAttackTimeline() {
+    // Ordered by artifact time (evidence_time), NOT EL's wall clock.
+    // Only includes findings that have a reconstructed artifact
+    // timestamp in their extracted_facts — i.e. events we can place
+    // on a real-world clock. Excludes insufficient-confidence
+    // findings (those document gaps, not malicious events).
+    const pane = document.getElementById("atl-list");
+    if (!pane) return;
+    const timed = data.findings
+      .filter(f => f.evidence_time && f.confidence !== "insufficient")
+      .sort((a, b) =>
+        a.evidence_time.localeCompare(b.evidence_time) ||
+        a.finding_id.localeCompare(b.finding_id));
+    if (!timed.length) {
+      pane.innerHTML = '<div class="atl-empty">No artifact-timestamped events found. Events that carry a real-world timestamp (EVTX EID records, file creation/modification times, lateral-movement sightings, email send times) land here once an agent extracts one.</div>';
+      return;
+    }
+    pane.innerHTML = timed.map(f => `
+      <div class="atl-item conf-${f.confidence}" data-fid="${esc(f.finding_id)}">
+        <span class="evtime">${esc(f.evidence_time.replace("T"," ").replace(/\+.*$/, "").slice(0,19))}</span>
+        <span class="agent">${esc(f.agent)}</span>
+        <span class="cnf">${esc(f.confidence)}</span>
+        <div class="claim">${esc(f.claim)}</div>
+      </div>`).join("");
+    pane.querySelectorAll(".atl-item").forEach(el => {
+      el.addEventListener("click", () =>
+        openDrawer(findingsById[el.dataset.fid]));
+    });
+  }
+
   function renderDiagnostic() {
     const pane = document.getElementById("diag-list");
     if (!pane) return;
@@ -723,6 +783,7 @@ _JS = r"""
   renderFindings();
   renderGraph();
   renderTimeline();
+  renderAttackTimeline();
   renderDiagnostic();
   renderAchMatrix();
 
@@ -994,6 +1055,12 @@ def _finding_to_dict(f: Finding) -> dict:
         } if rr else None,
         "created_utc": f.created_utc.isoformat()
                           if getattr(f, "created_utc", None) else "",
+        # Artifact time — when the evidence actually happened, mined
+        # from extracted_facts (ts_utc / create_time / LoadTime / etc.).
+        # Drives the Attack Timeline view (distinct from the
+        # Discovery Timeline which uses created_utc above).
+        "evidence_time": (_nar_evidence_time(f).isoformat()
+                          if _nar_evidence_time(f) else ""),
     }
 
 
@@ -1145,6 +1212,7 @@ def render_html(
     <a href="#summary">Summary</a>
     <a href="#ach">ACH</a>
     <a href="#timeline">Timeline</a>
+    <a href="#attack-timeline">Attack</a>
     <a href="#diagnostic">Diagnostic</a>
     <a href="#matrix">Matrix</a>
     <a href="#graph">Graph</a>
@@ -1178,8 +1246,13 @@ def render_html(
 </section>
 
 <section id="timeline">
-  <h2>Timeline <span class="count">(findings in chronological order of discovery — click to open detail)</span></h2>
+  <h2>Discovery Timeline <span class="count">(findings in chronological order of discovery — click to open detail)</span></h2>
   <div class="timeline" id="tl-list"></div>
+</section>
+
+<section id="attack-timeline">
+  <h2>Attack Event Timeline <span class="count">(ordered by artifact timestamp — when the event ACTUALLY happened, not when EL recorded it. Only findings with an extracted real-world time; insufficient-confidence rows excluded)</span></h2>
+  <div class="attack-tl" id="atl-list"></div>
 </section>
 
 <section id="diagnostic">
