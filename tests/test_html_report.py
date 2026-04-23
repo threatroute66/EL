@@ -138,6 +138,37 @@ def test_render_tier3_heatmap_groups_by_tactic(tmp_path):
     assert "heat3" in text or "heat4" in text
 
 
+def test_attack_table_counts_are_clickable(tmp_path):
+    """ATT&CK count cells should render as clickable anchors with a
+    data-tid attribute so the JS openTechniqueDrawer can pop a rollup
+    of the supporting findings. Zero-count techniques stay static."""
+    techniques = {
+        "T1003.001": {"name": "LSASS Memory",
+                       "evidence_finding_ids": ["a", "b", "c"]},
+        "T1059.001": {"name": "PowerShell",
+                       "evidence_finding_ids": []},   # zero — no link
+    }
+    out = render_html(tmp_path, "t-attlink", {"case_id": "t-attlink"},
+                      findings=[_mk_finding()], techniques=techniques)
+    text = out.read_text()
+    # Flat ATT&CK table: non-zero count clickable, zero static
+    assert 'class="tech-count" data-tid="T1003.001"' in text
+    assert '>3</a>' in text              # the count rendered as link text
+    # Zero-count technique stays as plain text, no tech-count anchor on it
+    assert 'data-tid="T1059.001"' not in text
+    # Heatmap non-zero count also clickable
+    assert 'fcount heat2 tech-count' in text
+    # JS drawer opener present
+    assert 'openTechniqueDrawer' in text
+    # techniques map embedded in the data block
+    import re, json
+    m = re.search(r'<script id="data" type="application/json">(.+?)</script>',
+                   text, re.DOTALL)
+    data = json.loads(m.group(1))
+    assert data["techniques"]["T1003.001"]["evidence_finding_ids"] == \
+           ["a", "b", "c"]
+
+
 def test_render_tier3_diamond_projection(tmp_path):
     """Tier 3: Diamond vertices populated from supporting findings + IOCs."""
     findings = [

@@ -136,6 +136,14 @@ table.attack td { padding: 8px 12px; border-bottom: 1px solid #21262d; font-size
 table.attack td.tid { font-family: monospace; color: #58a6ff; width: 120px; }
 table.attack td.tid a { color: #58a6ff; text-decoration: none; }
 table.attack td.tid a:hover { text-decoration: underline; }
+table.attack a.tech-count { color: #f0f6fc; background: #238636;
+    padding: 1px 8px; border-radius: 4px; text-decoration: none;
+    font-family: monospace; font-size: 12px; font-weight: 600; }
+table.attack a.tech-count:hover { background: #2ea043;
+    box-shadow: 0 0 0 2px #58a6ff; }
+a.fcount.tech-count { text-decoration: none; }
+a.fcount.tech-count:hover { outline: 2px solid #58a6ff;
+    outline-offset: 1px; }
 
 /* Detail drawer */
 aside.drawer { position: fixed; top: 0; right: 0; width: 520px; height: 100vh;
@@ -780,6 +788,53 @@ _JS = r"""
   document.getElementById("close-drawer").addEventListener("click", closeDrawer);
   document.addEventListener("keydown", e => { if (e.key === "Escape") closeDrawer(); });
 
+  // Technique-count click handlers — wire up every .tech-count anchor
+  // emitted by the ATT&CK table + heatmap to open the rollup drawer.
+  document.querySelectorAll(".tech-count").forEach(el => {
+    el.addEventListener("click", e => {
+      e.preventDefault();
+      openTechniqueDrawer(el.dataset.tid);
+    });
+  });
+
+  function openTechniqueDrawer(tid) {
+    const tech = (data.techniques || {})[tid];
+    const d = document.getElementById("drawer");
+    const body = document.getElementById("drawer-body");
+    if (!tech) {
+      body.innerHTML = `<h3>${esc(tid)}</h3><div class="sub">Technique metadata not found in this case's data.</div>`;
+      d.classList.add("open");
+      return;
+    }
+    const fids = tech.evidence_finding_ids || [];
+    const attackUrl = `https://attack.mitre.org/techniques/${tid.replace(".","/")}/`;
+    const rows = fids.map(fid => {
+      const f = findingsById[fid];
+      if (!f) {
+        return `<li><a class="cite" href="#${esc(fid)}" data-fid="${esc(fid)}">${esc(fid)}</a> <span style="color:#8b949e">(not in current ledger view)</span></li>`;
+      }
+      return `<li><a class="cite" href="#${esc(fid)}" data-fid="${esc(fid)}">${esc(fid)}</a> · <span style="color:#7ee787;font-family:monospace;font-size:11px">${esc(f.agent)}</span> · <span style="color:${f.confidence==="high"?"#f85149":f.confidence==="medium"?"#d29922":"#58a6ff"};font-size:11px;font-weight:600">${esc(f.confidence)}</span><div style="margin-top:3px;font-size:12px;color:#e6edf3">${esc(f.claim).slice(0, 220)}</div></li>`;
+    }).join("");
+    body.innerHTML = `
+      <h3>${esc(tid)}${tech.name ? " — " + esc(tech.name) : ""}</h3>
+      <div class="sub">ATT&amp;CK technique · ${fids.length} supporting finding(s) in this case</div>
+      <div class="field"><div class="label">MITRE ATT&amp;CK</div><div class="val"><a class="cite" href="${esc(attackUrl)}" target="_blank" rel="noopener">${esc(attackUrl)}</a></div></div>
+      <div class="field"><div class="label">Supporting findings</div><ul style="list-style-type:none;padding-left:0;margin-top:6px">${rows || '<li style="color:#8b949e">none</li>'}</ul></div>
+      <div style="margin-top:16px;color:#8b949e;font-size:11px">Click any finding ID above to drill into its evidence drawer.</div>`;
+    // Bind click-to-drill on every cite link in the list
+    body.querySelectorAll("a.cite[data-fid]").forEach(el => {
+      el.addEventListener("click", e => {
+        const fid = el.dataset.fid;
+        if (findingsById[fid]) {
+          e.preventDefault();
+          openDrawer(findingsById[fid]);
+        }
+      });
+    });
+    d.classList.add("open");
+    history.replaceState(null, "", "#technique-" + tid);
+  }
+
   renderFindings();
   renderGraph();
   renderTimeline();
@@ -919,12 +974,23 @@ def _build_attack_heatmap_html(techniques: dict[str, dict]) -> str:
             n = len(info.get("evidence_finding_ids", []))
             name = info.get("name", "")
             url = f"https://attack.mitre.org/techniques/{tid.replace('.', '/')}/"
+            # Clickable count opens the Findings drawer with a
+            # technique-rollup view (list of supporting finding_ids +
+            # click-through to each). Zero-count cells stay static.
+            count_html = (
+                f'<a class="fcount {_heat_class(n)} tech-count" '
+                f'href="#" data-tid="{html.escape(tid)}" '
+                f'title="Click to list the {n} supporting finding(s)">'
+                f'{n}</a>'
+            ) if n else (
+                f'<span class="fcount {_heat_class(n)}">{n}</span>'
+            )
             rows.append(
                 f'<div class="t-row">'
                 f'<span class="tid"><a href="{html.escape(url)}" '
                 f'target="_blank" rel="noopener">{html.escape(tid)}</a></span>'
                 f'<span class="tname">{html.escape(name)}</span>'
-                f'<span class="fcount {_heat_class(n)}">{n}</span>'
+                f'{count_html}'
                 f'</div>'
             )
         cols.append(
@@ -1104,6 +1170,17 @@ def render_html(
         "manifest": {k: str(v) for k, v in manifest.items()},
         "findings": [_finding_to_dict(f) for f in findings],
         "graph": graph,
+        # Serialisable technique map — `evidence_finding_ids` is already
+        # a list of strings; include only the keys the JS renderer uses
+        # to keep the embedded JSON tight.
+        "techniques": {
+            tid: {
+                "name": info.get("name", ""),
+                "evidence_finding_ids": list(
+                    info.get("evidence_finding_ids", [])),
+            }
+            for tid, info in techniques.items()
+        },
     }
     data_json = json.dumps(data, separators=(",", ":"))
 
@@ -1160,11 +1237,16 @@ def render_html(
     for tid, info in sorted(techniques.items()):
         url = f"https://attack.mitre.org/techniques/{tid.replace('.', '/')}/"
         n = len(info.get("evidence_finding_ids", []))
+        count_cell = (
+            f'<a class="tech-count" data-tid="{html.escape(tid)}" '
+            f'href="#" title="Click to list the {n} supporting '
+            f'finding(s)">{n}</a>'
+        ) if n else f"{n}"
         att_rows.append(
             f'<tr><td class="tid"><a href="{html.escape(url)}" '
             f'target="_blank" rel="noopener">{html.escape(tid)}</a></td>'
             f'<td>{html.escape(info.get("name", ""))}</td>'
-            f'<td>{n}</td></tr>'
+            f'<td>{count_cell}</td></tr>'
         )
     att_html = (
         '<table class="attack"><thead><tr><th>Technique</th><th>Name</th>'
