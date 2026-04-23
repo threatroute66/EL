@@ -51,6 +51,13 @@ _SHA256 = re.compile(r"(?<![A-Fa-f0-9])[A-Fa-f0-9]{64}(?![A-Fa-f0-9])")
 _EMAIL = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,24}")
 _REGKEY = re.compile(r"(?:HKLM|HKCU|HKU|HKCR|HKCC|HKEY_[A-Z_]+)\\[\\\w .${}()-]{3,}", re.IGNORECASE)
 _WINPATH = re.compile(r"(?:[A-Z]:\\(?:[^\\<>:\"|?*\r\n]+\\)*[^\\<>:\"|?*\r\n]+)")
+# Bitcoin wallet addresses. Legacy (P2PKH / P2SH) uses Base58 (no 0/O/I/l),
+# starts with '1' or '3', total length 26–35. Bech32 (native segwit) uses
+# the HRP 'bc' + '1' separator + data charset and totals 42–62 chars in
+# practice. Seen on BelkaCTF Kidnapper — dealer's wallets embedded in
+# user notes and mbox attachments.
+_BTC_LEGACY = re.compile(r"(?<![A-Za-z0-9])[13][1-9A-HJ-NP-Za-km-z]{25,34}(?![A-Za-z0-9])")
+_BTC_BECH32 = re.compile(r"(?<![a-z0-9])bc1[ac-hj-np-z02-9]{25,60}(?![a-z0-9])")
 
 _FILE_EXT_TLDS = {
     "pcap", "pcapng", "exe", "ex", "dll", "sys", "bin", "raw", "mem", "vmem", "lime",
@@ -222,7 +229,24 @@ def _filter_domains(domains: Iterable[str]) -> set[str]:
 
 
 _EMPTY_IOCS = {k: set() for k in ("ipv4", "ipv6", "domain", "url", "md5", "sha1",
-                                   "sha256", "email", "regkey", "winpath")}
+                                   "sha256", "email", "regkey", "winpath", "btc")}
+
+
+def _filter_btc_legacy(addrs: set[str]) -> set[str]:
+    """Base58 regex yields plenty of noise (random tokens, short hex strings,
+    bearer tokens). Real BTC legacy addresses are mixed alphanumeric with at
+    least one digit AND both cases AND one uppercase in the body."""
+    out: set[str] = set()
+    for a in addrs:
+        body = a[1:]
+        if not any(c.isdigit() for c in body):
+            continue
+        if not any(c.isupper() for c in body):
+            continue
+        if not any(c.islower() for c in body):
+            continue
+        out.add(a)
+    return out
 
 
 def extract(text: str, drop_noise: bool = True,
@@ -263,7 +287,7 @@ def extract(text: str, drop_noise: bool = True,
             sha1 = sha1 - {h for h in sha1 if len(h) != 40}
         return {"ipv4": ipv4, "ipv6": ipv6, "domain": set(), "url": set(),
                 "md5": md5, "sha1": sha1, "sha256": sha256, "email": set(),
-                "regkey": regkey, "winpath": winpath}
+                "regkey": regkey, "winpath": winpath, "btc": set()}
 
     ipv4 = set(_IPV4.findall(t))
     ipv6 = {m for m in _IPV6.findall(t) if ":" in m and len(m) > 4}
@@ -279,16 +303,20 @@ def extract(text: str, drop_noise: bool = True,
     email = set(_EMAIL.findall(t))
     regkey = set(m.rstrip("\\") for m in _REGKEY.findall(t))
     winpath = set(_WINPATH.findall(t))
+    btc_legacy = set(_BTC_LEGACY.findall(t))
+    btc_bech32 = set(_BTC_BECH32.findall(t))
 
     if drop_noise:
         ipv4 = _filter_ipv4(ipv4)
         domain = _filter_domains(domain)
         sha1 = sha1 - {h for h in sha1 if len(h) != 40}
         url = {u for u in url if not any(_filter_domains({u.split('/')[2]}) == set() for _ in [0])}
+        btc_legacy = _filter_btc_legacy(btc_legacy)
+    btc = btc_legacy | btc_bech32
 
     return {"ipv4": ipv4, "ipv6": ipv6, "domain": domain, "url": url,
             "md5": md5, "sha1": sha1, "sha256": sha256, "email": email,
-            "regkey": regkey, "winpath": winpath}
+            "regkey": regkey, "winpath": winpath, "btc": btc}
 
 
 # Path shapes that are exclusively filesystem path listings — for these we

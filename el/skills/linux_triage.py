@@ -100,6 +100,39 @@ _SHELL_PATTERNS: dict[str, tuple[str, ...]] = {
         r"\blazagne\b",
         r"/var/lib/kdc/principal",
     ),
+    # Concealment / anti-forensic / manual-crypto commands — the
+    # BelkaCTF-Kidnapper-style user-illicit-activity signature. These
+    # are NOT typical intrusion tools; they indicate a user
+    # deliberately hiding evidence (extension-mangling, packing into
+    # encrypted archives, encoding payloads for later decode).
+    "concealment_tooling": (
+        r"\bhexedit\b",                            # raw-byte patching
+        r"\bxxd\s+-r\b",                           # hex → binary patching
+        r"\bzip2john\b",                           # prep for john
+        r"\bjohn\s+.*\.(?:zip|rar|7z|pdf)\b",      # john cracking container
+        r"\bhashcat\s+.*\.(?:zip|rar|7z|pdf)\b",
+        r"\b(?:openssl\s+enc|gpg\s+-c)\b",          # manual symmetric crypto
+        r"\bbase32\s+(?:-d|--decode)\b",           # base32 decoder usage
+        r"\b(?:rot13|tr\s+['\"]?A-Za-z['\"]?)\b",  # rot13-style transforms
+        r"\b(?:shred|wipe)\s+.*\w",                # tracks-erasure
+        r"\bchattr\s+\+[aiu]\b",                   # set immutable/append-only/undeletable
+        r"\bsteghide\b",
+        r"\boutguess\b",
+        r"\bzsteg\b",
+        r"\bexiftool\s+.*\s+-(?:Comment|UserComment)=",  # metadata write
+    ),
+    # Password-cracker tooling presence — seeing a 10-million-password
+    # list or rockyou.txt in a user directory or command line is an
+    # operational tell for offline password recovery, which directly
+    # implies targeting an encrypted archive / document.
+    "cracker_tooling": (
+        r"\b10-million-password-list(?:-top-\d+)?\.txt\b",
+        r"\brockyou\.txt\b",
+        r"\bSecLists/Passwords\b",
+        r"\bcrackstation\.txt\b",
+        r"\bweakpass\b",
+        r"\bhashes\.org\b",
+    ),
 }
 
 
@@ -116,6 +149,10 @@ _FAMILY_HYPOTHESES: dict[str, list[str]] = {
     "priv_esc":         ["H_APT_ESPIONAGE",
                           "H_LIVING_OFF_THE_LAND"],
     "credential_access": ["H_CREDENTIAL_ACCESS", "H_APT_ESPIONAGE"],
+    "concealment_tooling": ["H_INSIDER_DATA_EXFIL",
+                              "H_OPPORTUNISTIC_COMMODITY"],
+    "cracker_tooling":    ["H_CREDENTIAL_ACCESS",
+                              "H_INSIDER_DATA_EXFIL"],
 }
 
 
@@ -137,6 +174,12 @@ _FAMILY_ATTACK: dict[str, list[tuple[str, str]]] = {
                           "Abuse Elevation Control: Sudo and Sudo Caching")],
     "credential_access": [("T1552.001",
                            "Unsecured Credentials: Credentials In Files")],
+    "concealment_tooling": [
+        ("T1027", "Obfuscated Files or Information"),
+        ("T1070.004", "Indicator Removal: File Deletion"),
+        ("T1070.006", "Indicator Removal: Timestomp"),
+    ],
+    "cracker_tooling":    [("T1110", "Brute Force")],
 }
 
 

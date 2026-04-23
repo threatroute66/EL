@@ -113,6 +113,11 @@ class LinuxForensicatorAgent(Agent):
         out.extend(self._analyze_utmp_family(ctx, exports))
         # systemd-journal — sshd/sudo/unit-start extraction
         out.extend(self._analyze_systemd_journal(ctx, exports))
+        # Dotfile concealment directories (user parking binaries/archives/
+        # PDFs/media inside a hidden dotfile dir — BelkaCTF-Kidnapper style)
+        out.extend(self._analyze_dotfile_concealment(ctx, exports))
+        # Encrypted ZIP archives (password-locked members)
+        out.extend(self._analyze_encrypted_archives(ctx, exports))
         return out
 
     def _analyze_utmp_family(self, ctx: AgentContext,
@@ -386,5 +391,53 @@ class LinuxForensicatorAgent(Agent):
                        f"distinct invoker(s)."),
                 evidence=[ev],
                 hypotheses_supported=["H_LIVING_OFF_THE_LAND"],
+            )))
+        return out
+
+    def _analyze_dotfile_concealment(self, ctx: AgentContext,
+                                      exports: Path) -> list[Finding]:
+        """Surface dotfile directories being used to park
+        binaries / archives / office docs / media (concealment vector
+        distinct from straight malware drop sites)."""
+        from el.skills import dotfile_anomaly as da
+        hits = da.walk(exports)
+        out: list[Finding] = []
+        for h in hits:
+            ext_summary = ", ".join(f"{ext}={n}" for ext, n in
+                                     sorted(h.ext_counts.items(),
+                                            key=lambda kv: -kv[1])[:5])
+            out.append(self.emit(ctx, Finding(
+                case_id=ctx.case_id, agent=self.name, confidence="medium",
+                claim=(f"Dotfile concealment: {h.dotfile_dir.name} "
+                       f"(user={h.user}) holds {h.suspicious_count} "
+                       f"non-config file(s) out of {h.total_files}: "
+                       f"{ext_summary}. Dotfile dirs outside the known "
+                       f"config/cache allow-list rarely carry archives / "
+                       f"PDFs / media in normal use."),
+                evidence=[h.as_evidence()],
+                hypotheses_supported=["H_INSIDER_DATA_EXFIL",
+                                       "H_OPPORTUNISTIC_COMMODITY"],
+            )))
+        return out
+
+    def _analyze_encrypted_archives(self, ctx: AgentContext,
+                                     exports: Path) -> list[Finding]:
+        """Flag ZIP archives containing password-protected entries."""
+        from el.skills import encrypted_archive as ea
+        hits = ea.walk(exports)
+        out: list[Finding] = []
+        for h in hits:
+            sample = ", ".join(h.encrypted_members[:3])
+            out.append(self.emit(ctx, Finding(
+                case_id=ctx.case_id, agent=self.name, confidence="medium",
+                claim=(f"Encrypted archive: {h.archive_path.name} contains "
+                       f"{h.encrypted_count}/{h.total_members} "
+                       f"password-protected member(s): {sample}"
+                       f"{' …' if h.encrypted_count > 3 else ''}. "
+                       f"Encrypted ZIPs on a user desktop are an "
+                       f"anti-forensic signal — ordinary workflows rarely "
+                       f"produce them."),
+                evidence=[h.as_evidence()],
+                hypotheses_supported=["H_INSIDER_DATA_EXFIL"],
             )))
         return out

