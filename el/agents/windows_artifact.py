@@ -154,7 +154,9 @@ class WindowsArtifactAgent(Agent):
     def _evtx(self, ctx, root, analysis):
         d = _finddir(root, "evtx", "Logs", "winevt")
         if not d:
-            d = root if any(p.suffix.lower() == ".evtx" for p in root.rglob("*.evtx")) else None
+            d = root if any(p.suffix.lower() == ".evtx"
+                             for p in root.rglob("*")
+                             if p.is_file()) else None
         if d:
             return self._try(ctx, f"EvtxECmd ({d.name})",
                              lambda: ezt.run_evtxecmd(d, analysis / "evtx"))
@@ -164,8 +166,11 @@ class WindowsArtifactAgent(Agent):
         # because no evtx_parsed.csv existed. Converting the three
         # standard .evt files (SecEvent, AppEvent, SysEvent) into an
         # EvtxECmd-shaped CSV lets the downstream agents consume them.
-        evt_files = sorted(list(root.rglob("*.evt"))
-                           + list(root.rglob("*.EVT")))
+        # Case-insensitive suffix match so we catch XP's `SecEvent.Evt`
+        # / `.EVT` / etc. on case-sensitive Linux filesystems.
+        evt_files = sorted([p for p in root.rglob("*")
+                            if p.is_file()
+                            and p.suffix.lower() == ".evt"])
         if evt_files:
             return self._convert_xp_evt(ctx, evt_files, analysis)
         return []

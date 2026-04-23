@@ -190,21 +190,37 @@ def flag_suspects(items: list[IEItem]) -> list[IESuspect]:
 def find_index_dat_files(root: str | Path,
                           max_files: int = 200) -> list[Path]:
     """Walk an extracted-NTFS mount and return every index.dat file
-    that looks like IE cache (under a Content.IE5/ subdir or directly
-    in a Temporary Internet Files/ subtree)."""
+    that looks like IE cache. Accepts both the raw on-disk layout
+    (`.../Content.IE5/index.dat`) AND EL's sleuthkit extractor layout
+    which prepends the user + kind to the filename
+    (`ie_cache/Jean--content.ie5--index.dat`).
+    """
     root = Path(root)
     if not root.is_dir():
         return []
     found: list[Path] = []
-    for p in root.rglob("index.dat"):
+    for p in root.rglob("*"):
+        if not p.is_file():
+            continue
         if len(found) >= max_files:
             break
+        name_lc = p.name.lower()
         ps = str(p).lower()
-        if ("content.ie5" in ps
+        # Exact raw-layout match
+        if name_lc == "index.dat" and (
+                "content.ie5" in ps
                 or "temporary internet files" in ps
                 or "history.ie5" in ps
                 or "cookies" in ps):
             found.append(p)
+            continue
+        # EL-extractor-renamed layout (--content.ie5--index.dat etc.)
+        if name_lc.endswith("--index.dat") or name_lc.endswith("-index.dat"):
+            if ("content.ie5" in name_lc
+                    or "history.ie5" in name_lc
+                    or "cookies" in name_lc
+                    or "ie_cache" in ps):
+                found.append(p)
     return found
 
 

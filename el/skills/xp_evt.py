@@ -83,38 +83,57 @@ def _export_stdout(evt_path: Path, out_dir: Path,
 
 
 _EVENT_HEAD_RE = re.compile(
-    r"^Event record:\s*(\d+)\s*of\s*(\d+)", re.MULTILINE)
-_KV_RE = re.compile(r"^([\w ()]+?):\s*(.*)$", re.MULTILINE)
+    r"^Event number\s*:\s*(\d+)", re.MULTILINE)
+_KV_RE = re.compile(
+    r"^([\w ()]+?)\s*:\s*(.*)$", re.MULTILINE)
+_STRING_RE = re.compile(
+    r"^String:\s*(\d+)\s*:\s*(.*)$", re.MULTILINE)
+_EVENT_ID_RE = re.compile(r"\((\d+)\)")
 
 
 def _parse_records(text: str) -> list[dict]:
     """Split evtexport stdout into per-record dicts. Format is:
 
-        Event record: <N> of <M>
-            Event identifier               : 4624
-            Creation time                  : Jul 18, 2008 05:28:48.000
-            Source name                    : Security
-            Computer name                  : JEAN-PC
-            ...
+        Event number            : 1
+        Creation time           : May 13, 2008 21:23:42 UTC
+        Written time            : May 13, 2008 21:23:42 UTC
+        Event type              : Information event (4)
+        Computer name           : JEAN-13FBF038A3
+        Source name             : LoadPerf
+        Event category          : 0
+        Event identifier        : 0x400003e8 (1073742824)
+        Number of strings       : 2
+        String: 1               : RSVP
+        String: 2               : QoS RSVP
 
     One blank line separates records."""
     records: list[dict] = []
-    # Split on Event-record headers so each chunk is one event
-    chunks = _EVENT_HEAD_RE.split(text)
-    # After split: [header_prefix, rec_n, total_n, chunk_body, rec_n, ...]
-    # Walk in groups of 3 post-index-0
-    for i in range(1, len(chunks) - 2, 3):
-        rec_id = chunks[i]
-        body = chunks[i + 2]
-        if not body:
-            continue
-        fields: dict[str, str] = {"record_number": rec_id.strip()}
-        for m in _KV_RE.finditer(body):
-            k = m.group(1).strip().lower().replace(" ", "_")
+    # Split text into per-record chunks by locating "Event number" lines
+    header_positions = [m.start() for m in _EVENT_HEAD_RE.finditer(text)]
+    if not header_positions:
+        return records
+    # Append end-of-text so the last record slices cleanly
+    header_positions.append(len(text))
+    for idx in range(len(header_positions) - 1):
+        chunk = text[header_positions[idx]:header_positions[idx + 1]]
+        fields: dict[str, str] = {}
+        # Extract numbered strings first (String: 1, String: 2, …)
+        for sm in _STRING_RE.finditer(chunk):
+            fields[f"string_{sm.group(1)}"] = sm.group(2).strip()
+        # Then general key:value pairs. Skip string lines (already captured).
+        for m in _KV_RE.finditer(chunk):
+            raw_k = m.group(1).strip()
+            if raw_k.lower().startswith("string"):
+                continue
+            k = raw_k.lower().replace(" ", "_")
             v = m.group(2).strip()
-            # First occurrence wins (later lines are Strings/Data)
             if k not in fields:
                 fields[k] = v
+        # Normalise event-identifier to just the decimal number
+        eid = fields.get("event_identifier", "")
+        m = _EVENT_ID_RE.search(eid)
+        if m:
+            fields["event_identifier"] = m.group(1)
         records.append(fields)
     return records
 

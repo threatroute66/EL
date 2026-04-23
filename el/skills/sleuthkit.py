@@ -469,6 +469,39 @@ def extract_windows_artifacts(mount_point: Path, exports_dir: Path) -> dict:
                                 out["activities_cache_files"] = (
                                     out.get("activities_cache_files", 0) + 1
                                 )
+            # IE5 Content.IE5 index.dat + cached files — XP + legacy Vista/7
+            # profiles. The directory tree is:
+            #   XP    : <user>/Local Settings/Temporary Internet Files/
+            #           Content.IE5/index.dat  +
+            #           Content.IE5/<8char>/<cached>
+            #   Vista+: <user>/AppData/Local/Microsoft/Windows/
+            #           Temporary Internet Files/Content.IE5/index.dat
+            # Plus parallel History.IE5/index.dat + Cookies/index.dat.
+            # We copy only the index.dat records (the structured metadata)
+            # — not every cached file, which would balloon the export.
+            ie_dir = exports_dir / "ie_cache"
+            for ie_root_candidate in (
+                _resolve_ci(user_dir, "Local Settings",
+                             "Temporary Internet Files", "Content.IE5"),
+                _resolve_ci(user_dir, "AppData", "Local", "Microsoft",
+                             "Windows", "Temporary Internet Files",
+                             "Content.IE5"),
+                _resolve_ci(user_dir, "Local Settings", "History",
+                             "History.IE5"),
+                _resolve_ci(user_dir, "Cookies"),
+            ):
+                if not (ie_root_candidate and ie_root_candidate.is_dir()):
+                    continue
+                idx = _child_ci(ie_root_candidate, "index.dat")
+                if idx and idx.is_file():
+                    ie_dir.mkdir(parents=True, exist_ok=True)
+                    kind = ie_root_candidate.name.lower()
+                    dst = (ie_dir /
+                           f"{user_dir.name}--{kind}--index.dat")
+                    if _sudo_cp(idx, dst):
+                        out["ie_index_dat"] = (
+                            out.get("ie_index_dat", 0) + 1)
+
             # T3-3: AnyDesk per-user connection traces. TeamViewer is
             # system-wide and handled below.
             anydesk_dir = exports_dir / "remote_access" / "anydesk"
