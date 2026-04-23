@@ -72,6 +72,38 @@ class CaseSlice:
         return self.case_id
 
 
+def _dict_evidence_time(finding: dict) -> str | None:
+    """Artifact-time extractor for dict-shaped findings (parallel to
+    narrative.evidence_time() which operates on Pydantic Finding
+    objects). Returns the earliest real-world timestamp mined from any
+    evidence item's extracted_facts, or None if no artifact timestamp
+    is embedded — those findings cannot be placed on the Unified
+    Findings Timeline. Uses the same _TIME_KEYS vocabulary as
+    narrative.py so both surfaces stay consistent."""
+    # Same key set as el.reporting.narrative._TIME_KEYS — keep in sync.
+    TIME_KEYS = (
+        "ts_utc", "timestamp", "timestamp_utc",
+        "create_time", "create_utc", "CreateTime",
+        "last_write_utc", "last_write",
+        "LoadTime", "Modified", "modified_utc",
+        "earliest_ts", "first_seen_utc",
+        "mactime_earliest", "m_earliest",
+        "event_time_utc", "logon_time_utc",
+        "observed_utc",
+    )
+    candidates: list[str] = []
+    for ev in (finding.get("evidence") or []):
+        facts = ev.get("extracted_facts") or {}
+        for k in TIME_KEYS:
+            v = facts.get(k)
+            if isinstance(v, str) and v:
+                candidates.append(v)
+    if not candidates:
+        return None
+    # Return the earliest lexicographically (ISO-8601 strings sort by time)
+    return min(candidates)
+
+
 def load_case(case_dir: Path) -> CaseSlice:
     """Hydrate a CaseSlice from the on-disk case directory."""
     case_dir = Path(case_dir)
@@ -110,6 +142,10 @@ def load_case(case_dir: Path) -> CaseSlice:
                         d.update(payload)
                     except Exception:
                         pass
+                # Resolve artifact timestamp once, stash alongside the
+                # existing 'created_utc' (EL processing time) so
+                # downstream timeline renderers can distinguish them.
+                d["evidence_time"] = _dict_evidence_time(d)
                 findings.append(d)
         finally:
             conn.close()

@@ -87,6 +87,10 @@ def test_render_combined_html_produces_complete_document(tmp_path, monkeypatch):
     # Timeline SVG + JS both present
     assert "timeline-svg" in doc
     assert "renderTimeline" in doc
+    # Unified Findings Timeline with toggle between attacker-clock and processing-clock
+    assert "Unified Findings Timeline" in doc
+    assert "Real-world attacker clock" in doc
+    assert "EL processing clock" in doc
     # Graph SVG + JS both present
     assert "graph-svg" in doc
     assert "renderGraph" in doc
@@ -105,6 +109,65 @@ def test_narrative_intro_mentions_dominant_hypothesis(tmp_path, monkeypatch):
     # Dominant (2/3 cases) = H_APT_ESPIONAGE; intro should cite it
     assert "H_APT_ESPIONAGE" in doc
     assert "lead in 2 of 3 cases" in doc
+
+
+def test_timeline_uses_artifact_time_not_processing_time(tmp_path, monkeypatch):
+    """Findings-timeline mode MUST plot the attacker's real-world clock
+    (extracted_facts['ts_utc']/'event_time_utc'/etc.), not EL's
+    processing clock (created_utc). This is the core user request:
+    see WHEN the malicious activity happened, not when EL analysed it."""
+    monkeypatch.setenv("EL_KNOWLEDGE_DB", str(tmp_path / "kb.sqlite"))
+
+    case_dir = tmp_path / "host-a"
+    (case_dir / "reports").mkdir(parents=True)
+    (case_dir / "manifest.json").write_text(json.dumps(
+        {"case_id": "host-a", "input_path": "/x",
+         "input_sha256": "0"*64}))
+    (case_dir / "ach_matrix.json").write_text(json.dumps(
+        {"ranking": [{"hyp_id": "H_APT_ESPIONAGE", "name": "X",
+                       "score": 10, "support_count": 1, "refute_count": 0}],
+         "matrix": []}))
+    (case_dir / "iocs.json").write_text("{}")
+    conn = sqlite3.connect(case_dir / "findings.sqlite")
+    conn.execute("""CREATE TABLE findings (
+        finding_id TEXT PRIMARY KEY, case_id TEXT, agent TEXT,
+        claim TEXT, confidence TEXT, created_utc TEXT, payload_json TEXT)""")
+    # A finding with artifact timestamp = 2012-04-04 (real attacker time)
+    # but processing time = 2026-04-23 (EL's wall clock)
+    payload = {
+        "hypotheses_supported": ["H_APT_ESPIONAGE"],
+        "evidence": [{
+            "tool": "chainsaw", "version": "2.0", "command": "chainsaw",
+            "output_sha256": "0"*64, "output_path": "/x",
+            "extracted_facts": {
+                "ts_utc": "2012-04-04T17:29:33Z",
+                "eid": "7045"},
+        }],
+    }
+    conn.execute(
+        "INSERT INTO findings VALUES (?,?,?,?,?,?,?)",
+        ("f1", "host-a", "lateral_movement", "PsExec installed",
+          "high", "2026-04-23T00:00:00Z", json.dumps(payload)))
+    conn.commit()
+    conn.close()
+    (case_dir / "reports" / "report.md").write_text("# x\n")
+
+    out = tmp_path / "c.html"
+    render_combined_html([case_dir], out, name="t")
+    doc = out.read_text()
+
+    # The findings timeline must carry the 2012 artifact time, NOT 2026
+    import re
+    m = re.search(r'const DATA = (.*?);\s*\n', doc, re.DOTALL)
+    assert m
+    data = json.loads(m.group(1))
+    ft = data["findings_timeline"]
+    assert len(ft) == 1
+    assert ft[0]["ts"] == "2012-04-04T17:29:33Z", \
+        f"expected artifact time; got {ft[0]['ts']}"
+    # processing timeline keeps the 2026 EL clock
+    pt = data["processing_timeline"]
+    assert pt[0]["ts"].startswith("2026-04-23")
 
 
 def test_render_without_narrative_md_still_works(tmp_path, monkeypatch):

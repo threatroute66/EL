@@ -92,6 +92,12 @@ table td.num { text-align: right; font-variant-numeric: tabular-nums; }
 .sig-matrix td.signame { color: #c9d1d9; font-weight: 500; }
 
 /* Timeline swim-lane */
+.tl-toggle { background: #161b22; border: 1px solid #30363d; color: #c9d1d9;
+    padding: 6px 12px; border-radius: 4px; font-size: 12px; cursor: pointer;
+    margin-right: 6px; }
+.tl-toggle:hover { border-color: #58a6ff; color: #58a6ff; }
+.tl-toggle.active { background: #58a6ff; color: #0d1117; border-color: #58a6ff;
+    font-weight: 600; }
 #timeline-svg { width: 100%; height: 360px; background: #0d1117;
     border: 1px solid #21262d; border-radius: 6px; display: block; }
 .tl-lane-label { fill: #8b949e; font-size: 11px; font-family: "SF Mono", monospace; }
@@ -174,14 +180,34 @@ def _joint_ach(cases: list[CaseSlice]) -> dict:
             if any(v != 0 for v in row.values())}
 
 
-def _timeline_events(cases: list[CaseSlice]) -> list[dict]:
-    """Flatten all findings into one event stream, one lane per case."""
+def _timeline_events(cases: list[CaseSlice],
+                      mode: str = "findings") -> list[dict]:
+    """Flatten all findings into one event stream, one lane per case.
+
+    Two modes:
+      - "findings" (default): uses `evidence_time` — the real artifact
+        timestamp embedded in the finding's evidence. This is the
+        attacker's clock, not EL's. Only findings that carry an
+        extractable artifact timestamp appear; insufficient findings
+        are excluded.
+      - "processing": uses `created_utc` — when EL emitted the finding
+        (the forensic-process timeline). Every timestamped finding
+        appears regardless of whether the evidence carries a real
+        event time.
+    """
     events = []
     for c in cases:
         for f in c.findings:
-            ts = f.get("created_utc")
-            if not ts:
-                continue
+            if mode == "findings":
+                ts = f.get("evidence_time")
+                if not ts:
+                    continue
+                if f.get("confidence") == "insufficient":
+                    continue
+            else:
+                ts = f.get("created_utc")
+                if not ts:
+                    continue
             conf = f.get("confidence", "low")
             events.append({
                 "case_id": c.case_id,
@@ -427,12 +453,23 @@ const DATA = __DATA_JSON__;
 // ---------------------------------------------------------------------------
 // Unified timeline (SVG swim-lane)
 // ---------------------------------------------------------------------------
+let _tlMode = "findings";  // "findings" = artifact time, "processing" = EL wall clock
 function renderTimeline() {
   const svg = document.getElementById("timeline-svg");
   if (!svg) return;
-  const events = DATA.timeline || [];
+  const events = _tlMode === "processing"
+    ? (DATA.processing_timeline || [])
+    : (DATA.findings_timeline || []);
+  const status = document.getElementById("tl-status");
+  if (status) {
+    const total = _tlMode === "processing"
+      ? events.length
+      : `${events.length} of ${DATA.counts.findings} (${Math.round(100*events.length/(DATA.counts.findings||1))}% carry an artifact timestamp)`;
+    status.textContent = `${events.length ? events.length : 0} events · ${_tlMode === "findings" ? "real-world attacker clock" : "EL processing clock"}` +
+      (_tlMode === "findings" && DATA.counts.findings ? ` · ${events.length}/${DATA.counts.findings} findings have an extractable artifact timestamp` : "");
+  }
   if (!events.length) {
-    svg.innerHTML = '<text x="20" y="40" class="tl-axis-text">No timestamped findings.</text>';
+    svg.innerHTML = `<text x="20" y="40" class="tl-axis-text">${_tlMode === "findings" ? "No findings carry an extractable artifact timestamp. Switch to the Processing clock to see all emitted findings." : "No timestamped findings."}</text>`;
     return;
   }
   const lanes = DATA.lanes;   // [{case_id, host_label}, ...]
@@ -589,7 +626,17 @@ function showTT(evt, e) {
 }
 function hideTT() { if (_tt) { _tt.remove(); _tt = null; } }
 
+function setupTimelineToggle() {
+  const btns = document.querySelectorAll("[data-tl-mode]");
+  btns.forEach(b => b.addEventListener("click", () => {
+    _tlMode = b.dataset.tlMode;
+    btns.forEach(x => x.classList.toggle("active", x === b));
+    renderTimeline();
+  }));
+}
+
 window.addEventListener("DOMContentLoaded", () => {
+  setupTimelineToggle();
   renderTimeline();
   renderGraph();
   window.addEventListener("resize", () => { renderTimeline(); renderGraph(); });
@@ -612,7 +659,13 @@ def render_combined_html(
 
     joint = _joint_ach(cases)
     techniques = _technique_union(cases)
-    timeline = _timeline_events(cases)
+    # Two timelines:
+    #   * findings_timeline — artifact-time events (what the attacker
+    #     did, WHEN it happened in the source data). Primary view.
+    #   * processing_timeline — EL's per-finding created_utc (when EL
+    #     analysed the artifact). Secondary view, toggle in the UI.
+    findings_timeline = _timeline_events(cases, mode="findings")
+    processing_timeline = _timeline_events(cases, mode="processing")
     lanes = [{"case_id": c.case_id, "host_label": c.host_label}
               for c in cases]
     graph = _merged_graph(cases)
@@ -627,12 +680,14 @@ def render_combined_html(
         "name": name,
         "generated_utc": datetime.now(timezone.utc).isoformat(),
         "lanes": lanes,
-        "timeline": timeline,
+        "findings_timeline": findings_timeline,
+        "processing_timeline": processing_timeline,
         "graph": graph,
         "counts": {"cases": len(cases),
                     "findings": total_findings,
                     "high": high_count,
-                    "techniques": len(techniques)},
+                    "techniques": len(techniques),
+                    "timestamped_findings": len(findings_timeline)},
     }
     data_json = json.dumps(data, separators=(",", ":"))
 
@@ -717,7 +772,7 @@ def render_combined_html(
   <a href="#hosts">Hosts</a>
   <a href="#ach">Joint ACH</a>
   <a href="#signals">Signal matrix</a>
-  <a href="#timeline">Timeline</a>
+  <a href="#timeline">Findings timeline</a>
   <a href="#graph">Graph</a>
   <a href="#attack">ATT&amp;CK</a>
   <a href="#iocs">IOC overlap</a>
@@ -754,8 +809,24 @@ def render_combined_html(
 </section>
 
 <section id="timeline">
-  <h2>Unified Event Timeline</h2>
-  <p style="color:#8b949e">One swim-lane per case. Dot colour = confidence (<span style="color:#f85149">high</span>, <span style="color:#d29922">medium</span>, <span style="color:#58a6ff">low</span>, <span style="color:#484f58">insufficient</span>). Hover for finding details.</p>
+  <h2>Unified Findings Timeline</h2>
+  <p style="color:#8b949e">
+    One swim-lane per case. Default view shows every finding on the
+    <b>real-world attacker clock</b> (artifact timestamps mined from
+    evidence <code>extracted_facts</code> — EID record times, file
+    MACB times, logon timestamps, etc.). Toggle to <b>Processing
+    clock</b> to see findings on EL's wall clock (when each finding
+    was emitted during analysis). Dot colour = confidence
+    (<span style="color:#f85149">high</span>,
+    <span style="color:#d29922">medium</span>,
+    <span style="color:#58a6ff">low</span>,
+    <span style="color:#484f58">insufficient</span>). Hover for details.
+  </p>
+  <div style="margin-bottom:10px">
+    <button class="tl-toggle active" data-tl-mode="findings">Real-world attacker clock</button>
+    <button class="tl-toggle" data-tl-mode="processing">EL processing clock</button>
+    <span id="tl-status" style="margin-left:14px;color:#8b949e;font-size:12px"></span>
+  </div>
   <svg id="timeline-svg"></svg>
 </section>
 
