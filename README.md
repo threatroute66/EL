@@ -56,40 +56,84 @@ guess.**
 
 ## Architecture
 
-```
-                ┌────────────────┐
-   Evidence ─▶  │   Coordinator  │  state machine
-                └────────┬───────┘  intake → triage → hypothesis_gen →
-                         │          parallel_investigate → correlate →
-                         ▼          adversarial_review → synthesize →
-              ┌──────────────────┐  report → done   (or → blocked)
-              │     Triage       │
-              │  (route by kind) │
-              └─────────┬────────┘
-                        │
-        ┌───────────────┴────────────────┐
-        ▼                                ▼
-   Specialist agents              ThreatHunter (YARA sweep
-   (one per evidence kind)        from extracted IOCs)
-        │
-        ▼
-    Kùzu graph + SQLite findings ledger
-        │
-        ▼
-   ┌──────────────────┐
-   │   Correlator     │  cross-agent shared-entity queries
-   └─────────┬────────┘
-             ▼
-   ┌──────────────────┐
-   │  ACH Engine      │  10 hypotheses × all findings → ranking
-   └─────────┬────────┘
-             ▼
-   ┌──────────────────┐
-   │  Red Reviewer    │  rule-based challenger (always)
-   │                  │  + LLM challenger (if ANTHROPIC_API_KEY)
-   └─────────┬────────┘
-             ▼
-       Reporter → MD report + STIX 2.1 + findings.json
+```mermaid
+flowchart TB
+    subgraph INPUTS["Evidence inputs (12 validated types)"]
+        direction LR
+        IN_MEM["memory image<br/>(.raw / .vmem / .mdd)"]
+        IN_DISK["disk image<br/>E01 / raw / NTFS / ext4 / APFS"]
+        IN_PCAP["pcap / pcapng"]
+        IN_LOG["EVTX / .evt /<br/>CloudTrail / Entra / M365"]
+        IN_FS["FS tree<br/>Windows / Linux / macOS /<br/>Android / iOS"]
+        IN_VELO["Velociraptor bundle"]
+    end
+
+    INTAKE["<b>Intake</b><br/>hash + manifest<br/>read-only enforcement"]
+    TRIAGE["<b>Triage</b><br/>magic bytes + directory shape<br/>sets evidence_kind"]
+    COORD{"<b>Coordinator</b><br/>state machine<br/>intake → triage → hypothesis_gen →<br/>parallel_investigate → correlate →<br/>adversarial_review → synthesize → report → done"}
+
+    INPUTS --> INTAKE --> TRIAGE --> COORD
+
+    subgraph AGENTS["24 specialist agents (one per evidence kind, chained as applicable)"]
+        direction TB
+        A_MEM["MemoryForensicator<br/>18 vol3 plugins + Baseliner"]
+        A_DISK["DiskForensicator<br/>Sleuth Kit + EWF + NTFS/ext4/APFS mount"]
+        A_WIN["WindowsArtifactAgent<br/>11 EZ Tools + BAM/DAM + IE5 + XP .evt"]
+        A_LIN["LinuxForensicator<br/>utmp/wtmp/btmp + systemd-journal + cron + SSH"]
+        A_MAC["MacOSForensicator"]
+        A_AND["AndroidForensicator"]
+        A_IOS["IOSForensicator"]
+        A_NET["NetworkAnalyst<br/>scapy + Zeek replay + Kerberos"]
+        A_LOG["LogAnalyst<br/>EvtxECmd + SIGMA"]
+        A_CRED["CredentialAnalyst"]
+        A_LAT["LateralMovementAnalyst"]
+        A_PS["PowerShellAnalyst<br/>EID 4104 + 4103 + PSReadline"]
+        A_CLOUD["CloudForensicator<br/>CloudTrail / VPC / Entra / M365 / GCP"]
+        A_MAIL["EmailForensicator<br/>PST + OST + inbound phishing"]
+        A_BROWSE["BrowserForensicator"]
+        A_EXEC["ExecutionCorroborator"]
+        A_ENDP["EndpointAnalyst<br/>Velociraptor"]
+        A_TIME["TimelineSynthesist<br/>Plaso"]
+        A_HUNT["ThreatHunter<br/>YARA + stego-carrier"]
+        A_MAL["MalwareTriage<br/>capa + FLOSS + pefile + 19 families"]
+    end
+
+    COORD --> AGENTS
+
+    subgraph SHARED["Shared per-case substrate"]
+        direction LR
+        LEDGER[("findings.sqlite<br/>(Pydantic-validated)")]
+        GRAPH[("graph.kuzu<br/>Locard entities + edges")]
+        KNOW[("~/.el/knowledge.sqlite<br/>(cross-case IOC + imphash)")]
+    end
+
+    AGENTS --> LEDGER
+    AGENTS --> GRAPH
+    AGENTS -. ioc registration .-> KNOW
+
+    CORR["<b>Correlator</b><br/>cross-agent Kùzu graph queries"]
+    ACH["<b>ACH Engine</b><br/>15 hypotheses × all findings<br/>Heuer diagnostic scoring"]
+    RED["<b>Red Reviewer</b><br/>rule-based challenger (always)<br/>+ LLM (if API key) — blocks SYNTHESIZE<br/>until every unresolved Finding resolves"]
+
+    LEDGER --> CORR --> ACH --> RED
+
+    RED -- "any unresolved?" --> COORD
+    RED --> REPORT["<b>Reporter</b>"]
+
+    subgraph OUT["Judge-facing outputs (sealed at DONE)"]
+        direction LR
+        O_MD["report.md<br/>narrative.md"]
+        O_HTML["case.html<br/>(dark theme, zero CDN)"]
+        O_STIX["stix-bundle.json"]
+        O_JSON["findings.json"]
+        O_EXEC["execution_log.jsonl<br/>execution_log.md<br/><b>traceability_matrix.md</b>"]
+        O_SEAL["seal.json<br/>+ tar.gz archive"]
+    end
+
+    REPORT --> OUT
+
+    classDef sub fill:#0d1117,stroke:#30363d,color:#c9d1d9
+    class INPUTS,AGENTS,SHARED,OUT sub
 ```
 
 ### Agents
@@ -489,3 +533,47 @@ you preserve the copyright + license notices and mark any changes you
 make. Apache 2.0 also grants an express patent license from every
 contributor to every user — important for a DFIR tool that touches
 techniques some vendors hold patents on.
+
+### Third-party dependency license notices
+
+Every pip dependency EL pulls in is permissively licensed, with one
+flagged exception documented below for full disclosure.
+
+| Dependency | License | How EL uses it |
+|---|---|---|
+| `pydantic` | MIT | Finding-schema validation |
+| `kuzu` | MIT | Per-case entity-graph store |
+| `typer`, `rich` | MIT | CLI + terminal output |
+| `python-ulid` | MIT | finding_id generator |
+| `volatility3` | Volatility Software License v1.0 (MIT-compatible) | Memory forensics |
+| `anthropic` | MIT | Optional LLM Red Reviewer (only when `ANTHROPIC_API_KEY` is set) |
+| `stix2` | BSD-3-Clause | STIX 2.1 import + export |
+| `regipy` | MIT | BAM/DAM registry decoding |
+| `pefile` | MIT | PE structural deep-dive |
+| `oletools` (olevba + rtfobj) | BSD-2-Clause | Office document deobfuscation |
+| `ppdeep` | LGPL-3.0 | ssdeep fuzzy hashing (library API, not linked) |
+| `imagehash` | BSD-2-Clause | Perceptual image hashing (stego-carrier detector) |
+| **`scapy`** | **GPL-2.0** | **pcap parsing in NetworkAnalyst — flagged, see note below** |
+
+**`scapy` (GPL-2.0) — explicit flag.** Scapy is the only non-MIT/BSD/
+Apache-family dependency. EL imports scapy's public API (no forking
+of its source, no static linking) and uses it in a single wrapper
+module (`el/skills/scapy_pcap.py`) with normal Python function calls;
+the combined work is distributed under Apache-2.0 while scapy retains
+its GPL-2.0 grant. This is consistent with how other Apache-2.0
+projects (e.g. the Zeek control surface) ship scapy helpers. Operators
+who need a GPL-free installation can remove `scapy` from
+`pyproject.toml`'s `dependencies` list; `NetworkAnalyst` falls back to
+Zeek-only pcap replay (Zeek is BSD-3-Clause) and emits
+`confidence="insufficient"` only on DNS/TLS-SNI extraction, which the
+Zeek path fully covers. No runtime dependency on scapy exists outside
+`el.skills.scapy_pcap` — grep the repo to verify.
+
+Non-Python tools invoked via subprocess (Sleuth Kit / EWF tools /
+Plaso / bulk_extractor / EZ Tools / yara / evtexport / msiecfexport /
+cryptsetup / ewfmount / fsapfsmount / nfdump / journalctl) are
+installed independently on the SIFT Workstation and are governed by
+their own licenses (GPL-2 / CPL / IBM CPL / BSD / Apache / etc.). EL
+does not redistribute any of them — it only calls them via `subprocess`
+with list-form arguments. Operators are responsible for the license
+terms of the host SIFT image.
