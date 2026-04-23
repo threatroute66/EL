@@ -30,6 +30,11 @@ dependencies = [
     # Perceptual image hashing for steganography-carrier detection
     # (pairs of images visually identical but byte-different). BSD-2-Clause.
     "imagehash>=4.3",
+    # PE structural deep-dive (imphash + Rich Header + section entropy).
+    "pefile>=2024.8",
+    # Office document deobfuscation — VBA macros (olevba) + RTF
+    # embedded objects (rtfobj). BSD-2-Clause.
+    "oletools>=0.60",
 ]
 
 [project.optional-dependencies]
