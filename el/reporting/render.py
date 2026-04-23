@@ -62,6 +62,18 @@ def render_report(
         lines.append(f"_(Narrative synthesis skipped: {e})_")
         lines.append("")
 
+    # Agent execution log + traceability matrix (Find Evil 2026
+    # submission requirement: 'Judges must be able to trace any
+    # finding back to the specific tool execution that produced it.')
+    # Writes reports/execution_log.{jsonl,md} + traceability_matrix.md
+    # — aggregates existing audit log + Finding evidence items into a
+    # chronological stream, no new instrumentation required.
+    try:
+        from el.reporting.execution_log import write_all as _exec_write
+        _exec_write(case_dir)
+    except Exception:
+        pass
+
     lines.append("## Executive Summary")
     lines.append("")
     lines.append(f"- Findings recorded: **{len(findings)}** "
