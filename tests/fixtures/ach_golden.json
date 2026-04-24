@@ -1,0 +1,268 @@
+{
+  "android-asus": {
+    "finding_count": 11,
+    "leader_hyp": "H_OPPORTUNISTIC_COMMODITY",
+    "leader_score": 7,
+    "runner_hyp": "H_APT_ESPIONAGE",
+    "runner_score": 1
+  },
+  "belkactf-kidnapper": {
+    "finding_count": 58,
+    "leader_hyp": "H_OPPORTUNISTIC_COMMODITY",
+    "leader_score": 7,
+    "runner_hyp": "H_APT_ESPIONAGE",
+    "runner_score": 1
+  },
+  "flaws-cloudtrail": {
+    "finding_count": 80,
+    "leader_hyp": "H_CLOUD_PERSISTENCE",
+    "leader_score": 60,
+    "runner_hyp": "H_BEC_ACCOUNT_TAKEOVER",
+    "runner_score": 27
+  },
+  "ios14-iphonese": {
+    "finding_count": 86,
+    "leader_hyp": "H_APT_ESPIONAGE",
+    "leader_score": 0,
+    "runner_hyp": "H_BEC_ACCOUNT_TAKEOVER",
+    "runner_score": 0
+  },
+  "linux-ddcase-exh18": {
+    "finding_count": 28,
+    "leader_hyp": "H_OPPORTUNISTIC_COMMODITY",
+    "leader_score": 7,
+    "runner_hyp": "H_APT_ESPIONAGE",
+    "runner_score": 1
+  },
+  "lonewolf-disk": {
+    "finding_count": 242,
+    "leader_hyp": "H_APT_ESPIONAGE",
+    "leader_score": 21,
+    "runner_hyp": "H_OPPORTUNISTIC_COMMODITY",
+    "runner_score": 18
+  },
+  "lonewolf-memory": {
+    "finding_count": 196,
+    "leader_hyp": "H_C2_BEACONING",
+    "leader_score": 11,
+    "runner_hyp": "H_APT_ESPIONAGE",
+    "runner_score": 0
+  },
+  "m57-jean": {
+    "finding_count": 203,
+    "leader_hyp": "H_BEC_ACCOUNT_TAKEOVER",
+    "leader_score": 57,
+    "runner_hyp": "H_INSIDER_EMAIL_EXFIL",
+    "runner_score": 13
+  },
+  "macos-bigsur": {
+    "finding_count": 7,
+    "leader_hyp": "H_APT_ESPIONAGE",
+    "leader_score": 0,
+    "runner_hyp": "H_BEC_ACCOUNT_TAKEOVER",
+    "runner_score": 0
+  },
+  "raw-audit-logs": {
+    "finding_count": 11,
+    "leader_hyp": "H_APT_ESPIONAGE",
+    "leader_score": 9,
+    "runner_hyp": "H_CREDENTIAL_ACCESS",
+    "runner_score": 9
+  },
+  "srl2015-controller-disk": {
+    "finding_count": 38,
+    "leader_hyp": "H_APT_ESPIONAGE",
+    "leader_score": 20,
+    "runner_hyp": "H_LATERAL_MOVEMENT",
+    "runner_score": 15
+  },
+  "srl2015-controller-memory": {
+    "finding_count": 379,
+    "leader_hyp": "H_APT_ESPIONAGE",
+    "leader_score": 28,
+    "runner_hyp": "H_OPPORTUNISTIC_COMMODITY",
+    "runner_score": 8
+  },
+  "srl2015-nfury-disk": {
+    "finding_count": 42,
+    "leader_hyp": "H_APT_ESPIONAGE",
+    "leader_score": 26,
+    "runner_hyp": "H_LATERAL_MOVEMENT",
+    "runner_score": 15
+  },
+  "srl2015-nfury-memory": {
+    "finding_count": 709,
+    "leader_hyp": "H_APT_ESPIONAGE",
+    "leader_score": 28,
+    "runner_hyp": "H_OPPORTUNISTIC_COMMODITY",
+    "runner_score": 8
+  },
+  "srl2015-nromanoff-disk": {
+    "finding_count": 143,
+    "leader_hyp": "H_APT_ESPIONAGE",
+    "leader_score": 32,
+    "runner_hyp": "H_LATERAL_MOVEMENT",
+    "runner_score": 18
+  },
+  "srl2015-nromanoff-memory": {
+    "finding_count": 284,
+    "leader_hyp": "H_APT_ESPIONAGE",
+    "leader_score": 50,
+    "runner_hyp": "H_OPPORTUNISTIC_COMMODITY",
+    "runner_score": 18
+  },
+  "srl2015-tdungan-disk": {
+    "finding_count": 139,
+    "leader_hyp": "H_INSIDER_DATA_EXFIL",
+    "leader_score": 19,
+    "runner_hyp": "H_BEC_ACCOUNT_TAKEOVER",
+    "runner_score": 15
+  },
+  "srl2015-tdungan-memory": {
+    "finding_count": 172,
+    "leader_hyp": "H_APT_ESPIONAGE",
+    "leader_score": 48,
+    "runner_hyp": "H_CREDENTIAL_ACCESS",
+    "runner_score": 16
+  },
+  "srl2018-admin-memory": {
+    "finding_count": 280,
+    "leader_hyp": "H_APT_ESPIONAGE",
+    "leader_score": 41,
+    "runner_hyp": "H_LATERAL_MOVEMENT",
+    "runner_score": 30
+  },
+  "srl2018-dc-disk": {
+    "finding_count": 62,
+    "leader_hyp": "H_APT_ESPIONAGE",
+    "leader_score": 30,
+    "runner_hyp": "H_LATERAL_MOVEMENT",
+    "runner_score": 18
+  },
+  "srl2018-dc-memory": {
+    "finding_count": 30,
+    "leader_hyp": "H_APT_ESPIONAGE",
+    "leader_score": 0,
+    "runner_hyp": "H_BEC_ACCOUNT_TAKEOVER",
+    "runner_score": 0
+  },
+  "srl2018-dmzftp-disk": {
+    "finding_count": 65,
+    "leader_hyp": "H_APT_ESPIONAGE",
+    "leader_score": 43,
+    "runner_hyp": "H_LATERAL_MOVEMENT",
+    "runner_score": 27
+  },
+  "srl2018-file-disk": {
+    "finding_count": 56,
+    "leader_hyp": "H_APT_ESPIONAGE",
+    "leader_score": 24,
+    "runner_hyp": "H_LATERAL_MOVEMENT",
+    "runner_score": 18
+  },
+  "srl2018-hunt-memory": {
+    "finding_count": 37,
+    "leader_hyp": "H_LATERAL_MOVEMENT",
+    "leader_score": 12,
+    "runner_hyp": "H_APT_ESPIONAGE",
+    "runner_score": 8
+  },
+  "srl2018-mail-memory": {
+    "finding_count": 2,
+    "leader_hyp": "H_APT_ESPIONAGE",
+    "leader_score": 0,
+    "runner_hyp": "H_BEC_ACCOUNT_TAKEOVER",
+    "runner_score": 0
+  },
+  "srl2018-mail-memory-r2": {
+    "finding_count": 2,
+    "leader_hyp": "H_APT_ESPIONAGE",
+    "leader_score": 0,
+    "runner_hyp": "H_BEC_ACCOUNT_TAKEOVER",
+    "runner_score": 0
+  },
+  "srl2018-mail-memory-r3": {
+    "finding_count": 720,
+    "leader_hyp": "H_APT_ESPIONAGE",
+    "leader_score": 25,
+    "runner_hyp": "H_OPPORTUNISTIC_COMMODITY",
+    "runner_score": 7
+  },
+  "srl2018-mail-memory-retry": {
+    "finding_count": 2,
+    "leader_hyp": "H_APT_ESPIONAGE",
+    "leader_score": 0,
+    "runner_hyp": "H_BEC_ACCOUNT_TAKEOVER",
+    "runner_score": 0
+  },
+  "srl2018-rd01-disk": {
+    "finding_count": 300,
+    "leader_hyp": "H_APT_ESPIONAGE",
+    "leader_score": 25,
+    "runner_hyp": "H_LATERAL_MOVEMENT",
+    "runner_score": 15
+  },
+  "srl2018-rd01-memory": {
+    "finding_count": 295,
+    "leader_hyp": "H_APT_ESPIONAGE",
+    "leader_score": 26,
+    "runner_hyp": "H_LATERAL_MOVEMENT",
+    "runner_score": 12
+  },
+  "srl2018-rd02-disk": {
+    "finding_count": 208,
+    "leader_hyp": "H_APT_ESPIONAGE",
+    "leader_score": 19,
+    "runner_hyp": "H_LATERAL_MOVEMENT",
+    "runner_score": 12
+  },
+  "srl2018-sp-memory": {
+    "finding_count": 2,
+    "leader_hyp": "H_APT_ESPIONAGE",
+    "leader_score": 0,
+    "runner_hyp": "H_BEC_ACCOUNT_TAKEOVER",
+    "runner_score": 0
+  },
+  "srl2018-sp-memory-r2": {
+    "finding_count": 33,
+    "leader_hyp": "H_LATERAL_MOVEMENT",
+    "leader_score": 9,
+    "runner_hyp": "H_APT_ESPIONAGE",
+    "runner_score": 6
+  },
+  "srl2018-wkstn01-disk": {
+    "finding_count": 256,
+    "leader_hyp": "H_APT_ESPIONAGE",
+    "leader_score": 21,
+    "runner_hyp": "H_LATERAL_MOVEMENT",
+    "runner_score": 15
+  },
+  "srl2018-wkstn01-memory": {
+    "finding_count": 33,
+    "leader_hyp": "H_LATERAL_MOVEMENT",
+    "leader_score": 9,
+    "runner_hyp": "H_APT_ESPIONAGE",
+    "runner_score": 6
+  },
+  "srl2018-wkstn05-disk": {
+    "finding_count": 188,
+    "leader_hyp": "H_APT_ESPIONAGE",
+    "leader_score": 24,
+    "runner_hyp": "H_LATERAL_MOVEMENT",
+    "runner_score": 18
+  },
+  "srl2018-wkstn05-memory": {
+    "finding_count": 31,
+    "leader_hyp": "H_LATERAL_MOVEMENT",
+    "leader_score": 6,
+    "runner_hyp": "H_APT_ESPIONAGE",
+    "runner_score": 4
+  },
+  "unallocated-blob": {
+    "finding_count": 8,
+    "leader_hyp": "H_APT_ESPIONAGE",
+    "leader_score": 0,
+    "runner_hyp": "H_BEC_ACCOUNT_TAKEOVER",
+    "runner_score": 0
+  }
+}
