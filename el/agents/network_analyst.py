@@ -187,17 +187,13 @@ class NetworkAnalystAgent(Agent):
                 evidence=[r.as_evidence()],
             )))
 
-        # x509 cert subjects + JA3 fingerprints can flag malware-family C2
-        # by known-bad fingerprints in the future. For now just surface
-        # the count.
+        # JA3 fingerprints: reputation-check each hash against the
+        # curated known-bad / benign-common tables, then layer
+        # cross-case rarity on top. One finding per KNOWN-BAD match
+        # at high confidence; one rollup finding summarising the rest.
         ja3 = r.notable.get("ja3") or []
         if ja3:
-            out.append(self.emit(ctx, Finding(
-                case_id=ctx.case_id, agent=self.name, confidence="low",
-                claim=f"Zeek captured {len(ja3)} unique JA3 client fingerprint(s) "
-                      "(blocklist-comparable)",
-                evidence=[r.as_evidence()],
-            )))
+            out.extend(self._triage_ja3_hashes(ctx, r, ja3))
 
         # Family-name heuristic across HTTP user-agents + cert subjects +
         # DNS queries. If a known C2 family name leaks into any of these,
@@ -292,6 +288,104 @@ class NetworkAnalystAgent(Agent):
                        f"unique SHA-256 file hash(es) from the wire. "
                        f"These are pivot points for cross-case lookup."),
                 evidence=[r.as_evidence()],
+            )))
+        return out
+
+    def _triage_ja3_hashes(self, ctx: AgentContext, zeek_run,
+                            ja3_hashes: list[str]) -> list[Finding]:
+        """Classify every Zeek-captured JA3 hash against the curated
+        known-bad / benign-common tables; layer cross-case rarity via
+        the knowledge store. Emits:
+
+        - one HIGH-confidence finding per known-bad match (tagged
+          H_C2_BEACONING with the attribution source)
+        - one LOW-confidence rollup counting everything else, with a
+          rarity breakdown (novel / common) drawn from the knowledge DB
+        """
+        from el.skills import ja3_reputation
+        from el import knowledge as kb
+
+        out: list[Finding] = []
+        unique = sorted({h.lower().strip()
+                         for h in ja3_hashes
+                         if isinstance(h, str) and h.strip()})
+        if not unique:
+            return out
+
+        known_bad: list[tuple[str, ja3_reputation.JA3Reputation]] = []
+        benign: list[str] = []
+        unknown: list[str] = []
+        for h in unique:
+            rep = ja3_reputation.classify(h)
+            if rep.classification == "known_bad":
+                known_bad.append((h, rep))
+            elif rep.classification == "benign_common":
+                benign.append(h)
+            else:
+                unknown.append(h)
+
+        # Cross-case rarity for the unknowns — a JA3 seen in ≥3 prior
+        # cases is probably a local stable client; a JA3 seen in 0 is
+        # novel to this corpus. Surfaced in the rollup claim.
+        novel_count = 0
+        repeat_count = 0
+        try:
+            prior = kb.lookup_iocs(unknown, current_case_id=ctx.case_id) \
+                if unknown else {}
+        except Exception:
+            prior = {}
+        for h in unknown:
+            observations = prior.get(h, [])
+            distinct_cases = len({o["case_id"] for o in observations})
+            if distinct_cases >= 3:
+                repeat_count += 1
+            else:
+                novel_count += 1
+
+        # Record the JA3s we just saw so future cases see this one in
+        # the cross-case overlap.
+        try:
+            kb.record_iocs(ctx.case_id, self.name, {"ja3": set(unique)})
+        except Exception:
+            pass
+
+        for h, rep in known_bad:
+            out.append(self.emit(ctx, Finding(
+                case_id=ctx.case_id, agent=self.name, confidence="high",
+                claim=(f"JA3 fingerprint {h} matches known-bad "
+                       f"'{rep.label}' (source: {rep.source}). "
+                       "JA3 collisions with legitimate traffic are "
+                       "possible — pair with destination IP + pcap "
+                       "session review before acting."),
+                evidence=[zeek_run.as_evidence({"ja3_hash": h,
+                                                 "label": rep.label,
+                                                 "source": rep.source})],
+                hypotheses_supported=["H_C2_BEACONING", "H_APT_ESPIONAGE"],
+            )))
+
+        # Rollup for the rest — low confidence, but surfacing the
+        # novel count is the analyst's cue to pivot on those hashes.
+        unlabeled = len(unknown) + len(benign)
+        if unlabeled:
+            parts = [f"{unlabeled} unique JA3 client fingerprint(s) "
+                     f"with no known-bad match"]
+            if novel_count:
+                parts.append(f"{novel_count} novel to the cross-case "
+                             "knowledge store")
+            if repeat_count:
+                parts.append(f"{repeat_count} seen in ≥3 prior cases "
+                             "(likely stable client)")
+            if benign:
+                parts.append(f"{len(benign)} match benign-common "
+                             "(curl / wget / browser)")
+            out.append(self.emit(ctx, Finding(
+                case_id=ctx.case_id, agent=self.name, confidence="low",
+                claim="; ".join(parts) + ".",
+                evidence=[zeek_run.as_evidence({
+                    "ja3_unknown_sample": unknown[:10],
+                    "novel_count": novel_count,
+                    "repeat_count": repeat_count,
+                })],
             )))
         return out
 
