@@ -710,15 +710,28 @@ class MemoryForensicatorAgent(Agent):
         })
 
         for b in beacons[:10]:  # cap to avoid report spam
-            confidence = "high" if b.count >= 10 else "medium"
+            # Unregistered destination ports (e.g. SRL-2018 base-sp →
+            # 172.16.4.7:22233) are meaningfully more suspicious than
+            # beacons to well-known services like http_alt — surface
+            # that distinction in the claim so the analyst sees it.
+            is_unregistered = b.port_category in ("registered", "ephemeral") \
+                and b.port_label.startswith(("unregistered", "ephemeral"))
+            base_conf = "high" if b.count >= 10 else "medium"
+            confidence = base_conf
+            if is_unregistered and confidence == "medium" and b.count >= 6:
+                confidence = "high"
             states = ", ".join(f"{k or '?'}={v}" for k, v in b.states.items())
             out.append(self.emit(ctx, Finding(
                 case_id=ctx.case_id, agent=self.name, confidence=confidence,
                 claim=(f"Netscan beacon pattern: {b.count} connection(s) from "
                        f"this host to {b.foreign_addr}:{b.foreign_port} "
+                       f"[{b.port_label}] "
                        f"({b.proto}; states: {states}). "
                        f"Repeated contact with the same (IP, port) is the "
-                       f"signature shape of periodic C2 beaconing."),
+                       f"signature shape of periodic C2 beaconing."
+                       + (" Unregistered destination port elevates suspicion — "
+                          "no legitimate service documented."
+                          if is_unregistered else "")),
                 evidence=[ev],
                 hypotheses_supported=["H_C2_BEACONING"],
             )))

@@ -43,6 +43,92 @@ LATERAL_ADMIN_PORTS: dict[int, str] = {
     5986: "winrm_https",
 }
 
+# Well-known / registered ports that map to a legitimate service the
+# analyst will recognise on sight. NOT exhaustive — just what shows up
+# in enterprise memory captures and shouldn't be called "unknown port."
+# Sources: IANA + the ports directly observed across the SRL-2015,
+# SRL-2018, and flaws.cloud corpora.
+KNOWN_PORT_SERVICES: dict[int, str] = {
+    **LATERAL_ADMIN_PORTS,
+    # Web
+    80: "http", 443: "https", 8080: "http_alt", 8443: "https_alt",
+    8000: "http_alt", 8888: "http_alt",
+    # Mail
+    25: "smtp", 465: "smtps", 587: "submission",
+    110: "pop3", 995: "pop3s", 143: "imap", 993: "imaps",
+    # DNS / Directory / Time
+    53: "dns", 88: "kerberos", 123: "ntp", 389: "ldap", 636: "ldaps",
+    3268: "ldap_gc", 3269: "ldaps_gc",
+    # File / DB / Message
+    21: "ftp", 20: "ftp_data", 69: "tftp",
+    1433: "mssql", 1434: "mssql_monitor",
+    3306: "mysql", 5432: "postgres", 6379: "redis",
+    27017: "mongodb", 9200: "elasticsearch",
+    5672: "amqp", 15672: "amqp_mgmt",
+    61613: "stomp",            # ActiveMQ — seen in SRL-2018
+    808: "ms_net_tcp",         # .NET / WCF — SharePoint legitimate
+    # Windows service ports
+    464: "kerberos_pwd", 593: "rpc_http", 1701: "l2tp",
+    1812: "radius", 5355: "llmnr",
+    # Monitoring
+    161: "snmp", 162: "snmp_trap", 514: "syslog",
+    # VPN / tunnels
+    500: "isakmp", 4500: "ipsec_nat", 1194: "openvpn",
+}
+
+
+def port_category(port: int) -> tuple[str, str | None]:
+    """Classify a destination port into one of four categories + optional
+    service label. Returns (category, service_hint_or_None).
+
+    Categories
+    ----------
+    - ``"known"``        : listed in KNOWN_PORT_SERVICES (analyst-recognised)
+    - ``"well_known"``   : 0–1023 but not in our curated map (still
+                           reserved by IANA for system services)
+    - ``"registered"``   : 1024–49151 with no entry in our map (IANA
+                           registered range but unknown to us — this is
+                           the bucket that includes 22233, 4444, 31337,
+                           and plenty of malware-default ports)
+    - ``"ephemeral"``    : 49152–65535 (dynamic/private range; usually
+                           client-side, rarely meaningful as a dst port)
+
+    Designed to be embedded into a finding claim so the analyst sees
+    ``22233 (registered, no known service)`` rather than just ``22233``.
+    """
+    try:
+        port = int(port)
+    except (TypeError, ValueError):
+        return ("registered", None)
+    if port <= 0 or port > 65535:
+        return ("registered", None)
+    svc = KNOWN_PORT_SERVICES.get(port)
+    if svc:
+        return ("known", svc)
+    if port <= 1023:
+        return ("well_known", None)
+    if port <= 49151:
+        return ("registered", None)
+    return ("ephemeral", None)
+
+
+def port_annotation(port: int) -> str:
+    """Short human-readable annotation for a port, suitable for inclusion
+    in a finding claim. Examples:
+        5985  -> 'winrm_http'
+        8080  -> 'http_alt'
+        22233 -> 'unregistered service (registered range)'
+        60123 -> 'ephemeral'
+    """
+    cat, svc = port_category(port)
+    if svc:
+        return svc
+    if cat == "well_known":
+        return "unknown well-known port"
+    if cat == "registered":
+        return "unregistered service (registered range)"
+    return "ephemeral"
+
 # Endpoints to skip in the beacon detector: loopback, link-local,
 # multicast, unspecified, and the "*" wildcard netscan uses for listening
 # sockets. NOT filtering RFC1918 — attacker C2 frequently lives on the
@@ -75,6 +161,14 @@ class BeaconHit:
     states: dict[str, int] = field(default_factory=dict)
     local_ports: list[int] = field(default_factory=list)
     pids: list[int] = field(default_factory=list)
+
+    @property
+    def port_label(self) -> str:
+        return port_annotation(self.foreign_port)
+
+    @property
+    def port_category(self) -> str:
+        return port_category(self.foreign_port)[0]
 
 
 def detect_repeat_endpoint_beacon(rows: list[dict],
