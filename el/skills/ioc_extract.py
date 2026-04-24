@@ -95,6 +95,31 @@ _FILE_EXT_TLDS = {
     "cmdline", "dlllist", "malfind", "netscan", "netstat", "pslist",
     "psscan", "pstree", "svcscan", "filescan", "modules", "modscan",
     "envars", "hivelist", "registry", "userassist", "handles",
+    # Windows filename extensions that leaked into SRL-2015/SRL-2018
+    # combined-report cross-host IOC tables as fake "domains" (e.g.
+    # roman.fon, batang.ttc, 6.1.1.0.mum, cabundle.cer, netlogon.ftl,
+    # datastore.edb, sysmain.sdb, locale.nls, stdole2.tlb, vscan.bof,
+    # prefetch *.pf, ESENT *.jfm / *.chk / *.btr).
+    "pf",                   # Windows Prefetch
+    "fon", "ttc", "ttcf",   # old Windows fonts + TrueType collection
+    "mum",                  # Windows Update manifest
+    "cat",                  # Security Catalog
+    "cer", "crt", "p7b", "p7s", "p12", "pfx",  # certs masquerading as TLDs
+    "sig",                  # signature blobs
+    "hve",                  # registry hive backups
+    "nls",                  # National Language Support
+    "sdb",                  # Application Compatibility Shim DB
+    "cab",                  # Windows Cabinet
+    "edb", "jfm", "chk", "btr",  # ESENT / JET Blue database + log files
+    "tlb",                  # Type Library
+    "evt",                  # legacy Windows Event Log
+    "pri", "winmd", "xbf",  # modern Windows packaging/metadata
+    "manifest", "msstyles", "inf",
+    "ftl",                  # Netlogon.ftl and friends
+    "bof",                  # Cobalt-Strike / generic .bof (beacon object file)
+    "mca", "wid", "mcs", "acm", "tsp", "srd", "jtx",
+    # Misc extensions observed as fake TLDs in extraction output
+    "data", "mo", "po",
 }
 _NOISE_DOMAINS = {
     "microsoft.com", "microsoft.net", "windows.com", "schemas.microsoft.com",
