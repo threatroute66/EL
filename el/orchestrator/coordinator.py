@@ -43,6 +43,7 @@ from el.intel.ach import (
 )
 from el.intel.attack_map import map_case
 from el.orchestrator.states import State, can_transition
+from el.reporting.html import render_html
 from el.reporting.render import render_report
 from el.reporting.stix import emit_bundle
 from el.skills import ioc_extract
@@ -400,6 +401,14 @@ class Coordinator:
                                         iocs=iocs, techniques=techniques, stix_path=stix_path,
                                         ach_ranking=ranked, diagnostic=diag)
             self._go(State.DONE)
+
+        try:
+            render_html(ctx.case_dir, ctx.case_id, manifest.__dict__,
+                        findings=rows, ach_ranking=ranked, iocs=iocs,
+                        techniques=techniques)
+        except Exception as e:
+            if self.audit:
+                self.audit.warn("case_html_render_failed", err=str(e))
 
         (ctx.case_dir / "transitions.json").write_text(
             json.dumps([(a.value, b.value) for a, b in self.transitions], indent=2)
