@@ -97,6 +97,7 @@ TECHNIQUE_TACTIC: dict[str, str] = {
     "T1556.006":  "Defense Evasion",
     "T1565.001":  "Defense Evasion",   # Stored Data Manipulation
     "T1622":      "Defense Evasion",   # Debugger Evasion
+    "T1505.003":  "Persistence",       # Server Software Component: Web Shell
     "T1547.001":  "Persistence",       # Registry Run Keys / Startup Folder
     "T1562.001":  "Defense Evasion",
     "T1562.007":  "Defense Evasion",

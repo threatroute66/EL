@@ -562,6 +562,31 @@ def extract_windows_artifacts(mount_point: Path, exports_dir: Path) -> dict:
         if n_firefox:
             out["firefox_profiles"] = n_firefox
 
+    # IIS W3C extended logs under C:\inetpub\logs\LogFiles\W3SVC*\.
+    # Copy the whole W3SVC tree so subsequent analyst passes can use
+    # Log Parser Studio / manual review; iis_w3c skill walks the
+    # exports dir.
+    inetpub_dir = _child_ci(mount_point, "inetpub")
+    inetpub_logs = None
+    if inetpub_dir:
+        logs_dir = _child_ci(inetpub_dir, "logs")
+        if logs_dir:
+            inetpub_logs = _child_ci(logs_dir, "LogFiles")
+    if inetpub_logs and inetpub_logs.is_dir():
+        iis_dst = exports_dir / "iis_logs"
+        iis_dst.mkdir(parents=True, exist_ok=True)
+        n_iis = 0
+        for w3svc in inetpub_logs.iterdir():
+            if not w3svc.is_dir() or not w3svc.name.lower().startswith("w3svc"):
+                continue
+            site_dst = iis_dst / w3svc.name
+            site_dst.mkdir(parents=True, exist_ok=True)
+            for log in w3svc.glob("u_ex*.log"):
+                if _sudo_cp(log, site_dst / log.name):
+                    n_iis += 1
+        if n_iis:
+            out["iis_w3c_files"] = n_iis
+
     return out
 
 

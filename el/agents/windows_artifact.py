@@ -81,6 +81,10 @@ class WindowsArtifactAgent(Agent):
         # inbound session from an unknown peer is high-signal even
         # when the tool is legitimately installed.
         out.extend(self._remote_access(ctx, root, analysis))
+        # IIS W3C logs under inetpub/logs/LogFiles — web-shell
+        # uploads, admin-panel hits, scripted-client recon. First-
+        # order evidence for every Windows web/mail/RDS server.
+        out.extend(self._iis_w3c(ctx, root, analysis))
 
         if all(f.confidence == "insufficient" for f in out):
             out.append(self.emit(ctx, Finding(
@@ -615,4 +619,75 @@ class WindowsArtifactAgent(Agent):
                 hypotheses_supported=["H_APT_ESPIONAGE",
                                        "H_PROCESS_INJECTION"],
             )))
+        return out
+
+    def _iis_w3c(self, ctx, root, analysis):
+        """Scan extracted IIS logs under `inetpub/logs/LogFiles/W3SVC*/`.
+
+        Emits one Finding per detector per site, confidence keyed to
+        pattern severity (webshell-URI / upload-burst → high; admin-
+        panel / scripted-offensive → high; generic scripted + verb-
+        tunnel → medium). Silent when the directory isn't extracted
+        (most non-server images don't have IIS)."""
+        from el.schemas.finding import EvidenceItem
+        from el.skills import iis_w3c
+        import hashlib
+
+        iis_root = None
+        for candidate in (
+            _finddir(root, "inetpub", "logs", "LogFiles"),
+            _finddir(root, "inetpub", "LogFiles"),
+            _finddir(root, "IIS", "Logs"),
+            _finddir(root, "iis_logs"),
+        ):
+            if candidate:
+                iis_root = candidate
+                break
+        if iis_root is None:
+            return []
+
+        results = iis_w3c.scan_tree(iis_root)
+        if not results:
+            return []
+
+        # Dir-level hash for shared evidence record
+        hasher = hashlib.sha256()
+        for p in sorted(iis_root.rglob("u_ex*.log"))[:200]:
+            try:
+                hasher.update(p.read_bytes())
+            except OSError:
+                continue
+
+        high_severity = {"W3C_WEBSHELL_URI_SHAPE",
+                         "W3C_UPLOAD_POST_BURST",
+                         "W3C_SCRIPTED_CLIENT_OFFENSIVE",
+                         "W3C_ADMIN_URI_HIT"}
+        out = []
+        for r in results:
+            if not r.hits:
+                continue
+            for h in r.hits:
+                confidence = "high" if h.pattern_id in high_severity else "medium"
+                sample = "; ".join(h.matches[:3])
+                ev = EvidenceItem(
+                    tool="el.iis_w3c", version="0.1.0",
+                    command=f"scan_path({r.path.name})",
+                    output_sha256=hasher.hexdigest(),
+                    output_path=str(r.path),
+                    extracted_facts={
+                        "pattern_id": h.pattern_id,
+                        "match_count": h.count,
+                        "parsed_rows": r.parsed_rows,
+                        "techniques": [tid for tid, _ in h.attack_techniques],
+                    },
+                )
+                out.append(self.emit(ctx, Finding(
+                    case_id=ctx.case_id, agent=self.name,
+                    confidence=confidence,
+                    claim=(f"IIS W3C log [{h.pattern_id}] in "
+                           f"{r.path.name}: {h.description}. "
+                           f"{h.count} match(es). Samples: {sample}."),
+                    evidence=[ev],
+                    hypotheses_supported=h.hypotheses,
+                )))
         return out
