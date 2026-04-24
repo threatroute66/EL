@@ -100,11 +100,79 @@ class ThreatHunterAgent(Agent):
         # signature (microscope.jpg vs microscope1.jpg).
         out.extend(self._scan_stego_carriers(ctx))
 
+        # vol3 windows.yarascan — same rules, but attribute matches to
+        # process + VA instead of raw file offset. Runs only when the
+        # case is a memory image (triage set mem_os / mem_arch).
+        out.extend(self._vol3_yarascan(ctx, rules_path, analysis))
+
         if not out:
             return [self.emit(ctx, Finding(
                 case_id=ctx.case_id, agent=self.name, confidence="insufficient",
                 claim="Threat hunt did not execute against any target",
             ))]
+        return out
+
+    def _vol3_yarascan(self, ctx: AgentContext, rules_path: Path,
+                        analysis: Path) -> list[Finding]:
+        """If the case is a memory image, run vol3 windows.yarascan so
+        YARA hits carry process attribution. Silent on non-memory cases
+        (no mem_os → no run)."""
+        family = ctx.shared.get("mem_os")
+        if family not in ("windows", "linux", "mac"):
+            return []
+        if not rules_path.is_file():
+            return []
+        from el.skills import vol3
+        try:
+            r = vol3.yarascan(
+                ctx.input_path, rules_path, analysis,
+                family=family, timeout=1800,
+            )
+        except vol3.Vol3Error as e:
+            return [self.emit(ctx, Finding(
+                case_id=ctx.case_id, agent=self.name,
+                confidence="insufficient",
+                claim=f"vol3 {family}.yarascan failed: {e}",
+            ))]
+
+        ev = r.as_evidence({"phase": "vol3_yarascan"})
+        if r.rc != 0 or not r.rows:
+            return [self.emit(ctx, Finding(
+                case_id=ctx.case_id, agent=self.name, confidence="low",
+                claim=(f"vol3 {family}.yarascan: 0 in-memory matches "
+                       f"(rc={r.rc}). Raw yara already scanned this "
+                       "image separately."),
+                evidence=[ev],
+            ))]
+
+        # Aggregate matches per rule + pid for tidy claims.
+        from collections import defaultdict
+        by_rule: dict[str, list[dict]] = defaultdict(list)
+        for row in r.rows:
+            rule = row.get("Rule") or row.get("rule") or "?"
+            by_rule[rule].append(row)
+
+        out: list[Finding] = []
+        for rule, hits in list(by_rule.items())[:20]:
+            processes = sorted({
+                f"{(h.get('Owner') or h.get('Task') or '?')} "
+                f"(PID {h.get('PID') or '?'})"
+                for h in hits if h.get("PID") or h.get("Owner")
+            })
+            pids = ", ".join(processes[:5]) or "no PID attribution"
+            out.append(self.emit(ctx, Finding(
+                case_id=ctx.case_id, agent=self.name, confidence="high",
+                claim=(f"vol3 {family}.yarascan rule '{rule}' matched "
+                       f"{len(hits)} time(s) in-memory. Process(es): "
+                       f"{pids}. Memory attribution distinguishes "
+                       "in-process implants from raw-image residue — "
+                       "a hit inside an active PID's VA is a stronger "
+                       "signal than the same string floating in free "
+                       "pool memory."),
+                evidence=[ev],
+                hypotheses_supported=["H_IOC_CORROBORATED",
+                                       "H_APT_ESPIONAGE"],
+            )))
         return out
 
     def _scan_stego_carriers(self, ctx: AgentContext) -> list[Finding]:

@@ -175,3 +175,28 @@ def detect_os(image: str | Path, out_dir: str | Path) -> tuple[str | None, Plugi
         "no banner plugin produced usable output "
         f"(attempted: {'; '.join(errors) if errors else 'all plugins returned empty output'})"
     )
+
+
+def yarascan(image: str | Path, rules_path: str | Path,
+             out_dir: str | Path, *, family: str = "windows",
+             timeout: int = 1800) -> PluginRun:
+    """Run `vol3 <family>.yarascan.YaraScan --yara-rules <rules>`.
+
+    Complements the standalone `yara` binary: vol3's plugin walks the
+    memory layer's virtual address space per process, so matches carry
+    process attribution (PID, task name, VA) instead of just a raw
+    offset into the .mem file. Callers can turn that into claims like
+    "rule MIMI matched in PID 624 (lsass.exe) at VA 0x7fff..." rather
+    than "rule MIMI matched at offset 0x..." which requires a second
+    pass to attribute.
+
+    The rules_path may be a single .yar file OR a directory of .yar
+    files; vol3 accepts either for `--yara-rules`.
+    """
+    rules_path = Path(rules_path)
+    plugin = f"{family}.yarascan.YaraScan"
+    return run_plugin(
+        image=image, plugin=plugin, out_dir=out_dir,
+        extra_args=["--yara-rules", str(rules_path)],
+        timeout=timeout,
+    )
