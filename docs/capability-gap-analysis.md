@@ -389,9 +389,9 @@ rows as evidence lands and a case completes end-to-end._
 
 | Source | Status | Where to find a sample |
 |---|---|---|
-| systemd journal binary (`.journal`) | **not supported** — `journalctl -o json` export path exists | Any modern Linux image |
+| ~~systemd journal binary (`.journal`)~~ ✅ | Shipped `el.skills.systemd_journal` — wraps `journalctl --file` + JSON export + per-unit filters (sshd, sudo, cron, systemd units). Consumed by `LinuxForensicatorAgent._analyze_systemd_journal`. | — |
 | auditd raw (`audit.log`) | partial — pattern scan only, no `ausearch` normalization | RHEL / Ubuntu server images |
-| Linux `utmp` / `wtmp` / `btmp` | **not supported** — binary struct parse not written | Any Linux image |
+| ~~Linux `utmp` / `wtmp` / `btmp`~~ ✅ | Shipped `el.skills.utmp` — pure-Python parser for the 384-byte glibc utmpx struct, covers utmp (active) / wtmp (historical) / btmp (failed-auth). Detectors: brute-force burst (≥5 btmp rows from same source), remote-root-login. Consumed by `LinuxForensicatorAgent._analyze_utmp_family`. | — |
 | IIS W3C logs | **not supported** | Windows Server IIS case images |
 | Apache / nginx access logs | mentioned in linux-forensicator doc but no detector | Public webserver breach samples |
 | Zeek `conn.log` / `http.log` etc. (batch ingest) | partial — pcap-derived Zeek runs validated, standalone Zeek corpus ingest untested | Zeek-published training data, LANL-netflow |
