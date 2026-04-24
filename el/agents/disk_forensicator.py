@@ -10,7 +10,10 @@ from pathlib import Path
 
 from el.agents.base import Agent, AgentContext
 from el.schemas.finding import EvidenceItem, Finding
-from el.skills import bulk_extractor as be_skill, disk_anomaly, exiftool as exif_skill, sleuthkit as sk
+from el.skills import (
+    bulk_extractor as be_skill, disk_anomaly, disk_convert,
+    exiftool as exif_skill, sleuthkit as sk,
+)
 
 
 class DiskForensicatorAgent(Agent):
@@ -24,8 +27,44 @@ class DiskForensicatorAgent(Agent):
         kind = ctx.shared.get("evidence_kind") or ""
         if "EWF" in kind:
             return self._handle_ewf(ctx, analysis)
+        if kind.startswith(("vhdx", "vhd", "vmdk")):
+            return self._handle_vm_disk(ctx, analysis, kind)
 
         return out + self._raw_disk_walk(ctx, analysis, ctx.input_path)
+
+    def _handle_vm_disk(self, ctx: AgentContext, analysis: Path,
+                        kind: str) -> list[Finding]:
+        """VMDK / VHD / VHDX → raw via qemu-img, then reuse the raw walk.
+
+        Keeps the evidence contract intact: the original file is never
+        touched; the converted raw lives under `<case_dir>/raw/` so the
+        hash trail covers both the source (intake manifest) and the
+        working copy (conversion evidence)."""
+        out: list[Finding] = []
+        raw_dir = ctx.case_dir / "raw"
+        try:
+            result = disk_convert.convert_to_raw(
+                ctx.input_path, source_kind=kind, out_dir=raw_dir,
+            )
+        except disk_convert.DiskConvertError as e:
+            out.append(self.emit(ctx, Finding(
+                case_id=ctx.case_id, agent=self.name,
+                confidence="insufficient",
+                claim=(f"{kind} input detected but conversion to raw "
+                       f"failed: {e}. Downstream filesystem walk "
+                       "skipped — install qemu-utils or pre-convert."),
+            )))
+            return out
+
+        out.append(self.emit(ctx, Finding(
+            case_id=ctx.case_id, agent=self.name, confidence="high",
+            claim=(f"{kind} converted to raw via qemu-img "
+                   f"(v{result.qemu_img_version}); proceeding with "
+                   f"mmls + per-partition fls on {result.raw_path.name}"),
+            evidence=[result.as_evidence({"phase": "vm_disk_convert"})],
+            hypotheses_supported=["H_DISK_IMAGE"],
+        )))
+        return out + self._raw_disk_walk(ctx, analysis, result.raw_path)
 
     def _handle_ewf(self, ctx: AgentContext, analysis) -> list[Finding]:
         """E01 path: ewfinfo (metadata + chain of custody) → ewfmount → walk

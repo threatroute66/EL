@@ -38,7 +38,36 @@ MAGIC_HINTS = {
     b"EVF2\r\n\x81\x00": "EWF v2 (Ex01)",
     b"ElfFile\x00": "EVTX (Windows Event Log)",
     b"regf": "Windows Registry hive",
+    # VM disk images — dispatched through `el.skills.disk_convert` →
+    # qemu-img → raw, then through the normal DiskForensicator raw walk.
+    b"vhdxfile": "vhdx",                                 # Microsoft VHDX
+    b"KDMV": "vmdk (sparse)",                            # VMware VMDK sparse
+    b"COWD": "vmdk (sparse)",                            # VMware COW (older)
+    b"# Disk DescriptorFile": "vmdk (descriptor)",       # VMDK text descriptor
 }
+
+
+def _detect_vhd_footer(path: Path) -> str | None:
+    """VHD (Connectix/Microsoft, legacy) has no header magic for fixed
+    images — the signature lives in the last 512-byte footer as the
+    ASCII 'conectix' cookie. Check for it so we don't miss legacy
+    .vhd inputs from Hyper-V / Azure exports.
+    """
+    try:
+        size = path.stat().st_size
+    except OSError:
+        return None
+    if size < 512:
+        return None
+    try:
+        with path.open("rb") as f:
+            f.seek(size - 512)
+            footer = f.read(8)
+    except OSError:
+        return None
+    if footer == b"conectix":
+        return "vhd"
+    return None
 
 
 class TriageAgent(Agent):
@@ -63,6 +92,12 @@ class TriageAgent(Agent):
             if head.startswith(sig):
                 magic_hint = label
                 break
+        if not magic_hint:
+            # VHD cookies live at end-of-file, not the head — check there
+            # before falling through to "treating as memory candidate".
+            vhd_kind = _detect_vhd_footer(ctx.input_path)
+            if vhd_kind:
+                magic_hint = vhd_kind
 
         evidence = [EvidenceItem(
             tool="el.triage", version="0.1.0",
@@ -85,7 +120,8 @@ class TriageAgent(Agent):
                 confidence="low", evidence=evidence,
             )))
 
-        non_memory = ("pcap", "pcapng", "EWF", "EVTX", "Registry")
+        non_memory = ("pcap", "pcapng", "EWF", "EVTX", "Registry",
+                      "vhdx", "vhd", "vmdk")
         if magic_hint and any(n in magic_hint for n in non_memory):
             return out
         if head[:1] in (b"{", b"[") or head[:5] in (b"<?xml", b"<html"):

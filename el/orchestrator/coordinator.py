@@ -59,6 +59,12 @@ KIND_TO_AGENT: dict[str, type[Agent]] = {
     "pcap (libpcap, big-endian)": NetworkAnalystAgent,
     "pcapng": NetworkAnalystAgent,
     "EWF (E01)": DiskForensicatorAgent,
+    # VM disk wrappers — DiskForensicator converts to raw via qemu-img
+    # then runs the normal mmls + fls pipeline.
+    "vhdx": DiskForensicatorAgent,
+    "vhd": DiskForensicatorAgent,
+    "vmdk (sparse)": DiskForensicatorAgent,
+    "vmdk (descriptor)": DiskForensicatorAgent,
     "EVTX (Windows Event Log)": LogAnalystAgent,
     "windows-artifacts-dir": WindowsArtifactAgent,
     "velociraptor-collection": EndpointAnalystAgent,
