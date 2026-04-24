@@ -52,24 +52,53 @@ class CaseSlice:
         top = self.ach_ranking[0]
         return (top.get("hyp_id"), int(top.get("score", 0)))
 
+    # Order matters — longer suffixes first so "memory-r2" wins over "r2"
+    # alone. Includes re-run variants we've seen: r2, r3, retry, redo.
+    _KIND_SUFFIXES = tuple(
+        f"{base}{tag}"
+        for base in ("memory", "disk", "pcap")
+        for tag in ("-r4", "-r3", "-r2", "-retry", "-redo", "")
+    )
+
     @property
     def host_label(self) -> str:
         """Derive a compact host label from the case_id.
-        e.g. 'srl2015-nromanoff-memory' -> 'nromanoff / memory'."""
+        e.g. 'srl2015-nromanoff-memory' -> 'nromanoff / memory'.
+             'srl2018-mail-memory-r3'    -> 'mail / memory-r3'."""
+        host, kind = self._split_host_kind()
+        return host + (f" / {kind}" if kind else "")
+
+    @property
+    def host_bare(self) -> str:
+        """Just the host, scenario prefix dropped. Used by the
+        cross-evidence divergence detector to group disk/memory cases
+        for the same machine."""
+        return self._split_host_kind()[0]
+
+    @property
+    def kind(self) -> str:
+        """The evidence kind: 'memory', 'disk', 'memory-r3', etc.
+        Empty when the case_id doesn't encode one."""
+        return self._split_host_kind()[1]
+
+    def _split_host_kind(self) -> tuple[str, str]:
         parts = self.case_id.split("-")
-        # common suffixes we want to pull out as the 'kind'
         kind = ""
-        for tail in ("memory", "disk", "pcap", "memory-r2", "disk-r2"):
+        for tail in self._KIND_SUFFIXES:
+            if not tail:
+                continue
             suffix = tail.split("-")
             if len(parts) >= len(suffix) and parts[-len(suffix):] == suffix:
-                kind = " / " + tail
+                kind = tail
                 parts = parts[:-len(suffix)]
                 break
-        # drop a single leading token treated as scenario prefix
-        # (srl2015, m57, etc.) — that's shared across all the slices
         if len(parts) >= 2:
-            return "-".join(parts[1:]) + kind
-        return self.case_id
+            host = "-".join(parts[1:])
+        elif parts:
+            host = parts[0]
+        else:
+            host = self.case_id
+        return host, kind
 
 
 def _dict_evidence_time(finding: dict) -> str | None:
@@ -296,6 +325,64 @@ def _technique_union(cases: list[CaseSlice]) -> dict[str, dict]:
 
 # --- Cross-case IOC overlap via the knowledge DB ---------------------------
 
+def _cross_evidence_divergence(cases: list[CaseSlice]) -> list[dict]:
+    """Flag hosts where different evidence kinds (disk vs memory, or
+    repeat memory snapshots) disagree on the leading hypothesis or
+    differ by a meaningful score.
+
+    Background: SRL-2018 `base-wkstn-05` memory had no attacker netscan
+    rows and scored 0 (tied leader), while its disk independently led
+    H_APT_ESPIONAGE at score 22. The analyst eyeballed the mismatch; the
+    combined report should point at it directly.
+
+    A divergence is reported when a host has ≥2 cases AND either:
+
+    - the set of leading hypothesis IDs across those cases has >1 distinct
+      value (different leaders), OR
+    - the max–min score span across those cases is ≥ 15 (same leader but
+      the evidence weight is wildly different — usually 'one source saw
+      nothing', which is the memory-quiet case).
+
+    Returns a list of divergence records, stable-sorted by host.
+    """
+    by_host: dict[str, list[CaseSlice]] = {}
+    for c in cases:
+        host = c.host_bare
+        if not host:
+            continue
+        by_host.setdefault(host, []).append(c)
+
+    out = []
+    for host, slices in by_host.items():
+        if len(slices) < 2:
+            continue
+        leaders = [s.leading for s in slices]
+        hyps = {hyp for hyp, _ in leaders if hyp}
+        scores = [score for _, score in leaders]
+        # Filter: when all scores are 0/None (nothing fired on either
+        # side), the host isn't interesting — skip.
+        if all(s == 0 for s in scores):
+            continue
+        span = max(scores) - min(scores) if scores else 0
+        reasons = []
+        if len(hyps) > 1:
+            reasons.append("different leading hypotheses across evidence kinds")
+        if span >= 15:
+            reasons.append(f"score span ≥ 15 (Δ={span}); one evidence source "
+                           "disagrees materially with the other(s)")
+        if not reasons:
+            continue
+        out.append({
+            "host": host,
+            "slices": slices,
+            "leaders": leaders,
+            "span": span,
+            "reasons": reasons,
+        })
+    out.sort(key=lambda r: r["host"])
+    return out
+
+
 def _ioc_overlap(cases: list[CaseSlice], min_hosts: int = 2
                   ) -> list[tuple[str, str, list[str]]]:
     """Query ~/.el/knowledge.sqlite for IOC values that appear in ≥
@@ -408,6 +495,37 @@ def render_combined(
         lines.append(f"| `{c.case_id}` | {c.host_label} "
                      f"| {hid or '—'} | {score} |")
     lines.append("")
+
+    # 2a. Cross-evidence divergence (per-host disk vs memory disagreement)
+    divergences = _cross_evidence_divergence(cases)
+    if divergences:
+        lines.append("## Cross-Evidence Divergence")
+        lines.append("")
+        lines.append(
+            "Hosts where different evidence kinds (disk, memory, or "
+            "re-run snapshots) produced a materially different leading "
+            "hypothesis or ACH score. **Memory-only quiet does not mean "
+            "the host is clean** — always pair with the disk result when "
+            "one is available."
+        )
+        lines.append("")
+        lines.append("| Host | Evidence | Leader | Score | Why flagged |")
+        lines.append("|---|---|---|---:|---|")
+        for d in divergences:
+            host = d["host"]
+            reason = "; ".join(d["reasons"])
+            rows = [(s, s.leading) for s in d["slices"]]
+            first = True
+            for s, (hid, score) in rows:
+                kind = s.kind or "—"
+                r = reason if first else ""
+                h = host if first else ""
+                lines.append(
+                    f"| {h} | `{s.case_id}` ({kind}) | {hid or '—'} "
+                    f"| {score} | {r} |"
+                )
+                first = False
+        lines.append("")
 
     # 3. Cross-host signal matrix
     if len(matrix) > 1:
