@@ -7,8 +7,7 @@ _Planning document. Nothing implemented yet._
 Add a single-page web view per case that gives an analyst the full
 picture at a glance: timeline, host-to-host attack graph, per-
 finding detail drill-down, ATT&CK map, IOC catalog. Reference
-design — **Horizon3 NodeZero attack-path UI**
-(see `/mnt/hgfs/hackathon/nodezero.png`): horizontal host timeline
+design: horizontal host timeline
 at the top, clicked node opens a detail panel on the right with
 severity + description + mitigations + "View Full Details" link,
 bottom-left shows timestamped evidence cards with raw command
