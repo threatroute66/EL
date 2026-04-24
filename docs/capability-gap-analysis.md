@@ -65,11 +65,18 @@ Two new skills consumed by `WindowsArtifactAgent`:
 - `extract_windows_artifacts` extended to walk `<user>\\AppData\\Local\\ConnectedDevicesPlatform\\L.*\\` and copy `ActivitiesCache.db[-wal/-shm]` into `exports/windows-artifacts/timeline/` with per-user filename prefixes.
 Real-data validation: `bam_dam.parse_system_hive` on the SRL-2018 wkstn-01 SYSTEM hive returns 39 entries across 5 SIDs (all UWP packages — that machine had no attacker-invoked binaries, so the suspicious overlay correctly stays silent).
 
-**5. PowerShell ScriptBlock decoded extraction** — we count EID 4104
-today but don't decode the payload. Real attacker usage is near-always
-obfuscated (base64 + gzip + IEX). Decoding + pattern-matching on the
-decoded script (Mimikatz sentinels, EncodedCommand, Invoke-Expression
-pipelines, URL downloaders) is high-signal and self-contained.
+**5. PowerShell ScriptBlock decoded extraction** — ✅ **SHIPPED.**
+`el.skills.powershell_triage` pulls every EID 4104 row out of the
+EvtxECmd CSV, lifts `ScriptBlockText` out of the prefix EvtxECmd
+adds, finds inline base64 blobs, and decodes them (plain base64 →
+text, plus gzip wbits 31/-15/15 for `IO.Compression.GZipStream`
+cradles). Pattern families: Mimikatz (`Invoke-Mimikatz`,
+`sekurlsa::`, `kerberos::`, `lsadump::`), AMSI bypass
+(`AmsiUtils`, `amsiInitFailed`, `PatchAmsi`), and download cradles
+(`Net.WebClient.DownloadString`, `IEX (New-Object …)`). Emits
+per-family `PSHit` rows consumed by `PowerShellAnalystAgent` →
+Findings tagged H_CREDENTIAL_ACCESS / H_APT_ESPIONAGE /
+H_LIVING_OFF_THE_LAND.
 
 **6. `capa` + `FLOSS` integration for `malware_triage`** — ✅ **SHIPPED
 (mostly already there, now actually working).** capa + FLOSS subprocess
@@ -325,7 +332,7 @@ existing `el report` CLI.
 | 1 | ~~Kerberos wire parsing~~ ✅ | Shipped; `kerberos_triage` skill + `network_analyst._run_kerberos_triage` with RC4 Kerberoasting + AS-REQ brute/spray + krbtgt-TGS detectors |
 | 1 | ~~M365 UAL + Azure Sign-in~~ ✅ | Shipped; 4 sign-in detectors + 4 UAL detectors dispatched by content-sniff in `cloud_forensicator` |
 | 2 | ~~ActivitiesCache.db + BAM/DAM~~ ✅ | Shipped; `bam_dam` (regipy) + `win_timeline` (sqlite3 ro) skills, validated 39 BAM entries on wkstn-01 |
-| 2 | PowerShell 4104 decoded | We see the count; we should see the content |
+| 2 | ~~PowerShell 4104 decoded~~ ✅ | Shipped in `el.skills.powershell_triage` — base64 + gzip(wbits 31/-15/15) decode with Mimikatz / AMSI-bypass / download-cradle pattern families, consumed by `PowerShellAnalystAgent` |
 | 2 | ~~`capa` + `FLOSS`~~ ✅ | Shipped; rule-pack resolver + shellcode-mode dispatch; 5 rules fire on real srl-admin-memory dump |
 | 3 | ~~vol3 modules / modscan / ldrmodules / handles / getsids~~ ✅ | Shipped; 5 plugins added to `WIN_PLUGINS`, modules-vs-modscan diff detector (rootkit drivers) + ldrmodules three-list diff (reflective-injection signature) |
 | 3 | Linux forensics agent | Depends on whether Linux evidence is expected |
