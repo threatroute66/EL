@@ -7,6 +7,7 @@ memory path is tried (vol3 banners may have detected an OS family).
 from __future__ import annotations
 
 import json
+import signal
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -119,6 +120,8 @@ class Coordinator:
         self.timeline_psort_timeout = timeline_psort_timeout
         self.memory_baseline = memory_baseline
         self.audit: AuditLog | None = None
+        self._current_agent: str | None = None
+        self._signal_prev: dict[int, object] = {}
 
     def _go(self, dst: State) -> None:
         if not can_transition(self.state, dst):
@@ -181,6 +184,7 @@ class Coordinator:
     def _run_agent(self, agent: Agent, ctx: AgentContext) -> None:
         if self.audit:
             self.audit.info("agent_start", agent=agent.name, state=self.state.value)
+        self._current_agent = agent.name
         try:
             findings = agent.run(ctx)
             if self.audit:
@@ -190,6 +194,51 @@ class Coordinator:
             if self.audit:
                 self.audit.error("agent_failed", agent=agent.name, err=str(e))
             raise
+        finally:
+            self._current_agent = None
+
+    # ----- signal handling -----
+    # SIGTERM/SIGINT arriving during a long agent (e.g. vol3 on a large
+    # memory image) would otherwise die silently — the audit log would
+    # stop mid-state with no `agent_failed` entry. We install handlers
+    # that log `coordinator_signalled` with the last-known state + agent
+    # before letting the default handler terminate the process.
+    #
+    # NOTE: SIGKILL (signal 9, used by the Linux OOM-killer) cannot be
+    # trapped — the kernel delivers it unhandleable. Silent OOM deaths
+    # must be detected out-of-band (e.g. by scanning dmesg for the
+    # affected PID).
+    def _install_signal_handlers(self) -> None:
+        for sig in (signal.SIGTERM, signal.SIGINT):
+            try:
+                self._signal_prev[sig] = signal.signal(sig, self._on_signal)
+            except (ValueError, OSError):
+                # not in main thread, or unsupported — skip silently
+                pass
+
+    def _uninstall_signal_handlers(self) -> None:
+        for sig, prev in self._signal_prev.items():
+            try:
+                signal.signal(sig, prev)
+            except (ValueError, OSError):
+                pass
+        self._signal_prev.clear()
+
+    def _on_signal(self, signum: int, frame) -> None:
+        try:
+            sig_name = signal.Signals(signum).name
+        except Exception:
+            sig_name = str(signum)
+        if self.audit:
+            self.audit.error(
+                "coordinator_signalled",
+                signal=sig_name,
+                state=self.state.value,
+                agent=self._current_agent or "(between agents)",
+            )
+        if signum == signal.SIGINT:
+            raise KeyboardInterrupt()
+        raise SystemExit(128 + signum)
 
     def _pick_investigator(self, ctx: AgentContext) -> Agent:
         kind = ctx.shared.get("evidence_kind")
@@ -206,6 +255,14 @@ class Coordinator:
         return MemoryForensicatorAgent()
 
     def investigate(self, input_path: str | Path, case_id: str | None = None) -> RunResult:
+        self._install_signal_handlers()
+        try:
+            return self._investigate_main(input_path, case_id=case_id)
+        finally:
+            self._uninstall_signal_handlers()
+
+    def _investigate_main(self, input_path: str | Path,
+                          case_id: str | None = None) -> RunResult:
         manifest = run_intake(input_path, case_id=case_id)
         init_graph(manifest.case_dir)
         with open_ledger(manifest.case_dir):
