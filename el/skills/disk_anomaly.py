@@ -271,11 +271,25 @@ _SYSTEM_BIN_PATH_RE = re.compile(
 
 
 def _scan_bodyfile_rowwise(text: str) -> list[PathHit]:
-    """Parse pipe-delimited fls bodyfile lines and flag rows whose path
-    is a /WINDOWS/system32 binary AND whose size is 0 OR whose four
-    timestamps (atime, mtime, ctime, crtime) are all zero."""
+    """Parse pipe-delimited fls bodyfile lines. Three detectors:
+
+    1. System binaries with size=0 (zeroed-out-after-execution wipe).
+    2. System binaries with all four MACB timestamps zero.
+    3. **MACB timestomp skew**: any $DATA row where crtime (B) predates
+       mtime (M) by ≥ 7 days and all four timestamps are non-zero.
+       Every tool that timestomps to a plausible-looking earlier date
+       (TimestompPro, SetMACE, PowerShell `[DateTime]`, attrib) leaves
+       this footprint — B-time can't be legitimately years before M-time
+       on the same inode. The 7-day floor absorbs DST / timezone shifts
+       and restored-from-backup cases; anything beyond is deliberate.
+       Detector #2 catches the degenerate "all zeroes" case; this one
+       catches the realistic case.
+    """
     zero_size: list[str] = []
     zero_ts: list[str] = []
+    macb_skew: list[str] = []
+    # Floor: crtime more than SEVEN_DAYS before mtime is the trip point.
+    _SKEW_FLOOR_SECONDS = 7 * 24 * 60 * 60
     for line in text.splitlines():
         if "|" not in line:
             continue
@@ -283,8 +297,6 @@ def _scan_bodyfile_rowwise(text: str) -> list[PathHit]:
         if len(parts) < 11:
             continue
         name = parts[1]
-        if not _SYSTEM_BIN_PATH_RE.search(name):
-            continue
         try:
             size = int(parts[6] or "0")
             atime = int(parts[7] or "0")
@@ -296,12 +308,26 @@ def _scan_bodyfile_rowwise(text: str) -> list[PathHit]:
         # FILE_NAME attribute rows (NTFS 48-2) often have size=0 legitimately;
         # only flag DATA rows (mode shows $DATA or no $-suffix)
         is_fname_attr = "($FILE_NAME)" in name
-        if size == 0 and not is_fname_attr:
+        is_directory = len(parts) > 3 and parts[3].startswith("d/")
+        is_system_path = bool(_SYSTEM_BIN_PATH_RE.search(name))
+
+        if is_system_path and size == 0 and not is_fname_attr:
             if len(zero_size) < 15:
                 zero_size.append(name[-120:])
-        if (atime == mtime == ctime == crtime == 0) and not is_fname_attr:
+        if (is_system_path and atime == mtime == ctime == crtime == 0
+                and not is_fname_attr):
             if len(zero_ts) < 15:
                 zero_ts.append(name[-120:])
+
+        # MACB skew: applies to every $DATA row (not system-path-only),
+        # since real attackers timestomp user files, too — the Rathbun
+        # anti-forensics reference image demonstrates exactly this.
+        if (not is_fname_attr and not is_directory
+                and atime and mtime and ctime and crtime
+                and mtime - crtime >= _SKEW_FLOOR_SECONDS):
+            if len(macb_skew) < 15:
+                days = (mtime - crtime) // 86400
+                macb_skew.append(f"{name[-120:]} (B→M skew {days} days)")
     hits: list[PathHit] = []
     if zero_size:
         hits.append(PathHit(
@@ -325,6 +351,23 @@ def _scan_bodyfile_rowwise(text: str) -> list[PathHit]:
                          "timestamps zero — timestomping / anti-forensic "
                          "tampering of a system file"),
             matches=zero_ts,
+            hypotheses=["H_ANTI_FORENSICS"],
+            attack_techniques=[
+                ("T1070.006", "Indicator Removal: Timestomp"),
+            ],
+        ))
+    if macb_skew:
+        hits.append(PathHit(
+            pattern_id="MACB_TIMESTOMP_SKEW",
+            description=("File with crtime (B) more than 7 days before "
+                         "mtime (M) on the same inode — created-in-the-"
+                         "past while modified-now is the signature of "
+                         "deliberate timestomping (TimestompPro, SetMACE, "
+                         "PowerShell [DateTime], attrib). Unlike "
+                         "SYSTEM_BINARY_ZERO_TIMESTAMPS this fires on "
+                         "user files too, since real attackers timestomp "
+                         "payloads they plant under /Users/."),
+            matches=macb_skew,
             hypotheses=["H_ANTI_FORENSICS"],
             attack_techniques=[
                 ("T1070.006", "Indicator Removal: Timestomp"),

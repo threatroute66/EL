@@ -6,6 +6,20 @@
     "runner_hyp": "H_APT_ESPIONAGE",
     "runner_score": 1
   },
+  "anti-forensics-vhdx": {
+    "finding_count": 16,
+    "leader_hyp": "H_ANTI_FORENSICS",
+    "leader_score": 0,
+    "runner_hyp": "H_APT_ESPIONAGE",
+    "runner_score": 0
+  },
+  "anti-forensics-vhdx-r2": {
+    "finding_count": 17,
+    "leader_hyp": "H_ANTI_FORENSICS",
+    "leader_score": 5,
+    "runner_hyp": "H_APT_ESPIONAGE",
+    "runner_score": 1
+  },
   "belkactf-kidnapper": {
     "finding_count": 58,
     "leader_hyp": "H_OPPORTUNISTIC_COMMODITY",
@@ -22,9 +36,9 @@
   },
   "ios14-iphonese": {
     "finding_count": 86,
-    "leader_hyp": "H_APT_ESPIONAGE",
+    "leader_hyp": "H_ANTI_FORENSICS",
     "leader_score": 0,
-    "runner_hyp": "H_BEC_ACCOUNT_TAKEOVER",
+    "runner_hyp": "H_APT_ESPIONAGE",
     "runner_score": 0
   },
   "linux-ddcase-exh18": {
@@ -37,7 +51,7 @@
   "lonewolf-disk": {
     "finding_count": 242,
     "leader_hyp": "H_APT_ESPIONAGE",
-    "leader_score": 21,
+    "leader_score": 23,
     "runner_hyp": "H_OPPORTUNISTIC_COMMODITY",
     "runner_score": 18
   },
@@ -45,7 +59,7 @@
     "finding_count": 196,
     "leader_hyp": "H_C2_BEACONING",
     "leader_score": 11,
-    "runner_hyp": "H_APT_ESPIONAGE",
+    "runner_hyp": "H_ANTI_FORENSICS",
     "runner_score": 0
   },
   "m57-jean": {
@@ -57,9 +71,9 @@
   },
   "macos-bigsur": {
     "finding_count": 7,
-    "leader_hyp": "H_APT_ESPIONAGE",
+    "leader_hyp": "H_ANTI_FORENSICS",
     "leader_score": 0,
-    "runner_hyp": "H_BEC_ACCOUNT_TAKEOVER",
+    "runner_hyp": "H_APT_ESPIONAGE",
     "runner_score": 0
   },
   "raw-audit-logs": {
@@ -72,7 +86,7 @@
   "srl2015-controller-disk": {
     "finding_count": 38,
     "leader_hyp": "H_APT_ESPIONAGE",
-    "leader_score": 20,
+    "leader_score": 22,
     "runner_hyp": "H_LATERAL_MOVEMENT",
     "runner_score": 15
   },
@@ -86,7 +100,7 @@
   "srl2015-nfury-disk": {
     "finding_count": 42,
     "leader_hyp": "H_APT_ESPIONAGE",
-    "leader_score": 26,
+    "leader_score": 28,
     "runner_hyp": "H_LATERAL_MOVEMENT",
     "runner_score": 15
   },
@@ -100,7 +114,7 @@
   "srl2015-nromanoff-disk": {
     "finding_count": 143,
     "leader_hyp": "H_APT_ESPIONAGE",
-    "leader_score": 32,
+    "leader_score": 34,
     "runner_hyp": "H_LATERAL_MOVEMENT",
     "runner_score": 18
   },
@@ -135,28 +149,28 @@
   "srl2018-dc-disk": {
     "finding_count": 62,
     "leader_hyp": "H_APT_ESPIONAGE",
-    "leader_score": 30,
+    "leader_score": 32,
     "runner_hyp": "H_LATERAL_MOVEMENT",
     "runner_score": 18
   },
   "srl2018-dc-memory": {
     "finding_count": 30,
-    "leader_hyp": "H_APT_ESPIONAGE",
+    "leader_hyp": "H_ANTI_FORENSICS",
     "leader_score": 0,
-    "runner_hyp": "H_BEC_ACCOUNT_TAKEOVER",
+    "runner_hyp": "H_APT_ESPIONAGE",
     "runner_score": 0
   },
   "srl2018-dmzftp-disk": {
     "finding_count": 65,
     "leader_hyp": "H_APT_ESPIONAGE",
-    "leader_score": 43,
+    "leader_score": 45,
     "runner_hyp": "H_LATERAL_MOVEMENT",
     "runner_score": 27
   },
   "srl2018-file-disk": {
     "finding_count": 56,
     "leader_hyp": "H_APT_ESPIONAGE",
-    "leader_score": 24,
+    "leader_score": 26,
     "runner_hyp": "H_LATERAL_MOVEMENT",
     "runner_score": 18
   },
@@ -169,16 +183,16 @@
   },
   "srl2018-mail-memory": {
     "finding_count": 2,
-    "leader_hyp": "H_APT_ESPIONAGE",
+    "leader_hyp": "H_ANTI_FORENSICS",
     "leader_score": 0,
-    "runner_hyp": "H_BEC_ACCOUNT_TAKEOVER",
+    "runner_hyp": "H_APT_ESPIONAGE",
     "runner_score": 0
   },
   "srl2018-mail-memory-r2": {
     "finding_count": 2,
-    "leader_hyp": "H_APT_ESPIONAGE",
+    "leader_hyp": "H_ANTI_FORENSICS",
     "leader_score": 0,
-    "runner_hyp": "H_BEC_ACCOUNT_TAKEOVER",
+    "runner_hyp": "H_APT_ESPIONAGE",
     "runner_score": 0
   },
   "srl2018-mail-memory-r3": {
@@ -190,15 +204,15 @@
   },
   "srl2018-mail-memory-retry": {
     "finding_count": 2,
-    "leader_hyp": "H_APT_ESPIONAGE",
+    "leader_hyp": "H_ANTI_FORENSICS",
     "leader_score": 0,
-    "runner_hyp": "H_BEC_ACCOUNT_TAKEOVER",
+    "runner_hyp": "H_APT_ESPIONAGE",
     "runner_score": 0
   },
   "srl2018-rd01-disk": {
     "finding_count": 300,
     "leader_hyp": "H_APT_ESPIONAGE",
-    "leader_score": 25,
+    "leader_score": 27,
     "runner_hyp": "H_LATERAL_MOVEMENT",
     "runner_score": 15
   },
@@ -212,15 +226,15 @@
   "srl2018-rd02-disk": {
     "finding_count": 208,
     "leader_hyp": "H_APT_ESPIONAGE",
-    "leader_score": 19,
-    "runner_hyp": "H_LATERAL_MOVEMENT",
+    "leader_score": 21,
+    "runner_hyp": "H_ANTI_FORENSICS",
     "runner_score": 12
   },
   "srl2018-sp-memory": {
     "finding_count": 2,
-    "leader_hyp": "H_APT_ESPIONAGE",
+    "leader_hyp": "H_ANTI_FORENSICS",
     "leader_score": 0,
-    "runner_hyp": "H_BEC_ACCOUNT_TAKEOVER",
+    "runner_hyp": "H_APT_ESPIONAGE",
     "runner_score": 0
   },
   "srl2018-sp-memory-r2": {
@@ -233,7 +247,7 @@
   "srl2018-wkstn01-disk": {
     "finding_count": 256,
     "leader_hyp": "H_APT_ESPIONAGE",
-    "leader_score": 21,
+    "leader_score": 23,
     "runner_hyp": "H_LATERAL_MOVEMENT",
     "runner_score": 15
   },
@@ -247,7 +261,7 @@
   "srl2018-wkstn05-disk": {
     "finding_count": 188,
     "leader_hyp": "H_APT_ESPIONAGE",
-    "leader_score": 24,
+    "leader_score": 26,
     "runner_hyp": "H_LATERAL_MOVEMENT",
     "runner_score": 18
   },
@@ -260,9 +274,9 @@
   },
   "unallocated-blob": {
     "finding_count": 8,
-    "leader_hyp": "H_APT_ESPIONAGE",
+    "leader_hyp": "H_ANTI_FORENSICS",
     "leader_score": 0,
-    "runner_hyp": "H_BEC_ACCOUNT_TAKEOVER",
+    "runner_hyp": "H_APT_ESPIONAGE",
     "runner_score": 0
   }
 }

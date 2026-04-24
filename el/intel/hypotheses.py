@@ -77,7 +77,10 @@ def _h_benign(f: Finding) -> int:
                 # RDP-session EIDs are almost never benign in the DFIR
                 # context.
                 "H_EID_1102", "H_EID_104",
-                "H_EID_5860", "H_EID_5861"):
+                "H_EID_5860", "H_EID_5861",
+                # Anti-forensics is deliberate — benign activity does
+                # not timestomp, zero-size, or sdelete system files.
+                "H_ANTI_FORENSICS"):
         if tag in f.hypotheses_supported:
             s -= 3
     if _claim_contains("createaccesskey", "putbucketpolicy", "failed console",
@@ -134,6 +137,10 @@ def _h_apt(f: Finding) -> int:
     # Log-clearing is a core APT/intrusion signature
     if _has_tag("H_EID_1102")(f): s += 2
     if _has_tag("H_EID_104")(f):  s += 2
+    # Anti-forensics (timestomping, log-clearing, system-binary wipe)
+    # is a core APT playbook step, weak alone but corroborative when
+    # combined with the above.
+    if _has_tag("H_ANTI_FORENSICS")(f): s += 1
     if _claim_contains("4624", "4672", "4769", "kerberos",
                         "credential-access target")(f):
         s += 1
@@ -281,6 +288,34 @@ def _h_scan_recon(f: Finding) -> int:
     return s
 
 
+def _h_anti_forensics(f: Finding) -> int:
+    """Deliberate tampering with evidence trails — log clearing,
+    timestomping, system-binary zeroing, sdelete.
+
+    Distinct from H_APT_ESPIONAGE because benign insiders / commodity
+    malware cleanup scripts can also tamper with artefacts; the two
+    hypotheses can coexist with different score profiles. Ranking
+    these separately lets ACH surface "this host was scrubbed" as a
+    first-class conclusion even when the attacker's *other* signals
+    are absent (the Rathbun anti-forensics reference image ships that
+    exact shape — timestomping only, no C2, no credential access)."""
+    s = 0
+    # Direct tags from disk_anomaly.py + evtx_triage log-clearing events.
+    if _has_tag("H_ANTI_FORENSICS")(f): s += 3
+    if _has_tag("H_LOG_CLEARED")(f): s += 2
+    # Timestomp + sdelete traces surface through the claim body.
+    if _claim_contains("timestomp", "timestomping", "sdelete",
+                        "secure delete", "b→m skew",
+                        "zero-size system binary",
+                        "all four macb timestamps zero")(f):
+        s += 2
+    # EID 1102 (audit-log cleared) + 104 (event-log cleared) —
+    # already H_EID_1102 / H_EID_104 tags in the ledger.
+    if _has_tag("H_EID_1102")(f): s += 2
+    if _has_tag("H_EID_104")(f):  s += 2
+    return s
+
+
 def _h_c2_beaconing(f: Finding) -> int:
     """Only lift on EXPLICIT C2-shaped tags or strongly-typed keywords.
     Earlier version keyword-matched 'tcp'/'udp' which lifted H_C2 on every
@@ -387,6 +422,13 @@ HYPOTHESES: list[Hypothesis] = [
                           else (2 if ("H_EID_7045" in f.hypotheses_supported
                                        or "H_EID_4697" in f.hypotheses_supported)
                                 else 0))),
+    Hypothesis("H_ANTI_FORENSICS",
+               "Anti-forensics / evidence tampering",
+               "Deliberate tampering with evidence trails — timestomping, "
+               "log clearing, sdelete / system-binary wipe. Stands alone "
+               "when the attacker's other signals are absent but the "
+               "tampering itself is visible (Rathbun VHDX shape).",
+               _h_anti_forensics),
 ]
 
 
