@@ -8,6 +8,10 @@ from ulid import ULID
 
 Confidence = Literal["high", "medium", "low", "insufficient"]
 RedReviewStatus = Literal["pending", "passed", "challenged", "unresolved"]
+# NATO Admiralty-code source reliability (A-F) + info credibility (1-6).
+# "X" is "explicitly unset" — the default for evidence not yet migrated.
+SourceReliability = Literal["A", "B", "C", "D", "E", "F", "X"]
+InfoCredibility = Literal["1", "2", "3", "4", "5", "6", "X"]
 
 
 def _ulid() -> str:
@@ -26,6 +30,17 @@ class EvidenceItem(BaseModel):
     output_path: str
     extracted_facts: dict = Field(default_factory=dict)
     captured_utc: datetime = Field(default_factory=_now_utc)
+    # Admiralty-code provenance pair. Defaults to "X X" (explicitly
+    # unset) so untouched call sites still validate; el.intel.admiralty
+    # carries the canonical tool-tier mapping for migrating callers.
+    source_reliability: SourceReliability = "X"
+    info_credibility: InfoCredibility = "X"
+
+    @property
+    def admiralty(self) -> str:
+        """Two-character Admiralty rating like ``A1`` for compact
+        rendering in reports."""
+        return f"{self.source_reliability}{self.info_credibility}"
 
 
 class RedReview(BaseModel):
