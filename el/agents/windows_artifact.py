@@ -99,6 +99,9 @@ class WindowsArtifactAgent(Agent):
         # Server per-user/per-IP role-access logs. Highest-signal
         # artifact on a server case for "who logged in from where".
         out.extend(self._ual(ctx, root, analysis))
+        # Inventory-style findings for the small artifact buckets:
+        # WER crash queue, thumb caches, SmartScreen AppCache.
+        out.extend(self._inventory_finds(ctx, root))
 
         if all(f.confidence == "insufficient" for f in out):
             out.append(self.emit(ctx, Finding(
@@ -704,6 +707,65 @@ class WindowsArtifactAgent(Agent):
                     evidence=[ev],
                     hypotheses_supported=h.hypotheses,
                 )))
+        return out
+
+    def _inventory_finds(self, ctx, root):
+        """Emit one Finding per non-empty inventory bucket: WER crash
+        reports, thumb caches, SmartScreen AppCache. Each is a
+        directory + file-count signal — full per-record parsers can
+        come later when a real case demands them."""
+        from el.schemas.finding import EvidenceItem
+        import hashlib
+
+        out = []
+        buckets = [
+            ("wer", "Windows Error Reporting crash queue",
+             "Crashes often coincide with exploitation attempts "
+             "(unhandled exceptions in shellcode, DLL hijacks). "
+             "Each subdir is one crash; Report.wer text gives the "
+             "crashing executable + reason.",
+             ["H_DISK_ARTIFACTS", "H_PROCESS_INJECTION"]),
+            ("thumbcache", "Windows Explorer thumb caches",
+             "Embedded-JPEG thumbnails of files the user opened. "
+             "Survives deletion of the source — useful when a file "
+             "was wiped but its thumbnail is still cached.",
+             ["H_DISK_ARTIFACTS"]),
+            ("smartscreen", "SmartScreen AppCache reputation log",
+             "Records SmartScreen-vetted downloads + reputation "
+             "decisions. Useful for tracking what Windows Defender's "
+             "URL/file-reputation service saw on this host.",
+             ["H_DISK_ARTIFACTS"]),
+        ]
+        for sub, label, why, hyps in buckets:
+            d = _finddir(root, sub)
+            if d is None:
+                d = _finddir(root, "windows-artifacts", sub)
+            if d is None:
+                continue
+            files = [f for f in d.rglob("*") if f.is_file()]
+            if not files:
+                continue
+            sample = ", ".join(sorted({f.parent.name for f in files})[:5])
+            sha_seed = "|".join(sorted(str(f) for f in files))
+            sha = hashlib.sha256(sha_seed.encode()).hexdigest()
+            out.append(self.emit(ctx, Finding(
+                case_id=ctx.case_id, agent=self.name,
+                confidence="medium",
+                claim=(f"{label}: {len(files)} file(s) extracted "
+                       f"under {d.name}/. {why} "
+                       f"Subdirs sampled: {sample}."),
+                evidence=[EvidenceItem(
+                    tool="el.windows_artifact", version="0.1.0",
+                    command=f"inventory({sub})",
+                    output_sha256=sha, output_path=str(d),
+                    extracted_facts={
+                        "bucket": sub,
+                        "file_count": len(files),
+                        "subdirs_sample": sorted({
+                            f.parent.name for f in files})[:8],
+                    })],
+                hypotheses_supported=hyps,
+            )))
         return out
 
     def _ual(self, ctx, root, analysis):

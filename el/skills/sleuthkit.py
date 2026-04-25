@@ -555,6 +555,57 @@ def extract_windows_artifacts(mount_point: Path, exports_dir: Path) -> dict:
                             out["ps_transcript_files"] = (
                                 out.get("ps_transcript_files", 0) + 1
                             )
+            # Thumb caches — `thumbcache_*.db` files under Explorer/.
+            # Tiny binary blobs holding embedded JPEG thumbnails of
+            # files the user opened. Useful when a file was deleted
+            # but its thumbnail survives.
+            tc_src = _resolve_ci(
+                user_dir, "AppData", "Local", "Microsoft", "Windows",
+                "Explorer")
+            if tc_src and tc_src.is_dir():
+                tc_dst = (exports_dir / "windows-artifacts"
+                          / "thumbcache" / user_dir.name)
+                n_tc = 0
+                for f in tc_src.iterdir():
+                    if not f.is_file():
+                        continue
+                    nm = f.name.lower()
+                    if not (nm.startswith("thumbcache_")
+                             or nm.startswith("iconcache_")):
+                        continue
+                    if not nm.endswith(".db"):
+                        continue
+                    tc_dst.mkdir(parents=True, exist_ok=True)
+                    if _sudo_cp(f, tc_dst / f.name):
+                        n_tc += 1
+                if n_tc:
+                    out["thumbcache_files"] = (
+                        out.get("thumbcache_files", 0) + n_tc
+                    )
+
+            # SmartScreen application cache —
+            # `AppData\Local\Microsoft\Windows\AppCache\AppCache*.db`
+            # records SmartScreen-vetted downloads + reputation hits.
+            ss_src = _resolve_ci(
+                user_dir, "AppData", "Local", "Microsoft", "Windows",
+                "AppCache")
+            if ss_src and ss_src.is_dir():
+                ss_dst = (exports_dir / "windows-artifacts"
+                          / "smartscreen" / user_dir.name)
+                n_ss = 0
+                for f in ss_src.iterdir():
+                    if not f.is_file():
+                        continue
+                    if not f.name.lower().endswith(".db"):
+                        continue
+                    ss_dst.mkdir(parents=True, exist_ok=True)
+                    if _sudo_cp(f, ss_dst / f.name):
+                        n_ss += 1
+                if n_ss:
+                    out["smartscreen_files"] = (
+                        out.get("smartscreen_files", 0) + n_ss
+                    )
+
             # UWP / Cloud-Clipboard items (Windows 1809+). Pinned items
             # live forever; recent items roll off after a few days. The
             # whole tree is small (<10 MB typically) so we copy it all.
@@ -584,6 +635,44 @@ def extract_windows_artifacts(mount_point: Path, exports_dir: Path) -> dict:
             out["outlook_pst"] = n_pst
         if n_firefox:
             out["firefox_profiles"] = n_firefox
+
+    # Windows Error Reporting (WER) report queue under
+    # %ProgramData%\Microsoft\Windows\WER\ReportQueue\. Each per-crash
+    # subdir holds a Report.wer text file with the crashing executable
+    # name + reason. Crashes often coincide with exploitation attempts
+    # (DoubleAgent / DLL hijack / unhandled exceptions in shellcode).
+    wer_root = None
+    pd_dir = _child_ci(mount_point, "ProgramData")
+    if pd_dir:
+        ms_dir = _child_ci(pd_dir, "Microsoft")
+        if ms_dir:
+            win_dir = _child_ci(ms_dir, "Windows")
+            if win_dir:
+                wer_root = _child_ci(win_dir, "WER")
+    if wer_root and wer_root.is_dir():
+        wer_dst = exports_dir / "wer"
+        wer_dst.mkdir(parents=True, exist_ok=True)
+        n_wer = 0
+        for queue in ("ReportQueue", "ReportArchive"):
+            qd = _child_ci(wer_root, queue)
+            if not (qd and qd.is_dir()):
+                continue
+            for sub in qd.iterdir():
+                if not sub.is_dir():
+                    continue
+                # Each subdir is one crash; copy any Report.wer / .txt
+                # / .xml files (small, dozens KB).
+                for f in sub.iterdir():
+                    if not f.is_file():
+                        continue
+                    if f.suffix.lower() not in (".wer", ".txt", ".xml"):
+                        continue
+                    dst = wer_dst / queue / sub.name
+                    dst.mkdir(parents=True, exist_ok=True)
+                    if _sudo_cp(f, dst / f.name):
+                        n_wer += 1
+        if n_wer:
+            out["wer_files"] = n_wer
 
     # User Access Logging (UAL) — Windows Server 2012+ ESE databases
     # at C:\Windows\System32\LogFiles\Sum\<GUID>.mdb. Per-user / per-IP
