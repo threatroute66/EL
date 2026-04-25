@@ -15,6 +15,16 @@ from el.skills import vol3
 
 # --- skill-level signature --------------------------------------------------
 
+def test_vol3_yarascan_unsupported_family_raises(tmp_path):
+    """vol3 2.27 has no mac.vmayarascan equivalent — raise cleanly
+    instead of letting vol3's 'invalid choice' stderr bubble up."""
+    with pytest.raises(vol3.Vol3Error, match="no yara-scan plugin"):
+        vol3.yarascan(
+            tmp_path / "mem.img", tmp_path / "rules.yar",
+            tmp_path, family="mac",
+        )
+
+
 def test_vol3_yarascan_passes_family_and_rules(monkeypatch, tmp_path):
     captured = {}
 
@@ -37,8 +47,8 @@ def test_vol3_yarascan_passes_family_and_rules(monkeypatch, tmp_path):
     img.touch()
 
     r = vol3.yarascan(img, rules, tmp_path, family="linux")
-    assert captured["plugin"] == "linux.yarascan.YaraScan"
-    assert captured["extra_args"] == ["--yara-rules", str(rules)]
+    assert captured["plugin"] == "linux.vmayarascan.VmaYaraScan"
+    assert captured["extra_args"] == ["--yara-file", str(rules)]
     assert captured["timeout"] == 1800
     assert r.rc == 0
 
@@ -65,7 +75,7 @@ def _fake_plugin_run(rows, *, rc=0, tmp_path=None):
     stdout_path.write_text("{}")
     stderr_path.write_text("")
     return vol3.PluginRun(
-        plugin="windows.yarascan.YaraScan",
+        plugin="windows.vadyarascan.VadYaraScan",
         image=Path("/tmp/mem.img"), rc=rc,
         stdout_path=stdout_path,
         stderr_path=stderr_path,
@@ -100,10 +110,12 @@ def test_agent_emits_high_conf_finding_per_rule_with_attribution(
     agent = ThreatHunterAgent()
     monkeypatch.setattr(agent, "emit", lambda ctx, f: f)
 
+    # Mix of real-shape rows: vadyarascan uses ImageFileName, the
+    # older Owner/Task keys stay supported as fallbacks.
     fake_rows = [
-        {"Rule": "mimi_sig", "PID": 624, "Owner": "lsass.exe",
+        {"Rule": "mimi_sig", "PID": 624, "ImageFileName": "lsass.exe",
          "Offset": 0x7fff1234, "Component": "ntdll.dll"},
-        {"Rule": "mimi_sig", "PID": 624, "Owner": "lsass.exe",
+        {"Rule": "mimi_sig", "PID": 624, "ImageFileName": "lsass.exe",
          "Offset": 0x7fff5678, "Component": "ntdll.dll"},
         {"Rule": "cobaltstrike", "PID": 1024, "Task": "svchost.exe",
          "Offset": 0x1234},

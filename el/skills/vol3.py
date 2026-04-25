@@ -180,9 +180,12 @@ def detect_os(image: str | Path, out_dir: str | Path) -> tuple[str | None, Plugi
 def yarascan(image: str | Path, rules_path: str | Path,
              out_dir: str | Path, *, family: str = "windows",
              timeout: int = 1800) -> PluginRun:
-    """Run `vol3 <family>.yarascan.YaraScan --yara-rules <rules>`.
+    """Run vol3's process-attributed YARA scan — vadyarascan on Windows
+    and vmayarascan on Linux. (vol3 2.27 renamed the flat yarascan
+    plugin; the VAD/VMA variants are the ones that carry PID + task
+    attribution.)
 
-    Complements the standalone `yara` binary: vol3's plugin walks the
+    Complements the standalone `yara` binary: these plugins walk the
     memory layer's virtual address space per process, so matches carry
     process attribution (PID, task name, VA) instead of just a raw
     offset into the .mem file. Callers can turn that into claims like
@@ -190,13 +193,30 @@ def yarascan(image: str | Path, rules_path: str | Path,
     than "rule MIMI matched at offset 0x..." which requires a second
     pass to attribute.
 
-    The rules_path may be a single .yar file OR a directory of .yar
-    files; vol3 accepts either for `--yara-rules`.
+    The rules_path must be a single .yar file — vadyarascan / vmayarascan
+    take one `--yara-file` path (their cousin `--yara-compiled-file`
+    accepts a pre-compiled rules blob). For a rules directory, point at
+    a single aggregator .yar that `include`s the rest, or compile with
+    `yara -C` and use yarascan directly.
+
+    Note: requires `yara-python` in the same environment as vol3 —
+    without it vol3 silently drops every yarascan plugin from the
+    choice list. Install via `pip install yara-python` into the venv.
     """
     rules_path = Path(rules_path)
-    plugin = f"{family}.yarascan.YaraScan"
+    plugin_by_family = {
+        "windows": "windows.vadyarascan.VadYaraScan",
+        "linux":   "linux.vmayarascan.VmaYaraScan",
+        # mac has no maintained yarascan plugin in 2.27 — surface a
+        # clean error instead of a spurious "invalid choice" one.
+    }
+    plugin = plugin_by_family.get(family)
+    if plugin is None:
+        raise Vol3Error(
+            f"vol3 has no yara-scan plugin for family={family!r}"
+        )
     return run_plugin(
         image=image, plugin=plugin, out_dir=out_dir,
-        extra_args=["--yara-rules", str(rules_path)],
+        extra_args=["--yara-file", str(rules_path)],
         timeout=timeout,
     )

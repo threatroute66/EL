@@ -153,11 +153,22 @@ class ThreatHunterAgent(Agent):
             by_rule[rule].append(row)
 
         out: list[Finding] = []
+        # vadyarascan emits "ImageFileName" + "PID" + "PPID";
+        # vmayarascan emits "TaskName" + "TID". Try every key name we
+        # might see so PID attribution doesn't silently degrade to '?'.
+        def _proc_name(row: dict) -> str:
+            for key in ("ImageFileName", "Task", "TaskName",
+                         "Owner", "ProcessName", "Name"):
+                v = row.get(key)
+                if v:
+                    return str(v)
+            return "?"
+
         for rule, hits in list(by_rule.items())[:20]:
             processes = sorted({
-                f"{(h.get('Owner') or h.get('Task') or '?')} "
-                f"(PID {h.get('PID') or '?'})"
-                for h in hits if h.get("PID") or h.get("Owner")
+                f"{_proc_name(h)} (PID {h.get('PID') or h.get('TID') or '?'})"
+                for h in hits if h.get("PID") or h.get("TID")
+                                  or h.get("ImageFileName")
             })
             pids = ", ".join(processes[:5]) or "no PID attribution"
             out.append(self.emit(ctx, Finding(
