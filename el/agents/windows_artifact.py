@@ -90,6 +90,11 @@ class WindowsArtifactAgent(Agent):
         # Clipboard\. High-signal user-activity artefact missed by
         # ActivitiesCache.db alone.
         out.extend(self._uwp_clipboard(ctx, root, analysis))
+        # CapabilityAccessManager ConsentStore — last-used timestamps
+        # for per-app sensitive capabilities (camera/mic/location/
+        # contacts/files). Surfaces use by sandboxed UWP apps that
+        # don't appear in Prefetch.
+        out.extend(self._capability_access(ctx, root, analysis))
 
         if all(f.confidence == "insufficient" for f in out):
             out.append(self.emit(ctx, Finding(
@@ -695,6 +700,86 @@ class WindowsArtifactAgent(Agent):
                     evidence=[ev],
                     hypotheses_supported=h.hypotheses,
                 )))
+        return out
+
+    def _capability_access(self, ctx, root, analysis):
+        """Parse the SOFTWARE hive's CapabilityAccessManager
+        ConsentStore. One Finding per (capability, app) pair with a
+        last-used timestamp. Currently-in-use apps (LastUsedTimeStop=0
+        with a non-zero LastUsedTimeStart) get high confidence — at
+        acquisition time the camera / microphone / location was
+        actually live."""
+        from el.schemas.finding import EvidenceItem
+        from el.skills import capability_access as ca
+        import hashlib
+
+        software = _findfirst(root, "SOFTWARE")
+        if not software:
+            return []
+        try:
+            uses = ca.parse_software_hive(software)
+        except Exception as e:
+            return [self.emit(ctx, Finding(
+                case_id=ctx.case_id, agent=self.name,
+                confidence="insufficient",
+                claim=f"CapabilityAccess parse failed: {e}",
+            ))]
+        if not uses:
+            return [self.emit(ctx, Finding(
+                case_id=ctx.case_id, agent=self.name,
+                confidence="insufficient",
+                claim=("CapabilityAccess: SOFTWARE hive parsed but the "
+                       "ConsentStore subtree is empty (pre-Win10-1903 "
+                       "build, or the hive snapshot predates app "
+                       "activity)."),
+            ))]
+
+        sha = hashlib.sha256(software.read_bytes()).hexdigest()
+        in_use = [u for u in uses if u.in_use_at_acquisition]
+        out = []
+        out.append(self.emit(ctx, Finding(
+            case_id=ctx.case_id, agent=self.name, confidence="medium",
+            claim=(f"CapabilityAccess: {len(uses)} app/capability "
+                   f"record(s) under {len(set(u.capability for u in uses))} "
+                   f"capabilities; {len(in_use)} were live at "
+                   f"acquisition time."),
+            evidence=[EvidenceItem(
+                tool="el.capability_access", version="0.1.0",
+                command="parse_software_hive(SOFTWARE)",
+                output_sha256=sha,
+                output_path=str(software),
+                extracted_facts={
+                    "uses_total": len(uses),
+                    "in_use_at_acquisition": len(in_use),
+                    "capabilities": sorted(set(u.capability for u in uses)),
+                })],
+            hypotheses_supported=["H_DISK_ARTIFACTS"],
+        )))
+
+        # In-use-at-acquisition is the highest-signal subset: camera /
+        # microphone / location was being used right when the box was
+        # imaged. One Finding per such record, capped to keep the
+        # ledger tight.
+        for u in in_use[:30]:
+            high = u.capability.lower() in ca.HIGH_INTEREST_CAPABILITIES
+            out.append(self.emit(ctx, Finding(
+                case_id=ctx.case_id, agent=self.name,
+                confidence="high" if high else "medium",
+                claim=(f"CapabilityAccess in-use at acquisition: "
+                       f"{u.app} held {u.capability} "
+                       f"(LastUsedStart={u.last_used_start_utc}, "
+                       f"Stop=0 → still active)"),
+                evidence=[EvidenceItem(
+                    tool="el.capability_access", version="0.1.0",
+                    command=f"capability={u.capability} app={u.app}",
+                    output_sha256=sha, output_path=str(software),
+                    extracted_facts={
+                        "capability": u.capability,
+                        "app": u.app,
+                        "last_used_start_utc": u.last_used_start_utc,
+                    })],
+                hypotheses_supported=["H_DISK_ARTIFACTS"],
+            )))
         return out
 
     def _uwp_clipboard(self, ctx, root, analysis):
