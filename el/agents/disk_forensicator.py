@@ -543,6 +543,63 @@ class DiskForensicatorAgent(Agent):
         # mount (FUSE doesn't allow mkdir there — ENOSYS). Use a sibling dir.
         fs_mount = Path("/tmp/el-mounts") / f"{ctx.case_id}-fs-{label}"
         exports_dir = ctx.case_dir / "exports" / "windows-artifacts"
+        # Volume Shadow Copy enumeration BEFORE the live-FS mount.
+        # vshadowinfo reads the VSS metadata directly off the raw
+        # stream — no kernel mount needed — so it works whether or
+        # not we successfully mount the partition afterwards. Each
+        # snapshot listed here is a separate point-in-time view of
+        # registry / EVTX / user files the analyst can re-acquire by
+        # vshadowmount-ing the store and re-running the disk pipeline
+        # against it (full pipeline integration is future work).
+        try:
+            from el.skills import vss
+            shadows = vss.list_shadows(
+                raw_image, offset=partition["start_sector"] * sector_size,
+                timeout=60,
+            )
+            if shadows:
+                from el.schemas.finding import EvidenceItem
+                import hashlib
+                sample = "; ".join(
+                    f"#{s.index} ({s.creation_time_utc or '?'}, "
+                    f"{s.volume_size_bytes // (1024**3)} GiB)"
+                    for s in shadows[:5]
+                )
+                self.emit(ctx, Finding(
+                    case_id=ctx.case_id, agent=self.name,
+                    confidence="medium",
+                    claim=(f"Volume Shadow Copies on {label}: "
+                           f"{len(shadows)} snapshot(s) present. "
+                           f"Each is a distinct point-in-time view of "
+                           f"the volume — registry / EVTX / user files "
+                           f"may differ between acquisition and the "
+                           f"snapshot timestamps. "
+                           f"Snapshots: {sample}"
+                           f"{' …' if len(shadows) > 5 else ''}. "
+                           "Mount via `vshadowmount` to re-run this "
+                           "pipeline against any individual snapshot."),
+                    evidence=[EvidenceItem(
+                        tool="vshadowinfo", version="libvshadow-tools",
+                        command=(f"vshadowinfo -o "
+                                  f"{partition['start_sector']*sector_size} "
+                                  f"<raw>"),
+                        output_sha256=hashlib.sha256(
+                            "|".join(s.identifier for s in shadows).encode()
+                        ).hexdigest(),
+                        output_path=str(raw_image),
+                        extracted_facts={
+                            "shadow_count": len(shadows),
+                            "shadow_ids": [s.identifier for s in shadows][:10],
+                            "creation_times": [
+                                s.creation_time_utc for s in shadows][:10],
+                        })],
+                    hypotheses_supported=["H_DISK_ARTIFACTS"],
+                ))
+        except Exception:
+            # vshadowinfo failures are not fatal — non-VSS volumes are
+            # the common case.
+            pass
+
         try:
             sk.mount_ntfs(raw_image, partition["start_sector"], fs_mount,
                           sector_size=sector_size, timeout=60)
