@@ -225,8 +225,192 @@ def iter_office_candidates(roots: list[Path],
     return out
 
 
+@dataclass
+class PcodeAnalysis:
+    """Output of `pcodedmp`. P-code is the compiled VBA bytecode that
+    sits next to the source in an Office doc — attackers sometimes
+    leave the source benign while the actual malicious logic lives in
+    p-code that survives source-stripping. pcodedmp disassembles it."""
+    path: str
+    available: bool = False             # pcodedmp installed?
+    rc: int = 0
+    has_pcode: bool = False
+    line_count: int = 0
+    raw_path: str = ""
+    error: str = ""
+
+
+@dataclass
+class XlmAnalysis:
+    """Output of XLMMacroDeobfuscator. Excel 4.0 macros (XLM) predate
+    VBA and survive on a parallel attack surface."""
+    path: str
+    available: bool = False
+    rc: int = 0
+    has_xlm: bool = False
+    decoded_lines: int = 0
+    raw_path: str = ""
+    error: str = ""
+
+
+@dataclass
+class PdfAnalysis:
+    """Output of pdf-parser.py (Didier Stevens). PDF is a container —
+    JS, embedded OLE, OpenAction triggers, Launch actions, embedded
+    files all live inside indirect objects."""
+    path: str
+    available: bool = False
+    rc: int = 0
+    object_count: int = 0
+    suspicious_keywords: list[str] = field(default_factory=list)
+    raw_path: str = ""
+    error: str = ""
+
+
+def _pcodedmp_bin() -> str | None:
+    return (shutil.which("pcodedmp")
+            or shutil.which("/opt/EL/.venv/bin/pcodedmp"))
+
+
+def _xlmdeobf_bin() -> str | None:
+    return (shutil.which("xlmdeobfuscator")
+            or shutil.which("/opt/EL/.venv/bin/xlmdeobfuscator"))
+
+
+def _pdfparser_bin() -> str | None:
+    """Didier Stevens' `pdf-parser.py`. Various install paths across
+    SIFT versions."""
+    for name in ("pdf-parser", "pdf-parser.py"):
+        p = shutil.which(name)
+        if p:
+            return p
+    for guess in ("/opt/EL/.venv/bin/pdf-parser.py",
+                  "/usr/local/bin/pdf-parser.py",
+                  "/opt/didierstevens/pdf-parser.py"):
+        if Path(guess).is_file():
+            return guess
+    return None
+
+
+def analyze_pcode(path: str | Path, *,
+                   out_dir: Path | None = None,
+                   timeout: int = 60) -> PcodeAnalysis:
+    """Disassemble VBA p-code via `pcodedmp <path>`. Returns a
+    PcodeAnalysis even on failure / unavailable so callers don't
+    have to None-check."""
+    p = Path(path)
+    exe = _pcodedmp_bin()
+    if exe is None:
+        return PcodeAnalysis(path=str(p), available=False,
+                              error="pcodedmp not on PATH")
+    out = PcodeAnalysis(path=str(p), available=True)
+    try:
+        r = subprocess.run([exe, str(p)], check=False, capture_output=True,
+                            text=True, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        out.error = f"pcodedmp timeout after {timeout}s"
+        return out
+    out.rc = r.returncode
+    if out_dir is not None:
+        out_dir = Path(out_dir)
+        out_dir.mkdir(parents=True, exist_ok=True)
+        out.raw_path = str(out_dir / f"{p.name}.pcode.txt")
+        try:
+            Path(out.raw_path).write_text(r.stdout or "")
+        except OSError:
+            pass
+    text = r.stdout or ""
+    out.line_count = sum(1 for _ in text.splitlines())
+    out.has_pcode = out.line_count > 8 and "Line " in text
+    if out.rc != 0 and not out.error:
+        out.error = (r.stderr or "").strip()[-200:]
+    return out
+
+
+def analyze_xlm(path: str | Path, *,
+                 out_dir: Path | None = None,
+                 timeout: int = 120) -> XlmAnalysis:
+    """Decode Excel-4 (XLM) macros via xlmdeobfuscator."""
+    p = Path(path)
+    exe = _xlmdeobf_bin()
+    if exe is None:
+        return XlmAnalysis(path=str(p), available=False,
+                            error="xlmdeobfuscator not on PATH")
+    out = XlmAnalysis(path=str(p), available=True)
+    try:
+        r = subprocess.run([exe, "-f", str(p), "--no-indent"],
+                            check=False, capture_output=True,
+                            text=True, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        out.error = f"xlmdeobfuscator timeout after {timeout}s"
+        return out
+    out.rc = r.returncode
+    if out_dir is not None:
+        out_dir = Path(out_dir)
+        out_dir.mkdir(parents=True, exist_ok=True)
+        out.raw_path = str(out_dir / f"{p.name}.xlm.txt")
+        try:
+            Path(out.raw_path).write_text(r.stdout or "")
+        except OSError:
+            pass
+    text = r.stdout or ""
+    out.decoded_lines = sum(1 for line in text.splitlines()
+                             if line.startswith("CELL:"))
+    out.has_xlm = out.decoded_lines > 0
+    if out.rc != 0 and not out.error:
+        out.error = (r.stderr or "").strip()[-200:]
+    return out
+
+
+_PDF_SUSPECT_KEYWORDS = (
+    "/JavaScript", "/JS", "/AA", "/OpenAction", "/Launch",
+    "/SubmitForm", "/RichMedia", "/Action", "/EmbeddedFile",
+    "/XFA", "/JBIG2Decode",
+)
+
+
+def analyze_pdf(path: str | Path, *,
+                 out_dir: Path | None = None,
+                 timeout: int = 120) -> PdfAnalysis:
+    """Enumerate PDF indirect objects via `pdf-parser.py --stats`.
+    Surfaces suspicious-keyword tokens (/JavaScript, /OpenAction,
+    /Launch, /EmbeddedFile, …) without trying to dump object
+    content — that's a follow-up for the malware_triage chain."""
+    p = Path(path)
+    exe = _pdfparser_bin()
+    if exe is None:
+        return PdfAnalysis(path=str(p), available=False,
+                            error="pdf-parser not on PATH")
+    out = PdfAnalysis(path=str(p), available=True)
+    try:
+        r = subprocess.run([exe, "--stats", str(p)],
+                            check=False, capture_output=True,
+                            text=True, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        out.error = f"pdf-parser timeout after {timeout}s"
+        return out
+    out.rc = r.returncode
+    if out_dir is not None:
+        out_dir = Path(out_dir)
+        out_dir.mkdir(parents=True, exist_ok=True)
+        out.raw_path = str(out_dir / f"{p.name}.pdf-stats.txt")
+        try:
+            Path(out.raw_path).write_text(r.stdout or "")
+        except OSError:
+            pass
+    text = r.stdout or ""
+    out.object_count = text.count("obj ")
+    out.suspicious_keywords = sorted({
+        kw for kw in _PDF_SUSPECT_KEYWORDS if kw in text})
+    if out.rc != 0 and not out.error:
+        out.error = (r.stderr or "").strip()[-200:]
+    return out
+
+
 __all__ = [
     "MacroAnalysis", "RtfAnalysis",
+    "PcodeAnalysis", "XlmAnalysis", "PdfAnalysis",
     "is_office_candidate", "iter_office_candidates",
     "analyze_macros", "analyze_rtf_objects",
+    "analyze_pcode", "analyze_xlm", "analyze_pdf",
 ]
