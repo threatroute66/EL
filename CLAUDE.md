@@ -200,15 +200,43 @@ the LLM challenger absence is the more common source of `unresolved`.
 
 ## Adding things
 
+**Step 0 (always): does SIFT already ship the tool?** Before writing a
+new skill, check
+[`docs/sans_sift_tools.md`](./docs/sans_sift_tools.md) — the
+exhaustive, category-organized reference for what's installed on the
+SANS SIFT Workstation. EL's design philosophy is *tool output IS
+evidence* (load-bearing rule from "Operator preferences" above): we
+wrap court-vetted CLI tools, we don't reimplement them. If a SIFT
+default tool already does the job, the new skill is a subprocess
+wrapper around it — not a Python re-implementation.
+
+Concrete examples of this rule paying off:
+- We wrapped `evtxexport` / `EvtxECmd` rather than writing an EVTX
+  parser; `mactime` rather than rolling our own timeline join;
+  `ewfmount` rather than parsing E01 internals; `qemu-img` for
+  VHDX/VMDK conversion rather than implementing the formats.
+- The few cases where we *did* write a parser (utmp/wtmp/btmp,
+  IIS W3C, Windows Timeline ActivitiesCache.db) were because no
+  SIFT default covers them — `utmpdump` exists but only prints
+  human-readable form, not structured fields a detector can score.
+
+When the SIFT-bundled tool only partially covers what's needed
+(e.g. `utmpdump` for utmp), document the gap in the new skill's
+docstring and link back to the SIFT entry that motivated the choice.
+When the SIFT entry is `[commonly added]` rather than `[default]`,
+note it in `el/tooling.py probe_*()` so `el doctor` flags missing
+optional tools rather than failing at run-time.
+
 **New agent** — copy any agent in `el/agents/` as a template. Inherit
 `Agent`, set `name`, implement `run(ctx) -> list[Finding]`. Use
 `self.emit(ctx, Finding(...))` to write to the ledger. Wire into
 `KIND_TO_AGENT` in `el/orchestrator/coordinator.py` keyed on the
 `evidence_kind` Triage sets.
 
-**New skill** — `el/skills/<name>.py`. Subprocess wrapper. Return a
-dataclass with an `as_evidence(facts: dict | None = None) -> EvidenceItem`
-method. Output goes to `<case_dir>/analysis/<agent>/...`. Capture stderr
+**New skill** — `el/skills/<name>.py`. Subprocess wrapper around the
+SIFT-bundled CLI identified in Step 0. Return a dataclass with an
+`as_evidence(facts: dict | None = None) -> EvidenceItem` method.
+Output goes to `<case_dir>/analysis/<agent>/...`. Capture stderr
 to a sibling `.stderr` file. Use `_which(<bin>)` and raise a
 `<Skill>Error` on missing tooling.
 
@@ -237,8 +265,12 @@ wrapper's defaults. Examples currently live in:
 
 ## Don't
 
-- **Don't add agents that re-implement what a CLI tool already does.** If
-  Plaso parses it, wrap Plaso. If EvtxECmd parses it, wrap EvtxECmd.
+- **Don't add agents or skills that re-implement what a CLI tool
+  already does.** If Plaso parses it, wrap Plaso. If EvtxECmd parses
+  it, wrap EvtxECmd. **Check `docs/sans_sift_tools.md` first** — that
+  reference lists every default + commonly-added tool on the SANS
+  SIFT Workstation, organised by category. If the bundled tool meets
+  the need, the new skill is a subprocess wrapper around it.
 - **Don't write to evidence directories.** Read-only on `/cases/`,
   `/mnt/`, `/media/`. All output goes under `cases/<case_id>/{analysis,exports,reports,raw}/`.
 - **Don't make the Red Reviewer optional.** It's the primary
