@@ -186,15 +186,59 @@ class TriageAgent(Agent):
         )
         is_ios = sum(ios_signals) >= 2
 
-        # Only pay for the full rglob when we DIDN'T recognise a mobile
-        # shape — Windows / Velociraptor detection needs filename scans.
+        # QNAP NAS user-data volume (QTS DataVolN ext4 mount).
+        # Distinct shape: `homes/` (singular `home/` is Linux), `.qpkg/`
+        # for installed apps, `.@*` private metadata dirs, `.system/`,
+        # `.samba/`. Validated against case 21APR_245 (Geneva-airport
+        # seizure 2021): one DataVol1 mount produced 5/5 hits.
+        qnap_signals = (
+            (d / "homes").is_dir(),
+            (d / ".qpkg").is_dir(),
+            (d / ".system").is_dir(),
+            (d / ".samba").is_dir(),
+            (d / ".@station_config").is_dir(),
+        )
+        is_qnap = sum(qnap_signals) >= 3
+
+        # Generic Linux filesystem root (mounted ext4 / btrfs / xfs).
+        # Also matches a chroot or a container-extracted rootfs. Need
+        # ≥4 to avoid false-positives on partial extracts that happen
+        # to have one or two of these names.
+        linux_signals = (
+            (d / "etc").is_dir(),
+            (d / "var" / "log").is_dir(),
+            (d / "home").is_dir(),
+            (d / "root").is_dir(),
+            (d / "usr").is_dir(),
+            (d / "bin").is_dir() or (d / "usr" / "bin").is_dir(),
+            (d / "boot").is_dir(),
+        )
+        is_linux = sum(linux_signals) >= 4
+
+        # Only pay for the full rglob when we DIDN'T recognise a shape
+        # already — every mobile / QNAP / Linux-rootfs case is decided
+        # from the cheap is_dir() probes above. Windows / Velociraptor
+        # detection still needs filename scans.
         names: list[str] = []
-        if not (is_android or is_ios):
-            for p in d.rglob("*"):
-                if p.is_file():
-                    names.append(p.name)
+        if not (is_android or is_ios or is_qnap or is_linux):
+            # Walk via os.walk so we can pass onerror=None and skip
+            # unreadable subtrees gracefully — QNAP DataVol1 mounts
+            # have root-only files (.qcodesigning) that crash rglob's
+            # implicit stat() with PermissionError. Same pattern used
+            # in intake._hash_directory.
+            import os as _os
+            try:
+                for dirpath, dirnames, filenames in _os.walk(
+                    str(d), onerror=lambda e: None, followlinks=False,
+                ):
+                    for fn in filenames:
+                        names.append(fn)
+                        if len(names) >= 5000:
+                            break
                     if len(names) >= 5000:
                         break
+            except OSError:
+                pass
 
         velo_hits = sum(1 for n in names if any(n.startswith(h) for h in VELOCIRAPTOR_HINTS))
         artifact_hits = sum(1 for n in names if any(h in n for h in
@@ -226,6 +270,26 @@ class TriageAgent(Agent):
                        f"filesystem tree (data/system/packages.xml + "
                        f"data/data/ per-app subtree + /storage/emulated "
                        f"signals matched)"),
+                evidence=[ev], hypotheses_supported=["H_DISK_ARTIFACTS"],
+            )))
+        elif is_qnap:
+            ctx.shared["evidence_kind"] = "qnap-nas-dir"
+            out.append(self.emit(ctx, Finding(
+                case_id=ctx.case_id, agent=self.name, confidence="high",
+                claim=(f"Input directory looks like a mounted QNAP QTS "
+                       f"DataVol root ({sum(qnap_signals)}/5 markers: "
+                       f"homes/ + .qpkg/ + .system/ + .samba/ + "
+                       f".@station_config/)"),
+                evidence=[ev], hypotheses_supported=["H_DISK_ARTIFACTS"],
+            )))
+        elif is_linux:
+            ctx.shared["evidence_kind"] = "linux-fs-dir"
+            out.append(self.emit(ctx, Finding(
+                case_id=ctx.case_id, agent=self.name, confidence="high",
+                claim=(f"Input directory looks like a mounted Linux "
+                       f"filesystem root ({sum(linux_signals)}/7 "
+                       f"markers: etc/, var/log/, home/, root/, usr/, "
+                       f"bin/, boot/)"),
                 evidence=[ev], hypotheses_supported=["H_DISK_ARTIFACTS"],
             )))
         elif is_ios:

@@ -39,10 +39,20 @@ class LinuxForensicatorAgent(Agent):
     name = "linux_forensicator"
 
     def run(self, ctx: AgentContext) -> list[Finding]:
+        # Three input modes:
+        # (1) Chained from DiskForensicator with extracted artifacts
+        #     under <case_dir>/exports/linux-artifacts/ — the original
+        #     wiring; ctx.shared["linux_artifacts_dir"] points there.
+        # (2) Triage routed evidence_kind in {linux-fs-dir, qnap-nas-dir}
+        #     — ctx.input_path is the mounted filesystem root itself,
+        #     so we point the detectors directly at it. Validated on
+        #     QNAP case 21APR_245 (mounted DataVol1).
+        # (3) Default fallback: <case_dir>/exports/linux-artifacts/.
+        kind = ctx.shared.get("evidence_kind") or ""
         exports = ctx.shared.get("linux_artifacts_dir")
+        if not exports and kind in ("linux-fs-dir", "qnap-nas-dir"):
+            exports = ctx.input_path
         if not exports:
-            # Also try a direct path the coordinator may have created
-            # without going through shared-context plumbing
             default = ctx.case_dir / "exports" / "linux-artifacts"
             if default.is_dir() and any(default.rglob("*")):
                 exports = default
@@ -109,21 +119,46 @@ class LinuxForensicatorAgent(Agent):
                                        or ["H_APT_ESPIONAGE"],
             )))
 
+        # Per-skill calls are wrapped so a single PermissionError
+        # (root-only file in a mounted filesystem like QNAP's
+        # .qcodesigning) doesn't take out the whole agent. The
+        # offending skill emits an `insufficient` finding documenting
+        # the gap; downstream skills still run.
+        def _safe(label: str, fn, *args):
+            try:
+                return fn(*args)
+            except (PermissionError, OSError) as e:
+                return [self.emit(ctx, Finding(
+                    case_id=ctx.case_id, agent=self.name,
+                    confidence="insufficient",
+                    claim=(f"{label}: skipped — filesystem walk hit "
+                           f"a permission/IO error ({e}). Mount input "
+                           "with broader read access or extract the "
+                           "tree with `sudo cp -a` first."),
+                ))]
+
         # utmp/wtmp/btmp binary parsing — login session forensics
-        out.extend(self._analyze_utmp_family(ctx, exports))
+        out.extend(_safe("utmp/wtmp/btmp",
+                          self._analyze_utmp_family, ctx, exports))
         # systemd-journal — sshd/sudo/unit-start extraction
-        out.extend(self._analyze_systemd_journal(ctx, exports))
+        out.extend(_safe("systemd-journal",
+                          self._analyze_systemd_journal, ctx, exports))
         # Dotfile concealment directories (user parking binaries/archives/
         # PDFs/media inside a hidden dotfile dir — BelkaCTF-Kidnapper style)
-        out.extend(self._analyze_dotfile_concealment(ctx, exports))
+        out.extend(_safe("dotfile-concealment",
+                          self._analyze_dotfile_concealment, ctx, exports))
         # Encrypted ZIP archives (password-locked members)
-        out.extend(self._analyze_encrypted_archives(ctx, exports))
+        out.extend(_safe("encrypted-archives",
+                          self._analyze_encrypted_archives, ctx, exports))
         # Extension-vs-MIME mismatch (extension-mangling concealment)
-        out.extend(self._analyze_magic_mismatch(ctx, exports))
+        out.extend(_safe("magic-mismatch",
+                          self._analyze_magic_mismatch, ctx, exports))
         # Narcotic-lexicon keyword scan over user-home text files
-        out.extend(self._analyze_narcotic_lexicon(ctx, exports))
+        out.extend(_safe("narcotic-lexicon",
+                          self._analyze_narcotic_lexicon, ctx, exports))
         # Thunderbird mbox walker — attachments + narcotic/BTC in bodies
-        out.extend(self._analyze_thunderbird_mbox(ctx, exports))
+        out.extend(_safe("thunderbird-mbox",
+                          self._analyze_thunderbird_mbox, ctx, exports))
         return out
 
     def _analyze_utmp_family(self, ctx: AgentContext,

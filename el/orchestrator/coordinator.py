@@ -25,6 +25,7 @@ from el.agents.sigma_analyst import SigmaAnalystAgent
 from el.agents.disk_forensicator import DiskForensicatorAgent
 from el.agents.email_forensicator import EmailForensicatorAgent
 from el.agents.endpoint_analyst import EndpointAnalystAgent
+from el.agents.linux_forensicator import LinuxForensicatorAgent
 from el.agents.execution_corroborator import ExecutionCorroboratorAgent
 from el.agents.lateral_movement_analyst import LateralMovementAnalystAgent
 from el.agents.log_analyst import LogAnalystAgent
@@ -70,6 +71,8 @@ KIND_TO_AGENT: dict[str, type[Agent]] = {
     "velociraptor-collection": EndpointAnalystAgent,
     "android-fs-dir": AndroidForensicatorAgent,
     "ios-fs-dir": IOSForensicatorAgent,
+    "linux-fs-dir": LinuxForensicatorAgent,
+    "qnap-nas-dir": LinuxForensicatorAgent,
     "k8s-audit-log": K8sAuditAnalystAgent,
 }
 
@@ -308,7 +311,6 @@ class Coordinator:
         # If DiskForensicator extracted Linux artifacts (ext2/3/4), chain
         # LinuxForensicatorAgent for the triage-detector sweep.
         if ctx.shared.get("linux_artifacts_dir"):
-            from el.agents.linux_forensicator import LinuxForensicatorAgent
             self._run_agent(LinuxForensicatorAgent(), ctx)
 
         # If DiskForensicator extracted macOS artifacts (APFS Data
