@@ -149,6 +149,15 @@ class MemoryForensicatorAgent(Agent):
             out.extend(self._flag_malfind(ctx, runs["windows.malfind.Malfind"]))
             out.extend(self._flag_pe_headers(ctx, runs["windows.malfind.Malfind"]))
             out.extend(self._report_dumped_regions(ctx, runs["windows.malfind.Malfind"]))
+            # Carve mapped file objects from the suspicious PIDs malfind
+            # flagged. Per-PID is the right granularity here — running
+            # vol3 windows.dumpfiles WITHOUT a PID filter dumps every
+            # mapped file in memory (10k+ on a busy workstation), which
+            # is forensically pointless. Targeted carving from a malfind
+            # PID gives the analyst the on-disk DLLs / EXEs the process
+            # was holding open at acquisition time.
+            out.extend(self._carve_dumpfiles(
+                ctx, runs["windows.malfind.Malfind"], analysis))
 
         if family == "windows" and "windows.pslist.PsList" in runs and runs["windows.pslist.PsList"].rows:
             out.extend(self._process_anomalies(ctx, runs["windows.pslist.PsList"]))
@@ -525,6 +534,70 @@ class MemoryForensicatorAgent(Agent):
                    "Per memory-analysis SKILL: 'classic hollowing indicator'."),
             evidence=[ev],
             hypotheses_supported=["H_PROCESS_INJECTION", "H_PROCESS_HOLLOWING"],
+        ))]
+
+    def _carve_dumpfiles(self, ctx: AgentContext,
+                          malfind_run: vol3.PluginRun,
+                          analysis: Path) -> list[Finding]:
+        """Run `vol3 windows.dumpfiles` against the suspicious PIDs
+        malfind flagged. Carved DLLs / EXEs / handles land under
+        `<analysis>/dumpfiles/` so the threat_hunter YARA sweep picks
+        them up alongside the malfind region dumps."""
+        # Enumerate distinct PIDs from malfind's JSON output. Cap at
+        # 8 — running dumpfiles per-PID against more than that on a
+        # large image starts hitting hours of runtime.
+        pids: list[int] = []
+        seen = set()
+        for row in malfind_run.rows or []:
+            pid = row.get("PID") or row.get("pid")
+            if pid is None:
+                continue
+            try:
+                pid_i = int(pid)
+            except (TypeError, ValueError):
+                continue
+            if pid_i in seen:
+                continue
+            seen.add(pid_i)
+            pids.append(pid_i)
+            if len(pids) >= 8:
+                break
+        if not pids:
+            return []
+        dump_root = analysis / "dumpfiles"
+        try:
+            r = vol3.dumpfiles(ctx.input_path, dump_root,
+                                pids=pids, timeout=1800)
+        except vol3.Vol3Error as e:
+            return [self.emit(ctx, Finding(
+                case_id=ctx.case_id, agent=self.name,
+                confidence="insufficient",
+                claim=(f"vol3 windows.dumpfiles failed: {e}"),
+            ))]
+        carved = sorted(dump_root.rglob("file.*"))
+        if not carved:
+            return [self.emit(ctx, Finding(
+                case_id=ctx.case_id, agent=self.name, confidence="low",
+                claim=(f"windows.dumpfiles ran against {len(pids)} "
+                       f"malfind-flagged PID(s) "
+                       f"({', '.join(str(p) for p in pids[:5])}"
+                       f"{' …' if len(pids) > 5 else ''}) but carved "
+                       "no file objects (process may have closed all "
+                       "handles before acquisition, or rc != 0)."),
+                evidence=[r.as_evidence({"pids": pids})],
+            ))]
+        return [self.emit(ctx, Finding(
+            case_id=ctx.case_id, agent=self.name, confidence="medium",
+            claim=(f"windows.dumpfiles carved {len(carved)} file "
+                   f"object(s) from {len(pids)} malfind-flagged PID(s) "
+                   f"({', '.join(str(p) for p in pids[:5])}"
+                   f"{' …' if len(pids) > 5 else ''}). Each carved file "
+                   "is a DLL / EXE / handle the suspicious process held "
+                   "open at acquisition time. ThreatHunter's YARA sweep "
+                   "will scan them as part of the analysis-dir pass."),
+            evidence=[r.as_evidence({"pids": pids,
+                                       "carved_files": len(carved)})],
+            hypotheses_supported=["H_PROCESS_INJECTION"],
         ))]
 
     def _report_dumped_regions(self, ctx: AgentContext, run: vol3.PluginRun) -> list[Finding]:

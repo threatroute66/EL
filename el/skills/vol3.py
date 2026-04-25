@@ -78,6 +78,7 @@ def run_plugin(
     extra_args: list[str] | None = None,
     timeout: int = 600,
     offline: bool = False,
+    with_output_dir: bool = False,
 ) -> PluginRun:
     """Run a single vol3 plugin and capture its JSON output + stderr.
 
@@ -103,7 +104,12 @@ def run_plugin(
     # We route them into the plugin's own out_dir so they're colocated with the
     # JSON output.
     dump_args: list[str] = []
-    if extra_args and "--dump" in extra_args:
+    if (extra_args and "--dump" in extra_args) or with_output_dir:
+        # `-o <dir>` is a vol3 GLOBAL option (positional before the
+        # plugin), used by --dump-supporting plugins AND by carve
+        # plugins (windows.dumpfiles.DumpFiles) that write artefacts
+        # implicitly. `with_output_dir=True` is the explicit knob;
+        # `--dump` in extra_args is the legacy auto-detect.
         dump_args = ["-o", str(out_dir)]
     cmd = [*base, *dump_args, "-f", str(image), plugin, *(extra_args or [])]
     try:
@@ -219,4 +225,32 @@ def yarascan(image: str | Path, rules_path: str | Path,
         image=image, plugin=plugin, out_dir=out_dir,
         extra_args=["--yara-file", str(rules_path)],
         timeout=timeout,
+    )
+
+
+def dumpfiles(image: str | Path, out_dir: str | Path,
+              *, pids: list[int] | None = None,
+              timeout: int = 1800) -> PluginRun:
+    """Run `vol3 windows.dumpfiles.DumpFiles [--pid <p> ...]` to carve
+    file-object content out of a memory image.
+
+    Without ``pids`` the plugin dumps EVERY mapped file object — useful
+    on small images, very noisy on workstation-sized captures (10k+
+    files). Callers should pass a focused PID list (e.g. processes
+    flagged by malfind / hidden-procs / suspicious_threads).
+
+    Carved files land under ``out_dir`` with names like
+    ``file.<addr>.<name>.dat``. The plugin's stdout JSON enumerates
+    each carved file's PID + handle + cache-type + on-disk path.
+    """
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    extra: list[str] = []
+    if pids:
+        for pid in pids:
+            extra.extend(["--pid", str(int(pid))])
+    return run_plugin(
+        image=image, plugin="windows.dumpfiles.DumpFiles",
+        out_dir=out_dir, extra_args=extra, timeout=timeout,
+        with_output_dir=True,
     )
