@@ -208,6 +208,22 @@ class TriageAgent(Agent):
         )
         is_qnap = sum(qnap_signals) >= 3
 
+        # macOS filesystem root (mounted APFS Data volume OR a copied-out
+        # tree). Distinct from generic Linux: presence of a /System/
+        # directory PLUS Apple-specific markers (private/var/db,
+        # .Spotlight-V100, .fseventsd, /Users with apple-shaped subdirs).
+        macos_signals = (
+            (d / "System").is_dir() and (d / "Library").is_dir(),
+            (d / "Users").is_dir(),
+            (d / "private" / "var" / "db").is_dir(),
+            (d / ".Spotlight-V100").exists(),
+            (d / ".fseventsd").exists(),
+            (d / "Applications" / "Safari.app").is_dir()
+                or (d / "Applications" / "Mail.app").is_dir()
+                or (d / "Applications" / "Utilities").is_dir(),
+        )
+        is_macos = sum(macos_signals) >= 3
+
         # Generic Linux filesystem root (mounted ext4 / btrfs / xfs).
         # Also matches a chroot or a container-extracted rootfs. Need
         # ≥4 to avoid false-positives on partial extracts that happen
@@ -228,7 +244,7 @@ class TriageAgent(Agent):
         # from the cheap is_dir() probes above. Windows / Velociraptor
         # detection still needs filename scans.
         names: list[str] = []
-        if not (is_android or is_ios or is_qnap or is_linux
+        if not (is_android or is_ios or is_macos or is_qnap or is_linux
                  or is_bulk_extractor):
             # Walk via os.walk so we can pass onerror=None and skip
             # unreadable subtrees gracefully — QNAP DataVol1 mounts
@@ -300,16 +316,6 @@ class TriageAgent(Agent):
                        f".@station_config/)"),
                 evidence=[ev], hypotheses_supported=["H_DISK_ARTIFACTS"],
             )))
-        elif is_linux:
-            ctx.shared["evidence_kind"] = "linux-fs-dir"
-            out.append(self.emit(ctx, Finding(
-                case_id=ctx.case_id, agent=self.name, confidence="high",
-                claim=(f"Input directory looks like a mounted Linux "
-                       f"filesystem root ({sum(linux_signals)}/7 "
-                       f"markers: etc/, var/log/, home/, root/, usr/, "
-                       f"bin/, boot/)"),
-                evidence=[ev], hypotheses_supported=["H_DISK_ARTIFACTS"],
-            )))
         elif is_ios:
             ctx.shared["evidence_kind"] = "ios-fs-dir"
             out.append(self.emit(ctx, Finding(
@@ -318,6 +324,32 @@ class TriageAgent(Agent):
                        f"filesystem tree (/private/var/mobile + "
                        f"/private/var/containers/Bundle/Application + "
                        f"/private/var/installd signals matched)"),
+                evidence=[ev], hypotheses_supported=["H_DISK_ARTIFACTS"],
+            )))
+        elif is_macos:
+            ctx.shared["evidence_kind"] = "macos-fs-dir"
+            out.append(self.emit(ctx, Finding(
+                case_id=ctx.case_id, agent=self.name, confidence="high",
+                claim=(f"Input directory looks like a mounted macOS "
+                       f"filesystem ({sum(macos_signals)}/6 markers: "
+                       f"System+Library, Users/, private/var/db/, "
+                       f".Spotlight-V100, .fseventsd, Apple .app "
+                       f"presence)"),
+                evidence=[ev], hypotheses_supported=["H_DISK_ARTIFACTS"],
+            )))
+        elif is_linux:
+            # Linux check is intentionally LAST among FS-shape probes:
+            # iOS / macOS / QNAP NAS roots all share /etc + /usr + /bin
+            # + /var with vanilla Linux, so a more-specific shape must
+            # win first or the iPhone SE AFU dump misroutes to
+            # LinuxForensicatorAgent.
+            ctx.shared["evidence_kind"] = "linux-fs-dir"
+            out.append(self.emit(ctx, Finding(
+                case_id=ctx.case_id, agent=self.name, confidence="high",
+                claim=(f"Input directory looks like a mounted Linux "
+                       f"filesystem root ({sum(linux_signals)}/7 "
+                       f"markers: etc/, var/log/, home/, root/, usr/, "
+                       f"bin/, boot/)"),
                 evidence=[ev], hypotheses_supported=["H_DISK_ARTIFACTS"],
             )))
         elif velo_hits >= 2:

@@ -81,6 +81,60 @@ def test_qnap_with_three_markers_still_qualifies(tmp_path):
     assert ctx.shared["evidence_kind"] == "qnap-nas-dir"
 
 
+def test_macos_fs_dir_detected(tmp_path):
+    """macOS triage probe — needs ≥3 of (System+Library, Users,
+    private/var/db, .Spotlight-V100, .fseventsd, Apple .app)."""
+    root = tmp_path / "fs-root"
+    (root / "System").mkdir(parents=True)
+    (root / "Library").mkdir()
+    (root / "Users").mkdir()
+    (root / "private" / "var" / "db").mkdir(parents=True)
+    (root / ".Spotlight-V100").mkdir()
+    ctx = _new_ctx(tmp_path)
+    TriageAgent().run(ctx)
+    assert ctx.shared["evidence_kind"] == "macos-fs-dir"
+
+
+def test_macos_takes_precedence_over_linux(tmp_path):
+    """macOS has /etc and /usr too; macos-fs-dir markers must win."""
+    root = tmp_path / "fs-root"
+    (root / "System").mkdir(parents=True)
+    (root / "Library").mkdir()
+    (root / "Users").mkdir()
+    (root / ".Spotlight-V100").mkdir()
+    # Linux markers also present
+    for sub in ("etc", "var/log", "usr", "bin"):
+        (root / sub).mkdir(parents=True)
+    ctx = _new_ctx(tmp_path)
+    TriageAgent().run(ctx)
+    assert ctx.shared["evidence_kind"] == "macos-fs-dir"
+
+
+def test_macos_fs_dir_routes_to_macos_forensicator():
+    from el.agents.macos_forensicator import MacOSForensicatorAgent
+    assert KIND_TO_AGENT.get("macos-fs-dir") is MacOSForensicatorAgent
+
+
+def test_ios_takes_precedence_over_linux(tmp_path):
+    """An iOS AFU file-system dump has /etc, /usr, /bin, /var because
+    iOS is a Unix — the linux-fs-dir markers all match. The iOS-shape
+    markers (private/var/mobile + private/var/containers/Bundle) are
+    more specific and must win, otherwise the iPhone SE dump
+    misroutes to LinuxForensicatorAgent (real bug from the
+    ios14-iphonese-r2 run)."""
+    root = tmp_path / "fs-root"
+    # iOS-shape markers
+    (root / "private" / "var" / "mobile").mkdir(parents=True)
+    (root / "private" / "var" / "containers" / "Bundle"
+                    / "Application").mkdir(parents=True)
+    # Linux-shape directories that iOS also has
+    for sub in ("etc", "var/log", "usr", "bin"):
+        (root / sub).mkdir(parents=True)
+    ctx = _new_ctx(tmp_path)
+    TriageAgent().run(ctx)
+    assert ctx.shared["evidence_kind"] == "ios-fs-dir"
+
+
 def test_qnap_takes_precedence_over_linux(tmp_path):
     """A QNAP volume happens to also have homes/ and a few Linux-ish
     dirs — qnap-nas-dir must win (more specific)."""

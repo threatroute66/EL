@@ -128,4 +128,130 @@ class IOSForensicatorAgent(Agent):
                 hypotheses_supported=it.hypotheses_for(h.family)
                                        or ["H_DISK_ARTIFACTS"],
             )))
+
+        # iLEAPP wrap — Brignoni's 80+-artifact parser. Skips silently
+        # when iLEAPP isn't installed; emits one finding per surfaced
+        # high-value artifact (calls, SMS, Safari history, locations,
+        # app installs, Wi-Fi). Storage cost: ~tens of MB of TSV/HTML
+        # under <case_dir>/exports/ileapp/.
+        out.extend(self._run_ileapp(ctx, src))
+        return out
+
+    # Per-artifact display names + confidences. iLEAPP names its TSV
+    # files in a stable scheme; we surface a curated subset.
+    _ILEAPP_HIGH_VALUE = {
+        # filename substring → (display label, confidence, hypotheses)
+        "Call History":           ("call history",        "medium", []),
+        "SMS messages":           ("SMS / iMessage",      "medium", []),
+        "iMessage":               ("iMessage threads",    "medium", []),
+        "Calendar":               ("calendar events",     "low",    []),
+        "Contacts":               ("contacts",            "low",    []),
+        "Safari Browsing History": ("Safari history",     "medium", []),
+        "Safari History":         ("Safari history",      "medium", []),
+        "Wifi Networks":          ("Wi-Fi network history", "medium",
+                                    ["H_DISK_ARTIFACTS"]),
+        "WiFi":                   ("Wi-Fi network history", "medium",
+                                    ["H_DISK_ARTIFACTS"]),
+        "Locations":              ("location history",    "medium", []),
+        "Significant Locations":  ("significant locations",
+                                   "medium", []),
+        "Installed Apps":         ("installed apps",      "low",
+                                    ["H_DISK_ARTIFACTS"]),
+        "Application State":      ("app last-state",      "low",    []),
+        "Knowledge":              ("KnowledgeC events",   "low",    []),
+        "Apple Pay":              ("Apple Pay transactions",
+                                   "medium", []),
+        "AirDrop":                ("AirDrop transfers",   "medium", []),
+        "Bluetooth":              ("Bluetooth pairings",  "low",    []),
+    }
+
+    def _run_ileapp(self, ctx: AgentContext, src: Path) -> list[Finding]:
+        from el.skills import ileapp as ileapp_skill
+        if not ileapp_skill.is_ileapp_available():
+            return [self.emit(ctx, Finding(
+                case_id=ctx.case_id, agent=self.name,
+                confidence="insufficient",
+                claim=("iLEAPP not installed at /opt/iLEAPP "
+                       "(or `EL_ILEAPP_DIR`). Skipping the 80+-artifact "
+                       "Brignoni parser pass; the four built-in "
+                       "detectors above still ran."),
+            ))]
+
+        out_dir = ctx.case_dir / "exports" / "ileapp"
+        try:
+            r = ileapp_skill.run(src, out_dir)
+        except ileapp_skill.ILeappError as e:
+            return [self.emit(ctx, Finding(
+                case_id=ctx.case_id, agent=self.name,
+                confidence="insufficient",
+                claim=f"iLEAPP failed: {e}",
+            ))]
+
+        out: list[Finding] = []
+        # One summary finding for the whole run
+        populated_count = sum(1 for t in r.tables if t.populated)
+        ev = EvidenceItem(
+            tool="iLEAPP", version=r.version or "unknown",
+            command=f"ileapp.py -t fs -i {src.name} -o {out_dir.name}",
+            output_sha256=hashlib.sha256(
+                r.stdout_path.read_bytes() if r.stdout_path.exists()
+                else b"").hexdigest(),
+            output_path=str(r.report_dir),
+            extracted_facts={
+                "tables": len(r.tables),
+                "populated_tables": populated_count,
+                "rc": r.rc,
+            },
+        )
+        out.append(self.emit(ctx, Finding(
+            case_id=ctx.case_id, agent=self.name, confidence="high",
+            claim=(f"iLEAPP v{r.version or '?'} parsed {len(r.tables)} "
+                   f"artifact module(s); {populated_count} populated. "
+                   f"Report: {r.report_dir.name}"),
+            evidence=[ev],
+            hypotheses_supported=["H_DISK_ARTIFACTS"],
+        )))
+
+        # Per-artifact findings for the curated high-value subset
+        for table in r.tables:
+            if not table.populated:
+                continue
+            label, conf, hyps = (None, "low", [])
+            for needle, (lbl, c, h) in self._ILEAPP_HIGH_VALUE.items():
+                if needle.lower() in table.name.lower():
+                    label, conf, hyps = lbl, c, h
+                    break
+            if label is None:
+                continue   # skip non-curated tables — would flood the ledger
+            sample = ""
+            if table.rows:
+                # First row's column-1 value is usually the most-recent
+                # / first event — useful for the claim.
+                cols_to_show = min(3, len(table.headers))
+                sample = " | ".join(
+                    table.rows[0][i] for i in range(cols_to_show)
+                    if i < len(table.rows[0])
+                )[:200]
+            tev = EvidenceItem(
+                tool="iLEAPP", version=r.version or "unknown",
+                command=f"_TSV/{table.name}",
+                output_sha256=hashlib.sha256(
+                    table.path.read_bytes()).hexdigest(),
+                output_path=str(table.path),
+                extracted_facts={
+                    "artifact": label, "rows": table.total_rows,
+                    "headers": table.headers[:8],
+                    "truncated": table.truncated,
+                },
+            )
+            out.append(self.emit(ctx, Finding(
+                case_id=ctx.case_id, agent=self.name, confidence=conf,
+                claim=(f"iLEAPP {label}: {table.total_rows} row(s) "
+                       f"parsed from {table.name}"
+                       + (f" (sample: {sample!r})" if sample else "")
+                       + (" [truncated to 5000 rows for display]"
+                          if table.truncated else "")),
+                evidence=[tev],
+                hypotheses_supported=hyps,
+            )))
         return out
