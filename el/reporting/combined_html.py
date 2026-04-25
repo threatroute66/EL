@@ -116,8 +116,19 @@ table td.num { text-align: right; font-variant-numeric: tabular-nums; }
     margin-right: 6px; vertical-align: middle; }
 .node-circle { cursor: pointer; }
 .node-circle:hover { stroke: #f0f6fc; stroke-width: 2px; }
+.node-shared { cursor: pointer; }
+.node-shared:hover { stroke: #f0f6fc; stroke-width: 2px; }
+.node-anchor { cursor: pointer; }
+.node-anchor:hover { stroke: #f0f6fc; stroke-width: 3px; }
+.node-anchor-label { fill: #c9d1d9; font-size: 11px; font-weight: 600;
+    paint-order: stroke; stroke: #0d1117; stroke-width: 3px; }
+.node-shared-label { fill: #f0f6fc; font-size: 10px; font-family: "SF Mono", monospace;
+    paint-order: stroke; stroke: #0d1117; stroke-width: 3px; }
 .edge-line { stroke: #30363d; stroke-opacity: 0.5; }
 .edge-line:hover { stroke: #58a6ff; stroke-opacity: 1; }
+.edge-line.bridge { stroke: #f0883e; stroke-opacity: 0.6;
+    stroke-dasharray: 4 3; stroke-width: 1.2px; }
+.edge-line.bridge:hover { stroke-opacity: 1; stroke-width: 2px; }
 
 /* ATT&CK heatmap — reuse simple table */
 .attack-grid td { padding: 4px 8px; }
@@ -294,12 +305,48 @@ def _timeline_events(cases: list[CaseSlice],
 
 
 def _merged_graph(cases: list[CaseSlice]) -> dict:
-    """Union the per-case Kùzu graphs. Each node gets an `origin_case`
-    attr so the renderer can colour-code by source host."""
+    """Stitch per-case Kùzu graphs into a single graph that surfaces
+    cross-host structure. Three node classes:
+
+    - **Shared global entities** (`IPAddress`, `Domain`, `Hash`) are
+      keyed by unprefixed id, so the same `8.8.8.8` / `evil.com` /
+      sha256 across N cases collapses into ONE node. An `attrs.cases`
+      list records every case_id that observed it. These are the
+      pivots that make the cross-host story visible.
+
+    - **Per-case internal entities** (`Process`, `User`, `File`,
+      `Event`, `Email`, `NetworkFlow`, `Host`) keep the `case_id|`
+      prefix because pid 4242 in case A and case B are unrelated.
+
+    - **Synthetic `Case` nodes** — one per case_id — are added as
+      anchors. Each shared node gets an `OBSERVED_IN` edge to every
+      Case node that saw it; this is what bridges the per-case
+      islands into one connected component when the shared IOCs
+      actually overlap.
+
+    Returns the same {nodes, edges, stats} shape; stats now also
+    report `shared_nodes` and `bridge_edges` so the renderer can
+    decide whether to draw the cross-host layout."""
+    SHARED_TYPES = {"IPAddress", "Domain", "Hash"}
+
     nodes: dict[str, dict] = {}
     edges: list[dict] = []
     capped = False
     total = 0
+    bridges = 0
+
+    # Synthetic Case anchor nodes — one per case, always present.
+    for c in cases:
+        nid = f"case:{c.case_id}"
+        nodes[nid] = {
+            "id": nid, "type": "Case",
+            "label": c.host_label or c.case_id,
+            "attrs": {"case_id": c.case_id},
+            "origin_case": c.case_id,
+            "origin_host": c.host_label,
+            "is_case_anchor": True,
+        }
+
     for c in cases:
         try:
             g = export_graph(c.case_dir)
@@ -308,26 +355,144 @@ def _merged_graph(cases: list[CaseSlice]) -> dict:
         if (g.get("stats") or {}).get("capped"):
             capped = True
         total += (g.get("stats") or {}).get("total_nodes", 0)
+        # First pass: nodes — merge shared, prefix case-internal.
+        case_local_id_map: dict[str, str] = {}
         for n in g.get("nodes", []):
-            # Prefix the node id with case_id to avoid cross-case clashes
-            nid = f"{c.case_id}|{n['id']}"
-            nodes[nid] = {
-                **n, "id": nid, "origin_case": c.case_id,
-                "origin_host": c.host_label,
-            }
+            ntype = n.get("type", "")
+            if ntype in SHARED_TYPES:
+                merged_id = n["id"]   # unprefixed → merges across cases
+                if merged_id in nodes:
+                    # Accumulate the cases that observed this entity
+                    cs = nodes[merged_id]["attrs"].setdefault("cases", [])
+                    if c.case_id not in cs:
+                        cs.append(c.case_id)
+                else:
+                    attrs = dict(n.get("attrs") or {})
+                    attrs["cases"] = [c.case_id]
+                    nodes[merged_id] = {
+                        **n, "id": merged_id, "attrs": attrs,
+                        "origin_case": "_shared",
+                        "origin_host": "(shared across cases)",
+                        "is_shared": True,
+                    }
+                case_local_id_map[n["id"]] = merged_id
+                # Bridge: shared entity → this case's anchor
+                bridge_id = (merged_id, f"case:{c.case_id}")
+                edges.append({
+                    "from": merged_id,
+                    "to": f"case:{c.case_id}",
+                    "type": "OBSERVED_IN",
+                    "origin_case": c.case_id,
+                    "is_bridge": True,
+                })
+                bridges += 1
+            else:
+                prefixed = f"{c.case_id}|{n['id']}"
+                nodes[prefixed] = {
+                    **n, "id": prefixed, "origin_case": c.case_id,
+                    "origin_host": c.host_label,
+                }
+                case_local_id_map[n["id"]] = prefixed
+        # Second pass: edges — remap each endpoint via case_local_id_map.
         for e in g.get("edges", []):
+            f_id = case_local_id_map.get(e["from"])
+            t_id = case_local_id_map.get(e["to"])
+            if not (f_id and t_id):
+                continue
             edges.append({
-                "from": f"{c.case_id}|{e['from']}",
-                "to": f"{c.case_id}|{e['to']}",
+                "from": f_id, "to": t_id,
                 "type": e.get("type", ""),
                 "origin_case": c.case_id,
             })
+
+    # Supplement the Kùzu union with iocs.json — agents persist IOCs
+    # to <case_dir>/iocs.json but most don't write them into the per-case
+    # Kùzu graph (it primarily captures process trees + file ops). Pull
+    # them in as shared nodes so the cross-host graph actually shows
+    # the C2 overlap that drove the case.
+    _IOC_TYPE_TO_NODE = {
+        "ipv4":   ("IPAddress", "ip"),
+        "ipv6":   ("IPAddress", "ip"),
+        "domain": ("Domain",    "dom"),
+        "url":    ("Domain",    "dom"),    # URL host extracted as domain
+        "md5":    ("Hash",      "hash"),
+        "sha1":   ("Hash",      "hash"),
+        "sha256": ("Hash",      "hash"),
+    }
+    # Re-apply the live IOC filters to the per-case iocs.json values
+    # so stale noise from old runs (Windows .pf / .hve filenames that
+    # the pre-filter extractor classified as domains) doesn't pollute
+    # the cross-host graph. The iocs.json on disk is immutable case
+    # state; the filter is a pure function so re-applying is safe.
+    try:
+        from el.skills.ioc_extract import _filter_domains, _filter_ipv4
+    except Exception:
+        _filter_domains = lambda d: set(d)
+        _filter_ipv4 = lambda i: set(i)
+    for c in cases:
+        case_anchor = f"case:{c.case_id}"
+        ioc_clean = dict(c.iocs or {})
+        if "domain" in ioc_clean:
+            ioc_clean["domain"] = sorted(_filter_domains(ioc_clean["domain"]))
+        if "ipv4" in ioc_clean:
+            ioc_clean["ipv4"] = sorted(_filter_ipv4(ioc_clean["ipv4"]))
+        for ioc_type, values in ioc_clean.items():
+            mapping = _IOC_TYPE_TO_NODE.get(ioc_type)
+            if not mapping:
+                continue
+            ntype, prefix = mapping
+            for v in values[:80]:           # cap per type per case
+                if not v:
+                    continue
+                # url -> domain extraction: keep host portion only
+                if ioc_type == "url":
+                    try:
+                        from urllib.parse import urlparse
+                        h = urlparse(v).hostname or ""
+                    except Exception:
+                        h = ""
+                    if not h:
+                        continue
+                    v_norm = h.lower()
+                else:
+                    v_norm = v.lower() if ioc_type in ("domain",) else v
+                merged_id = f"{prefix}:{v_norm}"
+                if merged_id in nodes:
+                    cs = nodes[merged_id]["attrs"].setdefault("cases", [])
+                    if c.case_id not in cs:
+                        cs.append(c.case_id)
+                else:
+                    extra_attrs = {"cases": [c.case_id]}
+                    if ioc_type in ("md5", "sha1", "sha256"):
+                        extra_attrs["algo"] = ioc_type
+                    nodes[merged_id] = {
+                        "id": merged_id, "type": ntype,
+                        "label": v_norm if len(v_norm) <= 40
+                                 else v_norm[:18] + "…" + v_norm[-12:],
+                        "attrs": extra_attrs,
+                        "origin_case": "_shared",
+                        "origin_host": "(shared across cases)",
+                        "is_shared": True,
+                    }
+                edges.append({
+                    "from": merged_id, "to": case_anchor,
+                    "type": "OBSERVED_IN",
+                    "origin_case": c.case_id,
+                    "is_bridge": True,
+                })
+                bridges += 1
+
+    shared_count = sum(1 for n in nodes.values()
+                       if n.get("is_shared"))
     return {
         "nodes": list(nodes.values()),
         "edges": edges,
         "stats": {"total_nodes": total,
                   "merged_nodes": len(nodes),
                   "merged_edges": len(edges),
+                  "shared_nodes": shared_count,
+                  "bridge_edges": bridges,
+                  "case_anchors": len(cases),
                   "capped": capped},
     }
 
@@ -650,69 +815,182 @@ function renderGraph() {
     svg.innerHTML = '<text x="20" y="40" class="tl-axis-text">No entities in any per-case Kùzu graph.</text>';
     return;
   }
-  // Deterministic layout: circle per case, concentric
+  // Layout: shared global entities (IPs / domains / hashes) in the
+  // central region; one Case anchor per case at a fixed ring radius;
+  // per-case internal entities (processes / files / events) cluster
+  // around their case anchor. Bridge edges (OBSERVED_IN) connect
+  // shared nodes to every case anchor that observed them — that's
+  // what makes the cross-host story visible.
   const casesList = DATA.lanes.map(l => l.case_id);
-  const nodesByCase = {};
-  casesList.forEach(cid => nodesByCase[cid] = []);
-  g.nodes.forEach(n => {
-    (nodesByCase[n.origin_case] = nodesByCase[n.origin_case] || []).push(n);
-  });
-  const W = svg.clientWidth || 1400, H = 560;
+  const W = svg.clientWidth || 1400, H = 600;
   svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
+  const cx = W / 2, cy = H / 2;
+  const RING_R = Math.min(W, H) * 0.38;       // case anchors here
+  const PERCASE_R = Math.min(W, H) * 0.085;   // internals around anchor
+  const SHARED_R = Math.min(W, H) * 0.18;     // shared zone radius
+
+  const PAL = ["#58a6ff","#f85149","#3fb950","#d29922","#bc8cff",
+               "#ff7b72","#79c0ff","#f0883e","#a371f7","#56d364",
+               "#e3b341","#39c5cf","#ffa198","#7ee787","#d2a8ff"];
   const CASE_COLOR = {};
-  const PAL = ["#58a6ff","#f85149","#3fb950","#d29922","#bc8cff","#ff7b72","#79c0ff","#f0883e"];
   casesList.forEach((cid, i) => CASE_COLOR[cid] = PAL[i % PAL.length]);
-  const cx = W/2, cy = H/2;
-  const casesN = casesList.length;
+
+  // 1. Case anchors evenly spaced on outer ring, top-aligned.
+  const anchorPos = {};
+  casesList.forEach((cid, i) => {
+    const a = (2 * Math.PI * i) / Math.max(casesList.length, 1) - Math.PI / 2;
+    anchorPos[cid] = { x: cx + Math.cos(a) * RING_R, y: cy + Math.sin(a) * RING_R };
+  });
+
+  // Bucket nodes
+  const shared = [], anchors = [], internals = {};
+  casesList.forEach(cid => internals[cid] = []);
+  g.nodes.forEach(n => {
+    if (n.is_case_anchor) anchors.push(n);
+    else if (n.is_shared) shared.push(n);
+    else (internals[n.origin_case] = internals[n.origin_case] || []).push(n);
+  });
+
+  // Sort shared by # of cases observing (most-shared first → drawn larger + more central)
+  shared.sort((a, b) => (b.attrs.cases || []).length - (a.attrs.cases || []).length);
+
   const pos = {};
-  casesList.forEach((cid, ci) => {
-    const caseAngle = (2*Math.PI * ci) / casesN;
-    const caseCX = cx + Math.cos(caseAngle) * (Math.min(W,H) * 0.30);
-    const caseCY = cy + Math.sin(caseAngle) * (Math.min(W,H) * 0.30);
-    const cn = nodesByCase[cid] || [];
-    cn.forEach((n, ni) => {
-      const a = (2*Math.PI * ni) / Math.max(cn.length, 1);
-      pos[n.id] = {
-        x: caseCX + Math.cos(a) * (Math.min(W,H) * 0.10),
-        y: caseCY + Math.sin(a) * (Math.min(W,H) * 0.10),
-      };
+  // 2. Case anchor positions (look up by 'case:<cid>' id)
+  anchors.forEach(n => { pos[n.id] = anchorPos[n.attrs.case_id] || { x: cx, y: cy }; });
+  // 3. Per-case internals around their anchor
+  casesList.forEach(cid => {
+    const anchor = anchorPos[cid];
+    const cn = internals[cid] || [];
+    cn.forEach((n, i) => {
+      const a = (2 * Math.PI * i) / Math.max(cn.length, 1);
+      pos[n.id] = { x: anchor.x + Math.cos(a) * PERCASE_R,
+                    y: anchor.y + Math.sin(a) * PERCASE_R };
     });
   });
+  // 4. Shared nodes — distribute within the central zone using a small
+  //    sunflower spiral so highly-shared nodes sit near the centre.
+  shared.forEach((n, i) => {
+    const t = i / Math.max(shared.length, 1);
+    const r = SHARED_R * Math.sqrt(t);
+    const a = i * 137.508 * Math.PI / 180;   // golden-angle spiral
+    pos[n.id] = { x: cx + Math.cos(a) * r, y: cy + Math.sin(a) * r };
+  });
+
   svg.innerHTML = "";
   const NS = "http://www.w3.org/2000/svg";
-  // Edges first (so nodes paint on top)
-  g.edges.slice(0, 2000).forEach(e => {
+
+  // Edges — bridges (OBSERVED_IN) drawn first under everything, dashed
+  // and orange so cross-host pivots are visible. Then per-case edges.
+  const drawEdge = (e, klass) => {
     const a = pos[e.from], b = pos[e.to];
     if (!a || !b) return;
     const line = document.createElementNS(NS, "line");
     line.setAttribute("x1", a.x); line.setAttribute("y1", a.y);
     line.setAttribute("x2", b.x); line.setAttribute("y2", b.y);
-    line.setAttribute("class", "edge-line");
+    line.setAttribute("class", klass);
     svg.appendChild(line);
-  });
-  // Nodes
-  g.nodes.forEach(n => {
+  };
+  const bridges = g.edges.filter(e => e.is_bridge);
+  const others = g.edges.filter(e => !e.is_bridge).slice(0, 2000);
+  bridges.forEach(e => drawEdge(e, "edge-line bridge"));
+  others.forEach(e => drawEdge(e, "edge-line"));
+
+  // Nodes — three visual classes:
+  //   anchor: large square, case-coloured, label = host
+  //   shared: circle sized by #cases observing, type-coloured
+  //   internal: small circle, case-coloured
+  const SHARED_TYPE_COLOR = {
+    "IPAddress": "#f0883e", "Domain": "#bc8cff", "Hash": "#56d364",
+  };
+  // Anchors
+  anchors.forEach(n => {
     const p = pos[n.id]; if (!p) return;
+    const sq = document.createElementNS(NS, "rect");
+    const SIZE = 14;
+    sq.setAttribute("x", p.x - SIZE/2); sq.setAttribute("y", p.y - SIZE/2);
+    sq.setAttribute("width", SIZE); sq.setAttribute("height", SIZE);
+    sq.setAttribute("fill", CASE_COLOR[n.attrs.case_id] || "#8b949e");
+    sq.setAttribute("stroke", "#0d1117"); sq.setAttribute("stroke-width", "2");
+    sq.setAttribute("class", "node-anchor");
+    sq.addEventListener("mouseenter", evt => showTT(evt, {
+      ts: "", conf: "", agent: "Case", case_label: n.label,
+      claim: `${n.attrs.case_id} · case anchor`,
+    }));
+    sq.addEventListener("mouseleave", hideTT);
+    svg.appendChild(sq);
+    // Label below the anchor
+    const txt = document.createElementNS(NS, "text");
+    txt.setAttribute("x", p.x); txt.setAttribute("y", p.y + SIZE);
+    txt.setAttribute("class", "node-anchor-label");
+    txt.setAttribute("text-anchor", "middle");
+    txt.textContent = (n.label || n.id).slice(0, 24);
+    svg.appendChild(txt);
+  });
+  // Shared
+  shared.forEach(n => {
+    const p = pos[n.id]; if (!p) return;
+    const ncases = (n.attrs.cases || []).length;
+    const r = 4 + Math.min(ncases, 8);   // 5..12 px
     const c = document.createElementNS(NS, "circle");
     c.setAttribute("cx", p.x); c.setAttribute("cy", p.y);
-    c.setAttribute("r", 4);
-    c.setAttribute("fill", CASE_COLOR[n.origin_case] || "#8b949e");
-    c.setAttribute("class", "node-circle");
+    c.setAttribute("r", r);
+    c.setAttribute("fill", SHARED_TYPE_COLOR[n.type] || "#f85149");
+    c.setAttribute("stroke", "#0d1117");
+    c.setAttribute("stroke-width", ncases >= 2 ? "1.5" : "0.5");
+    c.setAttribute("class", "node-shared");
     c.addEventListener("mouseenter", evt => showTT(evt, {
-      ts: "", conf: "",
-      agent: n.type, case_label: n.origin_host, claim: n.label || n.id,
+      ts: "", conf: ncases >= 2 ? `seen in ${ncases} cases` : "",
+      agent: n.type, case_label: n.label || n.id,
+      claim: `${ncases} case(s): ${(n.attrs.cases || []).slice(0,5).join(", ")}` +
+             (ncases > 5 ? ` …` : ""),
     }));
     c.addEventListener("mouseleave", hideTT);
     svg.appendChild(c);
+    // Label highly-shared (≥2 cases) so the analyst can read them
+    if (ncases >= 2) {
+      const txt = document.createElementNS(NS, "text");
+      txt.setAttribute("x", p.x + r + 3); txt.setAttribute("y", p.y + 3);
+      txt.setAttribute("class", "node-shared-label");
+      txt.textContent = (n.label || n.id).slice(0, 24);
+      svg.appendChild(txt);
+    }
   });
+  // Internals
+  casesList.forEach(cid => {
+    (internals[cid] || []).forEach(n => {
+      const p = pos[n.id]; if (!p) return;
+      const c = document.createElementNS(NS, "circle");
+      c.setAttribute("cx", p.x); c.setAttribute("cy", p.y);
+      c.setAttribute("r", 3);
+      c.setAttribute("fill", CASE_COLOR[cid] || "#8b949e");
+      c.setAttribute("class", "node-circle");
+      c.addEventListener("mouseenter", evt => showTT(evt, {
+        ts: "", conf: "", agent: n.type, case_label: n.origin_host,
+        claim: n.label || n.id,
+      }));
+      c.addEventListener("mouseleave", hideTT);
+      svg.appendChild(c);
+    });
+  });
+
   // Legend
   const legend = document.getElementById("graph-legend");
   if (legend) {
-    legend.innerHTML = casesList.map(cid => {
-      const lane = DATA.lanes.find(l => l.case_id === cid);
-      return `<div><span class="sw" style="background:${CASE_COLOR[cid]}"></span>${lane ? lane.host_label : cid}</div>`;
-    }).join("") +
-    `<div style="margin-top:6px;color:#8b949e">${g.nodes.length} nodes · ${g.edges.length} edges${g.stats.capped ? ' · capped' : ''}</div>`;
+    const stats = g.stats || {};
+    legend.innerHTML =
+      "<div style='margin-bottom:6px;color:#c9d1d9'><b>Cases (anchors)</b></div>" +
+      casesList.map(cid => {
+        const lane = DATA.lanes.find(l => l.case_id === cid);
+        return `<div><span class="sw" style="background:${CASE_COLOR[cid]}"></span>${lane ? lane.host_label : cid}</div>`;
+      }).join("") +
+      "<div style='margin-top:8px;color:#c9d1d9'><b>Shared entities</b></div>" +
+      `<div><span class="sw" style="background:${SHARED_TYPE_COLOR.IPAddress}"></span>IPAddress</div>` +
+      `<div><span class="sw" style="background:${SHARED_TYPE_COLOR.Domain}"></span>Domain</div>` +
+      `<div><span class="sw" style="background:${SHARED_TYPE_COLOR.Hash}"></span>Hash</div>` +
+      `<div style="margin-top:8px;color:#8b949e;font-size:11px">` +
+      `${g.nodes.length} nodes · ${g.edges.length} edges · ` +
+      `${stats.shared_nodes || 0} shared · ${stats.bridge_edges || 0} bridges` +
+      `${stats.capped ? ' · capped' : ''}</div>`;
   }
 }
 
