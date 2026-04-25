@@ -555,6 +555,29 @@ def extract_windows_artifacts(mount_point: Path, exports_dir: Path) -> dict:
                             out["ps_transcript_files"] = (
                                 out.get("ps_transcript_files", 0) + 1
                             )
+            # UWP / Cloud-Clipboard items (Windows 1809+). Pinned items
+            # live forever; recent items roll off after a few days. The
+            # whole tree is small (<10 MB typically) so we copy it all.
+            cb_src = _resolve_ci(
+                user_dir, "AppData", "Local", "Microsoft", "Windows",
+                "Clipboard")
+            if cb_src and cb_src.is_dir():
+                cb_dst = (exports_dir / "windows-artifacts"
+                          / "uwp-clipboard" / user_dir.name / "Clipboard")
+                cb_dst.mkdir(parents=True, exist_ok=True)
+                n_cb = 0
+                for sub in cb_src.rglob("*"):
+                    if not sub.is_file():
+                        continue
+                    rel = sub.relative_to(cb_src)
+                    dst_file = cb_dst / rel
+                    dst_file.parent.mkdir(parents=True, exist_ok=True)
+                    if _sudo_cp(sub, dst_file):
+                        n_cb += 1
+                if n_cb:
+                    out["uwp_clipboard_files"] = (
+                        out.get("uwp_clipboard_files", 0) + n_cb
+                    )
         if n_ntuser:
             out["ntuser_hives"] = n_ntuser
         if n_pst:

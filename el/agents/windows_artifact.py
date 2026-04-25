@@ -85,6 +85,11 @@ class WindowsArtifactAgent(Agent):
         # uploads, admin-panel hits, scripted-client recon. First-
         # order evidence for every Windows web/mail/RDS server.
         out.extend(self._iis_w3c(ctx, root, analysis))
+        # UWP / Cloud-Clipboard items — Win10 1809+ pinned + recent
+        # clipboard contents under AppData\Local\Microsoft\Windows\
+        # Clipboard\. High-signal user-activity artefact missed by
+        # ActivitiesCache.db alone.
+        out.extend(self._uwp_clipboard(ctx, root, analysis))
 
         if all(f.confidence == "insufficient" for f in out):
             out.append(self.emit(ctx, Finding(
@@ -690,4 +695,90 @@ class WindowsArtifactAgent(Agent):
                     evidence=[ev],
                     hypotheses_supported=h.hypotheses,
                 )))
+        return out
+
+    def _uwp_clipboard(self, ctx, root, analysis):
+        """Walk the per-user clipboard subtrees that
+        `extract_windows_artifacts` staged under
+        `windows-artifacts/uwp-clipboard/<user>/Clipboard/` and emit one
+        Finding per clipboard format-file. Pinned items get medium
+        confidence (deliberate user retention), recent items get low
+        (rolling-window state)."""
+        from el.schemas.finding import EvidenceItem
+        from el.skills import uwp_clipboard as cb
+        import hashlib
+
+        cb_root = _finddir(root, "uwp-clipboard")
+        if cb_root is None:
+            cb_root = _finddir(root, "windows-artifacts", "uwp-clipboard")
+        if cb_root is None:
+            return []
+
+        items = cb.walk_extracted_clipboard(cb_root)
+        if not items:
+            return []
+
+        # One summary + per-item findings (capped to keep ledger tidy)
+        out = []
+        pinned = [i for i in items if i.pinned]
+        recent = [i for i in items if not i.pinned]
+        sha = hashlib.sha256(
+            "|".join(str(i.format_file) for i in items).encode()
+        ).hexdigest()
+        summary_ev = EvidenceItem(
+            tool="el.uwp_clipboard", version="0.1.0",
+            command=f"walk_extracted_clipboard({cb_root.name})",
+            output_sha256=sha,
+            output_path=str(cb_root),
+            extracted_facts={
+                "items_total": len(items),
+                "pinned": len(pinned),
+                "recent": len(recent),
+                "users": sorted({i.user for i in items}),
+            },
+        )
+        out.append(self.emit(ctx, Finding(
+            case_id=ctx.case_id, agent=self.name, confidence="medium",
+            claim=(f"Windows Cloud-Clipboard: {len(items)} format-file(s) "
+                   f"across {len(set(i.user for i in items))} user "
+                   f"profile(s) — {len(pinned)} pinned + "
+                   f"{len(recent)} recent. Pinned items are "
+                   f"deliberately retained by the user; recent items "
+                   f"are the rolling 7-day buffer."),
+            evidence=[summary_ev],
+            hypotheses_supported=["H_DISK_ARTIFACTS"],
+        )))
+
+        for it in (pinned + recent)[:30]:   # cap per case
+            try:
+                ev_sha = hashlib.sha256(
+                    it.format_file.read_bytes()).hexdigest()
+            except OSError:
+                ev_sha = "0" * 64
+            ev = EvidenceItem(
+                tool="el.uwp_clipboard", version="0.1.0",
+                command=f"clipboard format file: {it.format_label}",
+                output_sha256=ev_sha,
+                output_path=str(it.format_file),
+                extracted_facts={
+                    "user": it.user,
+                    "pinned": it.pinned,
+                    "format": it.format_label,
+                    "size": it.size,
+                    "mtime_utc": it.mtime_utc,
+                    "sample": it.sample,
+                },
+            )
+            conf = "medium" if it.pinned else "low"
+            sample_text = (it.sample or "(non-text format)").replace(
+                "\n", " ")[:120]
+            out.append(self.emit(ctx, Finding(
+                case_id=ctx.case_id, agent=self.name, confidence=conf,
+                claim=(f"Cloud-Clipboard {'pinned' if it.pinned else 'recent'} "
+                       f"item: user={it.user}, format={it.format_label}, "
+                       f"size={it.size}, mtime={it.mtime_utc or '?'}. "
+                       f"Sample: {sample_text!r}"),
+                evidence=[ev],
+                hypotheses_supported=["H_DISK_ARTIFACTS"],
+            )))
         return out
