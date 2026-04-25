@@ -67,6 +67,7 @@ CREATE TABLE IF NOT EXISTS fuzzy_hashes (
     sha256        TEXT NOT NULL,
     ssdeep        TEXT,                 -- NULL when file < 4 KB
     phash         TEXT,                 -- NULL when file is not an image
+    tlsh          TEXT,                 -- NULL when file < 50 B
     file_size     INTEGER,
     source_path   TEXT,                 -- best-effort provenance
     observed_utc  TEXT NOT NULL,
@@ -77,7 +78,24 @@ CREATE TABLE IF NOT EXISTS fuzzy_hashes (
 CREATE INDEX IF NOT EXISTS idx_fuzzy_case   ON fuzzy_hashes(case_id);
 CREATE INDEX IF NOT EXISTS idx_fuzzy_sha    ON fuzzy_hashes(sha256);
 CREATE INDEX IF NOT EXISTS idx_fuzzy_phash  ON fuzzy_hashes(phash);
+-- idx_fuzzy_tlsh is created by _migrate_schema once the tlsh column
+-- is guaranteed present (the column itself was added in a later
+-- release; this script also runs against legacy DBs that pre-date it).
 """
+
+
+def _migrate_schema(conn: sqlite3.Connection) -> None:
+    """Additive migrations for fuzzy_hashes: existing knowledge.sqlite
+    files (predating TLSH) won't have the column. SQLite accepts
+    ADD COLUMN IF NOT EXISTS via a try/except — column-info probe is
+    cheaper than catching the constraint error."""
+    cols = {row[1] for row in
+            conn.execute("PRAGMA table_info(fuzzy_hashes)")}
+    if "tlsh" not in cols:
+        conn.execute("ALTER TABLE fuzzy_hashes ADD COLUMN tlsh TEXT")
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_fuzzy_tlsh ON fuzzy_hashes(tlsh)"
+        )
 
 
 @contextmanager
@@ -86,6 +104,7 @@ def open_db(path: Path | None = None) -> Iterator[sqlite3.Connection]:
     conn = sqlite3.connect(p)
     try:
         conn.executescript(SCHEMA)
+        _migrate_schema(conn)
         yield conn
         conn.commit()
     finally:
@@ -117,12 +136,14 @@ def record_iocs(case_id: str, agent: str,
 def record_fuzzy_hash(case_id: str, agent: str, sha256: str,
                        ssdeep: str | None = None,
                        phash: str | None = None,
+                       tlsh: str | None = None,
                        file_size: int | None = None,
                        source_path: str | None = None,
                        db_path: Path | None = None) -> bool:
     """Insert a fuzzy-hash row for a file in the current case.
     Returns True if newly inserted. Stores ssdeep (for content-triage
-    cross-case similarity) and/or phash (for stego-carrier detection)
+    cross-case similarity), phash (for stego-carrier detection), and
+    TLSH (Trend Micro locality-sensitive hash, malware-family clustering)
     alongside the sha256 so exact + fuzzy lookups share the same row."""
     if not sha256:
         return False
@@ -130,11 +151,11 @@ def record_fuzzy_hash(case_id: str, agent: str, sha256: str,
     with open_db(db_path) as conn:
         cur = conn.execute(
             "INSERT OR IGNORE INTO fuzzy_hashes "
-            "(case_id, sha256, ssdeep, phash, file_size, source_path, "
-            " observed_utc, agent) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            (case_id, sha256, ssdeep, phash, file_size, source_path,
-             now, agent),
+            "(case_id, sha256, ssdeep, phash, tlsh, file_size, "
+            " source_path, observed_utc, agent) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (case_id, sha256, ssdeep, phash, tlsh, file_size,
+             source_path, now, agent),
         )
         return cur.rowcount > 0
 
@@ -172,6 +193,41 @@ def lookup_similar_ssdeep(
                 "score": score, "band": ssdeep_score_band(score),
             })
     hits.sort(key=lambda h: -h["score"])
+    return hits
+
+
+def lookup_similar_tlsh(
+    tlsh_digest: str, current_case_id: str,
+    max_distance: int = 70,
+    db_path: Path | None = None,
+) -> list[dict]:
+    """Return stored TLSH hashes from OTHER cases within `max_distance`
+    of `tlsh_digest`. TLSH distance is a non-negative integer; the
+    canonical malware-family clustering threshold is 70 (Trend Micro
+    research), with <30 indicating very close variants and <100
+    indicating same-loose-family."""
+    if not tlsh_digest:
+        return []
+    from el.skills.similarity_digest import tlsh_distance, tlsh_score_band
+    hits: list[dict] = []
+    with open_db(db_path) as conn:
+        rows = conn.execute(
+            "SELECT case_id, sha256, tlsh, source_path, observed_utc, "
+            "       agent "
+            "FROM fuzzy_hashes "
+            "WHERE tlsh IS NOT NULL AND case_id != ?",
+            (current_case_id,),
+        ).fetchall()
+    for cid, sha, td, path, ts, agent in rows:
+        d = tlsh_distance(tlsh_digest, td)
+        if d is None or d > max_distance:
+            continue
+        hits.append({
+            "case_id": cid, "sha256": sha, "tlsh": td,
+            "source_path": path, "observed_utc": ts, "agent": agent,
+            "distance": d, "band": tlsh_score_band(d),
+        })
+    hits.sort(key=lambda h: h["distance"])
     return hits
 
 

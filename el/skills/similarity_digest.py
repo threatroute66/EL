@@ -238,9 +238,75 @@ def ssdeep_query_set(
     return hits
 
 
+# ---------------------------------------------------------------------------
+# TLSH — Trend Micro Locality-Sensitive Hash
+# ---------------------------------------------------------------------------
+# Compared to ssdeep:
+#   * deterministic 70-char hex string per file (≥50 bytes input)
+#   * distance is an integer; 0 = identical, <30 = very close variant,
+#     <70 = same family (Trend Micro guidance), >150 = unrelated
+#   * outperforms ssdeep on small / packed PE samples — lower FP rate
+#     for malware-family clustering
+# We expose both algorithms; agents pick whichever (or both) per use.
+
+def tlsh_digest(path: str | Path) -> str | None:
+    """Compute the TLSH digest of a file. None if the file is too
+    small (<50 B), unreadable, or the input has insufficient entropy
+    (TLSH refuses to digest mostly-uniform content)."""
+    try:
+        import tlsh
+    except Exception:
+        return None
+    try:
+        data = Path(path).read_bytes()
+    except OSError:
+        return None
+    if len(data) < 50:
+        return None
+    try:
+        h = tlsh.hash(data)
+    except Exception:
+        return None
+    # python-tlsh returns "TNULL" or empty on insufficient-entropy /
+    # too-small inputs — normalise to None for downstream callers.
+    if not h or h in ("TNULL", "T1"):
+        return None
+    return h
+
+
+def tlsh_distance(a: str | None, b: str | None) -> int | None:
+    """Return the TLSH distance between two digests. None when either
+    input is empty or python-tlsh isn't available."""
+    if not a or not b:
+        return None
+    try:
+        import tlsh
+    except Exception:
+        return None
+    try:
+        return tlsh.diff(a, b)
+    except Exception:
+        return None
+
+
+def tlsh_score_band(distance: int | None) -> str:
+    """Map a TLSH distance to a human band. Thresholds align with
+    Trend Micro published guidance + common malware-clustering practice."""
+    if distance is None:
+        return "unknown"
+    if distance <= 30:
+        return "very-close-variant"
+    if distance <= 70:
+        return "same-family-likely"
+    if distance <= 150:
+        return "same-family-loose"
+    return "unrelated"
+
+
 __all__ = [
     "ssdeep_digest", "ssdeep_compare", "ssdeep_score_band",
     "phash", "phash_distance",
     "StegoCarrierPair", "detect_stego_carrier_pairs",
     "SsdeepHit", "ssdeep_query_set",
+    "tlsh_digest", "tlsh_distance", "tlsh_score_band",
 ]
