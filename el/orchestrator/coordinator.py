@@ -24,6 +24,7 @@ from el.agents.powershell_analyst import PowerShellAnalystAgent
 from el.agents.sigma_analyst import SigmaAnalystAgent
 from el.agents.disk_forensicator import DiskForensicatorAgent
 from el.agents.email_forensicator import EmailForensicatorAgent
+from el.agents.bulk_extractor_features_agent import BulkExtractorFeaturesAgent
 from el.agents.endpoint_analyst import EndpointAnalystAgent
 from el.agents.linux_forensicator import LinuxForensicatorAgent
 from el.agents.execution_corroborator import ExecutionCorroboratorAgent
@@ -73,6 +74,7 @@ KIND_TO_AGENT: dict[str, type[Agent]] = {
     "ios-fs-dir": IOSForensicatorAgent,
     "linux-fs-dir": LinuxForensicatorAgent,
     "qnap-nas-dir": LinuxForensicatorAgent,
+    "bulk-extractor-output": BulkExtractorFeaturesAgent,
     "k8s-audit-log": K8sAuditAnalystAgent,
 }
 

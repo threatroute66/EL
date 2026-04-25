@@ -186,6 +186,14 @@ class TriageAgent(Agent):
         )
         is_ios = sum(ios_signals) >= 2
 
+        # bulk_extractor output dir — has report.xml OR ≥3 of the
+        # canonical feature files. Decided cheaply via is_dir() probes
+        # before any rglob.
+        from el.skills.bulk_extractor_features import (
+            is_bulk_extractor_output as _be_probe,
+        )
+        is_bulk_extractor = _be_probe(d)
+
         # QNAP NAS user-data volume (QTS DataVolN ext4 mount).
         # Distinct shape: `homes/` (singular `home/` is Linux), `.qpkg/`
         # for installed apps, `.@*` private metadata dirs, `.system/`,
@@ -220,7 +228,8 @@ class TriageAgent(Agent):
         # from the cheap is_dir() probes above. Windows / Velociraptor
         # detection still needs filename scans.
         names: list[str] = []
-        if not (is_android or is_ios or is_qnap or is_linux):
+        if not (is_android or is_ios or is_qnap or is_linux
+                 or is_bulk_extractor):
             # Walk via os.walk so we can pass onerror=None and skip
             # unreadable subtrees gracefully — QNAP DataVol1 mounts
             # have root-only files (.qcodesigning) that crash rglob's
@@ -270,6 +279,15 @@ class TriageAgent(Agent):
                        f"filesystem tree (data/system/packages.xml + "
                        f"data/data/ per-app subtree + /storage/emulated "
                        f"signals matched)"),
+                evidence=[ev], hypotheses_supported=["H_DISK_ARTIFACTS"],
+            )))
+        elif is_bulk_extractor:
+            ctx.shared["evidence_kind"] = "bulk-extractor-output"
+            out.append(self.emit(ctx, Finding(
+                case_id=ctx.case_id, agent=self.name, confidence="high",
+                claim=(f"Input directory looks like a bulk_extractor "
+                       f"output dir (report.xml or ≥3 canonical feature "
+                       f"files present)"),
                 evidence=[ev], hypotheses_supported=["H_DISK_ARTIFACTS"],
             )))
         elif is_qnap:
