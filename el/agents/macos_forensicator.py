@@ -37,7 +37,16 @@ class MacOSForensicatorAgent(Agent):
     name = "macos_forensicator"
 
     def run(self, ctx: AgentContext) -> list[Finding]:
+        # Three input modes (mirrors LinuxForensicatorAgent):
+        # (1) Chained from DiskForensicator with `macos_artifacts_dir`
+        #     set in shared context (existing wiring)
+        # (2) Triage routed evidence_kind == "macos-fs-dir" → use
+        #     `ctx.input_path` directly as the extracted FS root
+        # (3) Default fallback to `<case_dir>/exports/macos-artifacts`
+        kind = ctx.shared.get("evidence_kind") or ""
         exports = ctx.shared.get("macos_artifacts_dir")
+        if not exports and kind == "macos-fs-dir":
+            exports = ctx.input_path
         if not exports:
             default = ctx.case_dir / "exports" / "macos-artifacts"
             if default.is_dir() and any(default.rglob("*")):

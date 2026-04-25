@@ -27,6 +27,7 @@ from el.agents.email_forensicator import EmailForensicatorAgent
 from el.agents.bulk_extractor_features_agent import BulkExtractorFeaturesAgent
 from el.agents.endpoint_analyst import EndpointAnalystAgent
 from el.agents.linux_forensicator import LinuxForensicatorAgent
+from el.agents.macos_forensicator import MacOSForensicatorAgent
 from el.agents.execution_corroborator import ExecutionCorroboratorAgent
 from el.agents.lateral_movement_analyst import LateralMovementAnalystAgent
 from el.agents.log_analyst import LogAnalystAgent
@@ -74,6 +75,7 @@ KIND_TO_AGENT: dict[str, type[Agent]] = {
     "ios-fs-dir": IOSForensicatorAgent,
     "linux-fs-dir": LinuxForensicatorAgent,
     "qnap-nas-dir": LinuxForensicatorAgent,
+    "macos-fs-dir": MacOSForensicatorAgent,
     "bulk-extractor-output": BulkExtractorFeaturesAgent,
     "k8s-audit-log": K8sAuditAnalystAgent,
 }
@@ -318,7 +320,6 @@ class Coordinator:
         # If DiskForensicator extracted macOS artifacts (APFS Data
         # volume), chain MacOSForensicatorAgent.
         if ctx.shared.get("macos_artifacts_dir"):
-            from el.agents.macos_forensicator import MacOSForensicatorAgent
             self._run_agent(MacOSForensicatorAgent(), ctx)
 
         # If the primary investigator extracted Windows artifacts (DiskForensicator
