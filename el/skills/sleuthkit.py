@@ -585,6 +585,35 @@ def extract_windows_artifacts(mount_point: Path, exports_dir: Path) -> dict:
         if n_firefox:
             out["firefox_profiles"] = n_firefox
 
+    # User Access Logging (UAL) — Windows Server 2012+ ESE databases
+    # at C:\Windows\System32\LogFiles\Sum\<GUID>.mdb. Per-user / per-IP
+    # access counts to server roles. Tiny DBs (<50 MB), copy whole.
+    # Chain via per-step None-guards so a missing intermediate dir
+    # (e.g. non-Server image without /Windows/System32/LogFiles/) doesn't
+    # propagate None into the next _child_ci call (regression caught
+    # by the existing test_extract_windows_artifacts_xp tests).
+    sum_dir = None
+    win_dir = _child_ci(mount_point, "Windows")
+    if win_dir:
+        sys32 = _child_ci(win_dir, "System32")
+        if sys32:
+            logfiles = _child_ci(sys32, "LogFiles")
+            if logfiles:
+                sum_dir = _child_ci(logfiles, "Sum")
+    if sum_dir and sum_dir.is_dir():
+        ual_dst = exports_dir / "ual"
+        ual_dst.mkdir(parents=True, exist_ok=True)
+        n_ual = 0
+        for f in sum_dir.iterdir():
+            if not f.is_file():
+                continue
+            if not f.name.lower().endswith(".mdb"):
+                continue
+            if _sudo_cp(f, ual_dst / f.name):
+                n_ual += 1
+        if n_ual:
+            out["ual_mdb_files"] = n_ual
+
     # IIS W3C extended logs under C:\inetpub\logs\LogFiles\W3SVC*\.
     # Copy the whole W3SVC tree so subsequent analyst passes can use
     # Log Parser Studio / manual review; iis_w3c skill walks the

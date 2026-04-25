@@ -95,6 +95,10 @@ class WindowsArtifactAgent(Agent):
         # contacts/files). Surfaces use by sandboxed UWP apps that
         # don't appear in Prefetch.
         out.extend(self._capability_access(ctx, root, analysis))
+        # UAL .mdb under Windows\System32\LogFiles\Sum\ — Windows
+        # Server per-user/per-IP role-access logs. Highest-signal
+        # artifact on a server case for "who logged in from where".
+        out.extend(self._ual(ctx, root, analysis))
 
         if all(f.confidence == "insufficient" for f in out):
             out.append(self.emit(ctx, Finding(
@@ -700,6 +704,70 @@ class WindowsArtifactAgent(Agent):
                     evidence=[ev],
                     hypotheses_supported=h.hypotheses,
                 )))
+        return out
+
+    def _ual(self, ctx, root, analysis):
+        """Parse every UAL .mdb extracted into exports/ual/ via
+        esedbexport, surface the CLIENTS table top-N rows as
+        Findings. One Finding per .mdb (rollup) plus per-row Findings
+        for the top access-count rows."""
+        from el.schemas.finding import EvidenceItem
+        from el.skills import ual as ual_skill
+        import hashlib
+
+        ual_dir = _finddir(root, "ual")
+        if not ual_dir:
+            return []
+        if not ual_skill.is_ual_available():
+            return [self.emit(ctx, Finding(
+                case_id=ctx.case_id, agent=self.name,
+                confidence="insufficient",
+                claim=("UAL .mdb files extracted but `esedbexport` not "
+                       "on PATH (install libesedb-tools — SIFT default)."),
+            ))]
+
+        export_dir = analysis / "ual"
+        out = []
+        for mdb in sorted(ual_dir.glob("*.mdb")):
+            db = ual_skill.export_database(mdb, export_dir)
+            sha = hashlib.sha256(mdb.read_bytes()[:64*1024]).hexdigest()
+            if db.error:
+                out.append(self.emit(ctx, Finding(
+                    case_id=ctx.case_id, agent=self.name,
+                    confidence="insufficient",
+                    claim=(f"UAL {mdb.name} export failed: {db.error}"),
+                    evidence=[EvidenceItem(
+                        tool="esedbexport", version="libesedb-tools",
+                        command=f"esedbexport -T … {mdb.name}",
+                        output_sha256=sha, output_path=str(mdb),
+                        extracted_facts={"error": db.error})],
+                )))
+                continue
+            sample = "; ".join(
+                f"{a.address} ({a.username or '?'}, {a.total_accesses}×)"
+                for a in db.accesses[:5]
+            )
+            out.append(self.emit(ctx, Finding(
+                case_id=ctx.case_id, agent=self.name,
+                confidence="high" if db.accesses else "low",
+                claim=(f"UAL {mdb.name}: {len(db.table_files)} table(s) "
+                       f"exported; CLIENTS rows = {len(db.accesses)}. "
+                       f"Top: {sample}" if db.accesses else
+                       f"UAL {mdb.name}: parsed but CLIENTS table empty "
+                       "(server hadn't logged any role accesses yet)."),
+                evidence=[EvidenceItem(
+                    tool="el.ual", version="0.1.0",
+                    command=f"export_database({mdb.name})",
+                    output_sha256=sha, output_path=str(mdb),
+                    extracted_facts={
+                        "tables": sorted(db.table_files.keys()),
+                        "client_rows": len(db.accesses),
+                        "top_5_addresses": [
+                            a.address for a in db.accesses[:5]],
+                    })],
+                hypotheses_supported=["H_DISK_ARTIFACTS",
+                                       "H_LATERAL_MOVEMENT"],
+            )))
         return out
 
     def _capability_access(self, ctx, root, analysis):
