@@ -125,21 +125,19 @@ Every plugin below is already in vol3; EL just doesn't run it.
 - `windows.getsids.GetSIDs` — per-process SIDs. Completes the process-anomaly matrix (user account check we explicitly defer today).
 
 **Medium:**
-- `windows.ssdt.SSDT` + `windows.driverirp.DriverIRP` — kernel-mode hook detection.
-- `windows.dumpfiles.DumpFiles` + `windows.filescan.FileScan` — carve files out of memory (essential for exfil reconstruction).
-- `windows.mftscan.MFTScan` — reconstruct filesystem from memory when no disk image is available.
-- `yarascan` — scan the raw memory image with our generated YARA rules (we YARA the dumped malfind regions but not the parent image).
+- `windows.ssdt.SSDT` + `windows.driverirp.DriverIRP` — kernel-mode hook detection. ✅ Shipped.
+- `windows.filescan.FileScan` ✅ + `windows.mftscan.MFTScan` ✅ shipped. `windows.dumpfiles.DumpFiles` still open (needs per-PID iteration glue).
+- ✅ **`windows.vadyarascan.VadYaraScan`** — shipped via `el.skills.vol3.yarascan()` + `threat_hunter._vol3_yarascan`. Process-attributed YARA matches (PID + ImageFileName + VA). Volume-noise suppression: rules firing ≥10× the case median (or ≥1000 absolute) auto-downgrade to LOW with no hypothesis lift, so generic Windows-DLL substrings can't drown real C2 hits. Validated against `srl2018-admin-memory` — `shieldbase.lan` × 9,822 + `1.3.33.17` × 40 surfaced as in-process hits.
 
 **Highest-impact single add:** `windows.modules.Modules` + `modscan` for rootkit / unlinked-driver detection.
 
 ### Malware RE / static analysis
 
-- **`capa`** (Mandiant) — ATT&CK capability extraction on binaries. Tag Findings with the technique IDs it returns.
-- **`FLOSS`** — decode obfuscated strings (stacked-strings, tight-loop encodes).
-- **`Detect-It-Easy`** / `diec` — packer + compiler detection.
-- `pefile` wrapper — Rich Header, imphash, per-section entropy, anomalous imports (lsass handle APIs, memory APIs, process APIs).
-- `ssdeep` / `tlsh` — fuzzy hashing for family attribution across cases.
-- VBA / XLM / PDF object-stream deobfuscators (`olevba`, `pcodedmp`, `xlmdeobfuscator`, `rtfobj`, `pdfparser`) — office-doc droppers.
+- ✅ **`capa`** + **`FLOSS`** — both shipped (see Top-6 #6).
+- **`Detect-It-Easy`** / `diec` — packer + compiler detection. Still open.
+- ✅ **`pefile`-deep wrapper** — `el.skills.pefile_deep` shipped: Rich Header, imphash + cross-case clustering, per-section entropy (packed-section flag), anomalous-import sensitive-API groups (lsass handles, memory APIs, process APIs) → ATT&CK technique tags. Wired into `MalwareTriageAgent._run_pefile_deep`.
+- ✅ **`ssdeep`** + **`TLSH`** — both shipped via `el.skills.similarity_digest` + `knowledge.fuzzy_hashes` (`tlsh` column added with auto-migration on legacy DBs). Cross-case malware-family clustering: ssdeep lookup at threshold 20 (Roussev marginal), TLSH lookup at distance ≤70 (Trend Micro same-family); a TLSH match at distance ≤30 (very-close-variant) bumps confidence to medium.
+- ✅ **`olevba`** + **`rtfobj`** shipped via `el.skills.office_deobf`. `pcodedmp` / `xlmdeobfuscator` / `pdfparser` still open.
 
 **Highest-impact single add:** `capa` integration — direct ATT&CK-technique corroboration on every dumped PE.
 
@@ -356,8 +354,8 @@ rows as evidence lands and a case completes end-to-end._
 
 | Format | Status | Where to find a sample |
 |---|---|---|
-| VMDK (VMware) | untested — Sleuth Kit should work flat; split `-s00?.vmdk` unverified | Evidence Locker, HELK labs, or any VMware lab export |
-| VHD / VHDX (Microsoft) | untested — `qemu-nbd` path not validated | Azure VM exports, Hyper-V checkpoints, FOR500 teaching |
+| ~~VMDK (VMware)~~ ✅ | Shipped via `el.skills.disk_convert` (`qemu-img convert -O raw`). Triage detects KDMV / COWD / `# Disk DescriptorFile` magics; DiskForensicator's `_handle_vm_disk` converts to raw under `<case_dir>/raw/converted.img` and reuses the existing mmls + per-partition fls walk. | — |
+| ~~VHD / VHDX (Microsoft)~~ ✅ | Same path as VMDK — VHDX detected by `vhdxfile` head-magic; legacy fixed-VHD detected by the `conectix` tail-cookie via `_detect_vhd_footer`. Validated end-to-end on Andrew Rathbun's Anti-Forensics-VHDX (4 partitions, 14.6 KB fls bodyfile, MACB_TIMESTOMP_SKEW detector also added). | — |
 | VDI (VirtualBox) | untested | DFIR training VMs, public CTFs |
 | APFS encrypted container | **not supported** — needs FileVault recovery key ingestion | Operator-supplied key case |
 | BitLocker-encrypted NTFS / ReFS | untested — `dislocker` path exists but no validated case | SANS FOR500/FOR508 course images with BitLocker on |
@@ -392,7 +390,7 @@ rows as evidence lands and a case completes end-to-end._
 | ~~systemd journal binary (`.journal`)~~ ✅ | Shipped `el.skills.systemd_journal` — wraps `journalctl --file` + JSON export + per-unit filters (sshd, sudo, cron, systemd units). Consumed by `LinuxForensicatorAgent._analyze_systemd_journal`. | — |
 | auditd raw (`audit.log`) | partial — pattern scan only, no `ausearch` normalization | RHEL / Ubuntu server images |
 | ~~Linux `utmp` / `wtmp` / `btmp`~~ ✅ | Shipped `el.skills.utmp` — pure-Python parser for the 384-byte glibc utmpx struct, covers utmp (active) / wtmp (historical) / btmp (failed-auth). Detectors: brute-force burst (≥5 btmp rows from same source), remote-root-login. Consumed by `LinuxForensicatorAgent._analyze_utmp_family`. | — |
-| IIS W3C logs | **not supported** | Windows Server IIS case images |
+| ~~IIS W3C logs~~ ✅ | Shipped `el.skills.iis_w3c` — streaming W3C-Extended parser with mid-file `#Fields:` re-emit handling. Five detectors wired into `WindowsArtifactAgent._iis_w3c`: webshell-URI shape, scripted-client UA (offensive vs generic), admin-path success from public IP, upload POST burst, verb-tunnel. `extract_windows_artifacts` walks `inetpub/logs/LogFiles/W3SVC*/` and copies u_ex*.log into `exports/iis_logs/`. | — |
 | Apache / nginx access logs | mentioned in linux-forensicator doc but no detector | Public webserver breach samples |
 | Zeek `conn.log` / `http.log` etc. (batch ingest) | partial — pcap-derived Zeek runs validated, standalone Zeek corpus ingest untested | Zeek-published training data, LANL-netflow |
 | Suricata EVE JSON | **not supported** | Open-source IDS labs |
@@ -537,11 +535,26 @@ Beyond the Tier 1–4 shortlist, the following category items landed:
 
 | Item | Commit | Deferred (needs corpus or bigger dep) |
 |---|---|---|
-| Network depth — DGA entropy + DNS tunneling + SMB admin-share writes | `9821af5` | JA3/JA4 + Umbrella allowlist |
+| Network depth — DGA entropy + DNS tunneling + SMB admin-share writes | `9821af5` | Umbrella top-1M allowlist (JA3 part landed in `9c2df40`) |
+| ~~JA3 known-bad + cross-case rarity~~ ✅ | `9c2df40` | Umbrella top-1M allowlist still pending |
 | Cloud breadth — Azure Activity + GCP Cloud Audit + AWS VPC Flow | `d070478` | Google Workspace + AWS GuardDuty |
 | PowerShell breadth — EID 4103 + PSReadline + transcription scans | `15fdaee` | Windows Cloud-Clipboard (UWP state) |
-| vol3 extras — ssdt + driverirp + kernel-hook detector + filescan + mftscan | `8de8f9d` | dumpfiles + yarascan (need per-pid / per-rules args) |
+| vol3 extras — ssdt + driverirp + kernel-hook detector + filescan + mftscan | `8de8f9d` | `windows.dumpfiles.DumpFiles` per-PID still open |
+| ~~vol3 yarascan~~ ✅ | `811764c` + `0874487` | Wraps `windows.vadyarascan.VadYaraScan` with PID + ImageFileName attribution; volume-noise suppression (≥10× median or ≥1000 absolute → low confidence). Validated end-to-end on `srl2018-admin-memory`. |
 | Windows artifact extras — RecentDocs + OpenSave-MRU | `b6ead0d` | CapabilityAccess / UAL mdb / VSS mounting |
+| ~~IIS W3C parser~~ ✅ | `71a9a1c` | 5 detectors (webshell URI, scripted UA, admin path, upload burst, verb tunnel) |
+| ~~VMDK / VHD / VHDX ingest~~ ✅ | `317d568` | qemu-img convert → raw → existing fls pipeline |
+| ~~MACB timestomp-skew detector~~ ✅ | `096459b` | crtime > mtime by ≥7 days; first-class `H_ANTI_FORENSICS` hypothesis |
+| ~~`linux-fs-dir` + `qnap-nas-dir` triage kinds~~ ✅ | `e32424f` | LinuxForensicatorAgent now accepts `ctx.input_path` directly when triage routes via these kinds; QNAP DataVol1 mount validates |
+| ~~`bulk-extractor-output` triage + agent~~ ✅ | `9430eba` | Histograms + carved-record buckets become Findings; MSAB attribution + 172.21 LAN subnet surfaced from QNAP case 21APR_245 |
+| ~~TLSH cross-case fuzzy clustering~~ ✅ | `aab2cea` | `el.skills.similarity_digest.tlsh_*` + `knowledge.fuzzy_hashes.tlsh` w/ auto-migration; companion to existing ssdeep |
+| ~~Cross-host graph merging~~ ✅ | `4b352e6` | Shared IPs / domains / hashes collapse across cases; case-anchor bridges via `OBSERVED_IN`; layout ring + sunflower |
+| ~~ATT&CK row expand + timeline drawer~~ ✅ | `d6aec5d` | combined.html click-to-detail per technique + per finding |
+| ~~Cross-evidence divergence detector~~ ✅ | `cbd42f9` | Flags hosts where disk vs memory disagree on leader / score span ≥15 |
+| ~~Coordinator SIGTERM/SIGINT guard~~ ✅ | `212d1e8` | `coordinator_signalled` audit line on graceful kills (SIGKILL still untrappable) |
+| ~~Coordinator auto-renders case.html~~ ✅ | `6701836` | `el investigate` no longer requires a follow-up `el report --html` |
+| ~~ACH corpus regression golden~~ ✅ | `0904840` | tests/fixtures/ach_golden.json locks leading hypothesis + score per case |
+| ~~IOC noise — Windows filename TLDs~~ ✅ | `66c9894` | .pf / .fon / .ttc / .mum / .cat etc. dropped from domain bucket |
 | Detection engineering — IOC rarity scoring + ubiquitous-noise suppression | `84359ba` | MITRE CAR analytic import (overlaps SIGMA) |
 
 Corpus-gated (waiting on Evidence-Locker downloads): T3-2 Linux,
