@@ -311,15 +311,28 @@ def _technique_union(cases: list[CaseSlice]) -> dict[str, dict]:
                         tid, name = a.split(":", 1)
                         tids.add(tid)
                         names.setdefault(tid, name)
+            ref = {
+                "case_id": c.case_id,
+                "case_label": c.host_label,
+                "finding_id": f.get("finding_id", ""),
+                "agent": f.get("agent", ""),
+                "confidence": f.get("confidence", ""),
+                "claim": claim,
+            }
             for tid in tids:
                 slot = out.setdefault(tid, {"id": tid, "cases": set(),
-                                              "findings": 0, "name": ""})
+                                              "findings": 0, "name": "",
+                                              "finding_refs": []})
                 slot["cases"].add(c.case_id)
                 slot["findings"] += 1
+                slot["finding_refs"].append(ref)
     for tid, info in out.items():
         if not info["name"]:
             info["name"] = names.get(tid, "")
         info["cases"] = sorted(info["cases"])
+        # Stable order so re-renders produce identical HTML.
+        info["finding_refs"].sort(
+            key=lambda r: (r["case_id"], r["finding_id"]))
     return out
 
 

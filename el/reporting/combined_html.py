@@ -125,6 +125,58 @@ table td.num { text-align: right; font-variant-numeric: tabular-nums; }
 .attack-grid td.bar { width: 40%; }
 .attack-grid .bar-inner { height: 10px; background: linear-gradient(90deg, #2ea043, #f0883e, #f85149);
     border-radius: 2px; }
+/* ATT&CK row click-to-expand */
+.attack-grid tr.att-row { cursor: pointer; }
+.attack-grid tr.att-row:hover { background: #161b22; }
+.attack-grid td.att-toggle { width: 1.5em; color: #8b949e; user-select: none;
+    font-family: "SF Mono", monospace; }
+.attack-grid tr.att-details > td { background: #0d1117; padding: 12px 16px; }
+.attack-grid table.att-sub { width: 100%; border-collapse: collapse;
+    font-size: 12px; }
+.attack-grid table.att-sub th { color: #8b949e; text-align: left;
+    padding: 4px 6px; border-bottom: 1px solid #30363d; }
+.attack-grid table.att-sub td { padding: 3px 6px; vertical-align: top;
+    border-bottom: 1px solid #21262d; }
+.attack-grid table.att-sub td.att-host { color: #79c0ff; white-space: nowrap; }
+.attack-grid table.att-sub td.att-agent { color: #c9d1d9; font-family: "SF Mono", monospace; }
+.attack-grid table.att-sub td.att-claim { color: #c9d1d9; max-width: 60ch; }
+.attack-grid table.att-sub td.att-fid a { color: #79c0ff; font-family: "SF Mono", monospace; }
+.attack-grid table.att-sub td.conf-high    { color: #f85149; font-weight: 600; }
+.attack-grid table.att-sub td.conf-medium  { color: #d29922; }
+.attack-grid table.att-sub td.conf-low     { color: #58a6ff; }
+.attack-grid table.att-sub td.conf-insufficient { color: #8b949e; font-style: italic; }
+
+/* Finding drawer — slides in from the right on timeline / ATT&CK click */
+#drawer { position: fixed; top: 0; right: 0; height: 100vh; width: 520px;
+    background: #161b22; border-left: 1px solid #30363d; z-index: 200;
+    transform: translateX(540px); transition: transform 0.18s ease-out;
+    box-shadow: -4px 0 16px rgba(0,0,0,0.6);
+    display: flex; flex-direction: column; overflow: hidden; }
+#drawer.open { transform: translateX(0); }
+#drawer .drawer-head { display: flex; align-items: flex-start;
+    justify-content: space-between; padding: 14px 18px;
+    border-bottom: 1px solid #30363d; gap: 12px; }
+#drawer .drawer-title { font-weight: 600; color: #f0f6fc; font-size: 14px;
+    line-height: 1.4; }
+#drawer .drawer-close { background: transparent; border: none;
+    color: #8b949e; font-size: 22px; cursor: pointer; padding: 0 4px; }
+#drawer .drawer-close:hover { color: #f0f6fc; }
+#drawer .drawer-body { padding: 14px 18px; overflow-y: auto; flex: 1;
+    font-size: 13px; color: #c9d1d9; }
+#drawer .drawer-row { margin-bottom: 8px; }
+#drawer .drawer-row b { color: #8b949e; font-weight: 500; margin-right: 6px; }
+#drawer .drawer-row code { color: #79c0ff; font-size: 12px; }
+#drawer .drawer-row .muted { color: #6e7681; font-style: italic; }
+#drawer .drawer-claim { background: #0d1117; border-left: 3px solid #58a6ff;
+    padding: 10px 12px; margin: 12px 0; line-height: 1.5;
+    white-space: pre-wrap; word-break: break-word; }
+#drawer table.drawer-ev { width: 100%; border-collapse: collapse;
+    font-size: 11px; margin-top: 6px; }
+#drawer table.drawer-ev th { color: #8b949e; text-align: left;
+    padding: 3px 6px; border-bottom: 1px solid #30363d; font-weight: 500; }
+#drawer table.drawer-ev td { padding: 3px 6px; vertical-align: top;
+    border-bottom: 1px solid #21262d; word-break: break-all; }
+#drawer table.drawer-ev code { color: #c9d1d9; font-size: 11px; }
 
 /* Narrative block */
 .narrative { background: #161b22; border-left: 3px solid #58a6ff;
@@ -209,6 +261,20 @@ def _timeline_events(cases: list[CaseSlice],
                 if not ts:
                     continue
             conf = f.get("confidence", "low")
+            # Compact evidence projection so the drawer can show the
+            # full provenance chain without bloating the JSON with raw
+            # tool output. One row per EvidenceItem with the columns
+            # the analyst actually pivots on.
+            ev_compact = []
+            for e in (f.get("evidence") or [])[:6]:
+                ev_compact.append({
+                    "tool": e.get("tool", ""),
+                    "version": e.get("version", ""),
+                    "command": (e.get("command") or "")[:240],
+                    "output_path": e.get("output_path", ""),
+                    "output_sha256": (e.get("output_sha256") or "")[:16],
+                })
+            rr = f.get("red_review") or {}
             events.append({
                 "case_id": c.case_id,
                 "case_label": c.host_label,
@@ -216,7 +282,12 @@ def _timeline_events(cases: list[CaseSlice],
                 "conf": conf,
                 "agent": f.get("agent", ""),
                 "finding_id": f.get("finding_id", ""),
-                "claim": (f.get("claim") or "")[:220],
+                "claim": f.get("claim") or "",
+                "hypotheses": f.get("hypotheses_supported") or [],
+                "evidence": ev_compact,
+                "red_review_status": (
+                    rr.get("status", "") if isinstance(rr, dict) else ""
+                ),
             })
     events.sort(key=lambda e: e["ts"])
     return events
@@ -399,16 +470,52 @@ def _attack_heatmap_html(techniques: dict) -> str:
         info = techniques[tid]
         url = f"https://attack.mitre.org/techniques/{tid.replace('.', '/')}/"
         pct = int(100 * info["findings"] / max_findings)
+        slug = tid.replace(".", "_")
+        # Header row — clicking the disclosure caret toggles the
+        # details row below. Anchor on the TID itself goes out to
+        # MITRE's reference page (target=_blank); the toggle stays
+        # on the disclosure cell.
         rows.append(
-            f"<tr><td class='tid'><a href='{url}' target='_blank'>{html.escape(tid)}</a></td>"
+            f"<tr class='att-row' data-att='{slug}'>"
+            f"<td class='att-toggle'>▸</td>"
+            f"<td class='tid'><a href='{url}' target='_blank' "
+            f"onclick='event.stopPropagation()'>{html.escape(tid)}</a></td>"
             f"<td>{html.escape(info.get('name',''))}</td>"
             f"<td class='num'>{len(info['cases'])}</td>"
             f"<td class='num'>{info['findings']}</td>"
-            f"<td class='bar'><div class='bar-inner' style='width:{pct}%'></div></td></tr>"
+            f"<td class='bar'><div class='bar-inner' "
+            f"style='width:{pct}%'></div></td></tr>"
+        )
+        # Hidden details row — sub-table of contributing findings.
+        # Each finding_id is clickable; the click handler reuses the
+        # timeline drawer (DATA.event_by_id lookup).
+        sub_rows = []
+        for ref in info.get("finding_refs", []):
+            fid = ref.get("finding_id") or ""
+            short_fid = fid[:14] + "…" if len(fid) > 16 else fid
+            conf = ref.get("confidence", "")
+            sub_rows.append(
+                f"<tr><td class='att-host'>{html.escape(ref.get('case_label') or ref.get('case_id') or '')}</td>"
+                f"<td class='att-agent'>{html.escape(ref.get('agent') or '')}</td>"
+                f"<td class='conf-{html.escape(conf)}'>{html.escape(conf)}</td>"
+                f"<td class='att-claim'>{html.escape((ref.get('claim') or '')[:220])}</td>"
+                f"<td class='att-fid'><a href='#' class='att-fid-link' "
+                f"data-fid='{html.escape(fid)}' "
+                f"data-cid='{html.escape(ref.get('case_id') or '')}'>"
+                f"{html.escape(short_fid)}</a></td></tr>"
+            )
+        rows.append(
+            f"<tr class='att-details' data-att='{slug}' style='display:none'>"
+            f"<td colspan='6'>"
+            f"<table class='att-sub'><thead><tr>"
+            f"<th>Host</th><th>Agent</th><th>Conf</th>"
+            f"<th>Claim</th><th>finding_id</th>"
+            f"</tr></thead><tbody>{''.join(sub_rows)}</tbody></table>"
+            f"</td></tr>"
         )
     return (f"<div class='attack-grid'><table>"
-            f"<thead><tr><th>Technique</th><th>Name</th><th>Cases</th>"
-            f"<th>Findings</th><th>Frequency</th></tr></thead>"
+            f"<thead><tr><th></th><th>Technique</th><th>Name</th>"
+            f"<th>Cases</th><th>Findings</th><th>Frequency</th></tr></thead>"
             f"<tbody>{''.join(rows)}</tbody></table></div>")
 
 
@@ -527,6 +634,7 @@ function renderTimeline() {
     c.setAttribute("class", "tl-event");
     c.addEventListener("mouseenter", evt => showTT(evt, e));
     c.addEventListener("mouseleave", hideTT);
+    c.addEventListener("click", () => showDrawer(e));
     svg.appendChild(c);
   });
 }
@@ -635,10 +743,102 @@ function setupTimelineToggle() {
   }));
 }
 
+// ---------------------------------------------------------------------------
+// Finding drawer — opens on timeline-event click and ATT&CK finding_id click.
+// One DOM node, populated per click. Closes via the × button or Esc.
+// ---------------------------------------------------------------------------
+function _eventByFid() {
+  if (!DATA._eventByFid) {
+    const ix = {};
+    (DATA.findings_timeline || []).forEach(e => { if (e.finding_id) ix[e.finding_id] = e; });
+    (DATA.processing_timeline || []).forEach(e => { if (e.finding_id && !ix[e.finding_id]) ix[e.finding_id] = e; });
+    DATA._eventByFid = ix;
+  }
+  return DATA._eventByFid;
+}
+
+function showDrawer(e) {
+  if (!e) return;
+  let d = document.getElementById("drawer");
+  if (!d) {
+    d = document.createElement("div");
+    d.id = "drawer";
+    d.innerHTML = `
+      <div class="drawer-head">
+        <div class="drawer-title"></div>
+        <button class="drawer-close" aria-label="Close">×</button>
+      </div>
+      <div class="drawer-body"></div>`;
+    document.body.appendChild(d);
+    d.querySelector(".drawer-close").addEventListener("click", hideDrawer);
+    document.addEventListener("keydown", evt => {
+      if (evt.key === "Escape") hideDrawer();
+    });
+  }
+  const esc = s => (s == null ? "" : String(s).replace(/[<>&]/g,
+    c => ({'<':'&lt;','>':'&gt;','&':'&amp;'}[c])));
+  const evRows = (e.evidence || []).map(ev => `
+    <tr>
+      <td><code>${esc(ev.tool)}</code> ${esc(ev.version)}</td>
+      <td><code>${esc(ev.command)}</code></td>
+      <td>sha256=<code>${esc(ev.output_sha256)}</code>…</td>
+      <td><code>${esc(ev.output_path)}</code></td>
+    </tr>`).join("");
+  d.querySelector(".drawer-title").textContent =
+    `${e.case_label || e.case_id || ""} · ${e.agent || ""} · ${e.conf || ""}`;
+  d.querySelector(".drawer-body").innerHTML = `
+    <div class="drawer-row"><b>Time:</b> ${esc(e.ts || "—")}</div>
+    <div class="drawer-row"><b>finding_id:</b> <code>${esc(e.finding_id || "")}</code></div>
+    <div class="drawer-row"><b>Hypotheses:</b> ${
+      (e.hypotheses || []).length
+        ? (e.hypotheses || []).map(h => `<code>${esc(h)}</code>`).join(" ")
+        : "<span class='muted'>none</span>"
+    }</div>
+    <div class="drawer-row"><b>Red review:</b> ${esc(e.red_review_status || "—")}</div>
+    <div class="drawer-claim">${esc(e.claim || "")}</div>
+    ${evRows ? `<div class="drawer-row"><b>Evidence chain:</b></div>
+        <table class="drawer-ev"><thead><tr>
+          <th>Tool</th><th>Command</th><th>Hash</th><th>Output path</th>
+        </tr></thead><tbody>${evRows}</tbody></table>`
+      : "<div class='drawer-row muted'>No evidence items recorded.</div>"}
+  `;
+  d.classList.add("open");
+}
+
+function hideDrawer() {
+  const d = document.getElementById("drawer");
+  if (d) d.classList.remove("open");
+}
+
+function setupAttackToggles() {
+  document.querySelectorAll(".att-row").forEach(row => {
+    row.addEventListener("click", () => {
+      const slug = row.getAttribute("data-att");
+      const det = document.querySelector(
+        `.att-details[data-att="${slug}"]`);
+      if (!det) return;
+      const open = det.style.display !== "none";
+      det.style.display = open ? "none" : "table-row";
+      const t = row.querySelector(".att-toggle");
+      if (t) t.textContent = open ? "▸" : "▾";
+    });
+  });
+  document.querySelectorAll(".att-fid-link").forEach(a => {
+    a.addEventListener("click", evt => {
+      evt.preventDefault();
+      evt.stopPropagation();
+      const fid = a.getAttribute("data-fid");
+      const e = _eventByFid()[fid];
+      if (e) showDrawer(e);
+    });
+  });
+}
+
 window.addEventListener("DOMContentLoaded", () => {
   setupTimelineToggle();
   renderTimeline();
   renderGraph();
+  setupAttackToggles();
   window.addEventListener("resize", () => { renderTimeline(); renderGraph(); });
 });
 """
