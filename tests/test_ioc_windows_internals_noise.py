@@ -32,6 +32,20 @@ _OBSERVED_FALSE_POSITIVES = [
 ]
 
 
+def test_microsoft_windows_token_filtered_as_noise_domain():
+    """Regression: SRL-2018 admin-memory r4 vol3 vadyarascan run
+    produced 24,607 hits on a yara rule generated from the IOC
+    `microsoft.windows`, drowning the real attacker C2 (`shieldbase.lan`,
+    9,822). The token is generic Windows DLL boilerplate, not an
+    investigative pivot."""
+    from el.skills.ioc_extract import _NOISE_DOMAINS, extract
+    assert "microsoft.windows" in _NOISE_DOMAINS
+    out = extract("foo bar microsoft.windows baz attacker.example.com")
+    assert "microsoft.windows" not in out["domain"]
+    # Real domain still survives.
+    assert "attacker.example.com" in out["domain"]
+
+
 def test_observed_windows_filenames_not_domains():
     blob = " ".join(_OBSERVED_FALSE_POSITIVES) + " real.example.com"
     out = extract(blob)

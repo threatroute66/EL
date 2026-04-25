@@ -122,6 +122,12 @@ _FILE_EXT_TLDS = {
     "data", "mo", "po",
 }
 _NOISE_DOMAINS = {
+    # SRL-2018 vol3 vadyarascan validation — IOC extractor was lifting
+    # `microsoft.windows`, `process.cpp`, `rescache.hit` from binary
+    # strings and generating yara rules that fired 24,607 / 38 / 64
+    # times in lsass+csrss alone, drowning the real attacker C2 hits
+    # (shieldbase.lan, 1.3.33.17). Block them at extraction time.
+    "microsoft.windows", "process.cpp", "rescache.hit",
     "microsoft.com", "microsoft.net", "windows.com", "schemas.microsoft.com",
     "openxmlformats.org", "w3.org", "google.com", "googleapis.com", "gstatic.com",
     "office.com", "live.com", "msftncsi.com", "windowsupdate.com",

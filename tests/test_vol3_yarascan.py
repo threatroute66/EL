@@ -141,6 +141,90 @@ def test_agent_emits_high_conf_finding_per_rule_with_attribution(
     assert "2 time(s)" in mimi.claim
 
 
+def test_agent_suppresses_high_volume_noise_rules(tmp_path, monkeypatch):
+    """A rule that fires >= 10x the case median (and >= 1000 absolute)
+    almost always corresponds to a too-generic IOC — Windows DLL
+    string, file extension, shared library token. Suppress it as
+    noise so it doesn't lift H_APT_ESPIONAGE.
+
+    Driver: SRL-2018 admin-memory r4 had `microsoft.windows` firing
+    24,607 times next to real attacker C2 hits at 9,822 / 163 / 40."""
+    agent = ThreatHunterAgent()
+    monkeypatch.setattr(agent, "emit", lambda ctx, f: f)
+
+    # Real shape: one noisy rule + several real rules.
+    rows = []
+    for i in range(2000):
+        rows.append({"Rule": "noisy_microsoft_windows",
+                     "PID": 624, "ImageFileName": "lsass.exe",
+                     "Offset": i})
+    for i in range(40):
+        rows.append({"Rule": "real_c2_ipv4", "PID": 1024,
+                     "ImageFileName": "svchost.exe", "Offset": i})
+    for i in range(30):
+        rows.append({"Rule": "real_implant_marker", "PID": 1024,
+                     "ImageFileName": "svchost.exe", "Offset": i})
+
+    monkeypatch.setattr(
+        vol3, "yarascan",
+        lambda *a, **k: _fake_plugin_run(rows, tmp_path=tmp_path),
+    )
+
+    ctx = _ctx(tmp_path, mem_os="windows")
+    rules = tmp_path / "rules.yar"
+    rules.write_text("rule x {}")
+    findings = agent._vol3_yarascan(ctx, rules, tmp_path / "case" / "analysis")
+
+    noise = [f for f in findings if "noisy_microsoft_windows" in f.claim]
+    assert len(noise) == 1
+    assert noise[0].confidence == "low"
+    assert "suppressed as noise" in noise[0].claim
+    assert noise[0].hypotheses_supported == [], (
+        "noise-suppressed findings must NOT carry H_APT_ESPIONAGE"
+    )
+
+    # Real signal still gets high confidence + the APT tag.
+    real = [f for f in findings if "real_c2_ipv4" in f.claim]
+    assert len(real) == 1
+    assert real[0].confidence == "high"
+    assert "H_APT_ESPIONAGE" in real[0].hypotheses_supported
+
+
+def test_agent_does_not_suppress_when_all_rules_high_volume(tmp_path,
+                                                              monkeypatch):
+    """Edge case: if every rule fires at similar scale, the median
+    is also high and nothing should be suppressed (no comparison
+    point). Absolute threshold of 1000 still applies — but if every
+    rule clears 1000, the analyst already knows the catalog is
+    noisy and we shouldn't blanket-suppress everything.
+
+    The current rule: `noise_threshold = max(median * 10, 1000)`.
+    When median is 1500, threshold is 15000. Rules at 1500 stay high.
+    """
+    agent = ThreatHunterAgent()
+    monkeypatch.setattr(agent, "emit", lambda ctx, f: f)
+
+    rows = []
+    for rule_name in ("rule_a", "rule_b", "rule_c"):
+        for i in range(1500):
+            rows.append({"Rule": rule_name, "PID": 100,
+                         "ImageFileName": "p.exe", "Offset": i})
+
+    monkeypatch.setattr(
+        vol3, "yarascan",
+        lambda *a, **k: _fake_plugin_run(rows, tmp_path=tmp_path),
+    )
+
+    ctx = _ctx(tmp_path, mem_os="windows")
+    rules = tmp_path / "rules.yar"
+    rules.write_text("rule x {}")
+    findings = agent._vol3_yarascan(ctx, rules, tmp_path / "case" / "analysis")
+
+    # All three rules fire at 1500; median = 1500, threshold = 15000.
+    # None should be suppressed.
+    assert all(f.confidence == "high" for f in findings)
+
+
 def test_agent_emits_low_conf_on_zero_rows(tmp_path, monkeypatch):
     """vol3 ran successfully but no in-memory hits — emit a 'not
     corroborating, not refuting' low-confidence finding so the absence

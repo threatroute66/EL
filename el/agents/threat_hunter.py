@@ -164,26 +164,68 @@ class ThreatHunterAgent(Agent):
                     return str(v)
             return "?"
 
-        for rule, hits in list(by_rule.items())[:20]:
+        # Volume-driven noise suppression. SRL-2018 admin-memory r4
+        # showed `microsoft.windows` matching 24,607 times alongside the
+        # real C2 (`shieldbase.lan`, 9,822) — the noise rule out-scored
+        # the real one, and would have lifted H_APT_ESPIONAGE from a
+        # generic Windows substring. We can't decide noise-vs-real on
+        # the rule NAME (we generate the rule from the case IOCs and
+        # noise IOCs slip through), but we can decide on the SHAPE of
+        # the hit-count distribution: an IOC that fires ≥ 10× the
+        # case median is almost always too generic. Mark those LOW
+        # confidence and drop the H_APT_ESPIONAGE tag — the data is
+        # still surfaced, but it doesn't carry hypothesis weight.
+        counts = sorted(len(hits) for hits in by_rule.values())
+        if not counts:
+            return out
+        median_count = counts[len(counts) // 2]
+        # Two-stage threshold. Below 1000 hits, lean on the median
+        # multiplier; above 1000 the absolute count alone is enough
+        # to flag (no real IOC fires 1000+ times in a single image).
+        noise_threshold = max(median_count * 10, 1000)
+
+        for rule, hits in sorted(by_rule.items(),
+                                   key=lambda kv: -len(kv[1]))[:20]:
+            n = len(hits)
+            is_noise = n >= noise_threshold
             processes = sorted({
                 f"{_proc_name(h)} (PID {h.get('PID') or h.get('TID') or '?'})"
                 for h in hits if h.get("PID") or h.get("TID")
                                   or h.get("ImageFileName")
             })
             pids = ", ".join(processes[:5]) or "no PID attribution"
-            out.append(self.emit(ctx, Finding(
-                case_id=ctx.case_id, agent=self.name, confidence="high",
-                claim=(f"vol3 {family}.yarascan rule '{rule}' matched "
-                       f"{len(hits)} time(s) in-memory. Process(es): "
-                       f"{pids}. Memory attribution distinguishes "
-                       "in-process implants from raw-image residue — "
-                       "a hit inside an active PID's VA is a stronger "
-                       "signal than the same string floating in free "
-                       "pool memory."),
-                evidence=[ev],
-                hypotheses_supported=["H_IOC_CORROBORATED",
-                                       "H_APT_ESPIONAGE"],
-            )))
+
+            if is_noise:
+                claim = (
+                    f"vol3 {family}.yarascan rule '{rule}' matched "
+                    f"{n} time(s) in-memory — **suppressed as noise** "
+                    f"(case median = {median_count}; threshold = "
+                    f"{noise_threshold}). High-volume matches are "
+                    "almost always too-generic IOCs (Windows DLL "
+                    "strings, file extensions, shared libs) rather "
+                    "than implant indicators. Surfaced for traceability "
+                    "but does not lift any hypothesis. Top processes: "
+                    f"{pids}."
+                )
+                out.append(self.emit(ctx, Finding(
+                    case_id=ctx.case_id, agent=self.name, confidence="low",
+                    claim=claim, evidence=[ev],
+                )))
+            else:
+                claim = (
+                    f"vol3 {family}.yarascan rule '{rule}' matched "
+                    f"{n} time(s) in-memory. Process(es): {pids}. "
+                    "Memory attribution distinguishes in-process "
+                    "implants from raw-image residue — a hit inside an "
+                    "active PID's VA is a stronger signal than the same "
+                    "string floating in free pool memory."
+                )
+                out.append(self.emit(ctx, Finding(
+                    case_id=ctx.case_id, agent=self.name, confidence="high",
+                    claim=claim, evidence=[ev],
+                    hypotheses_supported=["H_IOC_CORROBORATED",
+                                           "H_APT_ESPIONAGE"],
+                )))
         return out
 
     def _scan_stego_carriers(self, ctx: AgentContext) -> list[Finding]:
