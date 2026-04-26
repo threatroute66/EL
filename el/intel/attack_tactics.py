@@ -39,6 +39,7 @@ TECHNIQUE_TACTIC: dict[str, str] = {
     "T1133":      "Initial Access",
     "T1189":      "Initial Access",
     "T1190":      "Initial Access",
+    "T1566":      "Initial Access",        # Phishing (parent)
     "T1566.001":  "Initial Access",
     "T1566.002":  "Initial Access",
     "T1476":      "Initial Access",  # Mobile: Deliver Malicious App
@@ -63,6 +64,7 @@ TECHNIQUE_TACTIC: dict[str, str] = {
     "T1098.003":  "Persistence",
     "T1098.004":  "Persistence",
     "T1098.007":  "Persistence",
+    "T1136":      "Persistence",           # Create Account (parent)
     "T1136.001":  "Persistence",
     "T1197":      "Persistence",
     "T1543":      "Persistence",
@@ -86,6 +88,7 @@ TECHNIQUE_TACTIC: dict[str, str] = {
     "T1027":      "Defense Evasion",
     "T1027.002":  "Defense Evasion",
     "T1027.007":  "Defense Evasion",   # Dynamic API Resolution (AMFI bypass)
+    "T1112":      "Defense Evasion",   # Modify Registry
     "T1036.005":  "Defense Evasion",
     "T1070":      "Defense Evasion",
     "T1070.001":  "Defense Evasion",

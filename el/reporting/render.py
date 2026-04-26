@@ -146,6 +146,19 @@ def render_report(
         lines.append(f"_(KAC section skipped: {e})_")
         lines.append("")
 
+    # Actor-playbook resemblance — suggestive APT TTP-sequence
+    # match. Section is omitted when no playbook rises above the
+    # default 40% coverage threshold.
+    try:
+        from el.reporting.actor_match import render_actor_matches_md
+        actor_md = render_actor_matches_md(findings)
+        if actor_md:
+            lines.append(actor_md)
+            lines.append("")
+    except Exception as e:
+        lines.append(f"_(Actor playbook section skipped: {e})_")
+        lines.append("")
+
     lines.append("## Findings")
     lines.append("")
     for conf in ("high", "medium", "low", "insufficient"):
