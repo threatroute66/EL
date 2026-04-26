@@ -130,6 +130,22 @@ def render_report(
         lines.extend(build_diamond_markdown(findings, ach_ranking,
                                               iocs, manifest))
 
+    # Key Assumptions Check — third structured-analytic projection
+    # alongside ACH + Diamond. Surfaces baseline methodological
+    # claims + per-finding-derived assumptions so reviewers can
+    # challenge each rather than inheriting them silently.
+    try:
+        from el.reporting.kac import render_kac_md
+        top_hyp = (f"{ach_ranking[0].name} (`{ach_ranking[0].hyp_id}`)"
+                   if ach_ranking else None)
+        kac_md = render_kac_md(findings, top_hypothesis=top_hyp)
+        if kac_md:
+            lines.append(kac_md)
+            lines.append("")
+    except Exception as e:
+        lines.append(f"_(KAC section skipped: {e})_")
+        lines.append("")
+
     lines.append("## Findings")
     lines.append("")
     for conf in ("high", "medium", "low", "insufficient"):

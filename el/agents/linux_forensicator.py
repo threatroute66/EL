@@ -159,6 +159,18 @@ class LinuxForensicatorAgent(Agent):
         # Thunderbird mbox walker — attachments + narcotic/BTC in bodies
         out.extend(_safe("thunderbird-mbox",
                           self._analyze_thunderbird_mbox, ctx, exports))
+        # auditd structured event extraction (ausearch wrapper +
+        # pure-python fallback over /var/log/audit/audit.log*)
+        out.extend(_safe("auditd",
+                          self._analyze_auditd, ctx, exports))
+        # nginx / Apache access-log anomaly detector
+        out.extend(_safe("webserver-access",
+                          self._analyze_webserver_access, ctx, exports))
+        # Rootkit scanners (chkrootkit / rkhunter / Lynis) — best-effort
+        # against the mounted root. Each gracefully degrades when the
+        # binary isn't installed.
+        out.extend(_safe("rootkit-scanners",
+                          self._analyze_rootkit_scanners, ctx, exports))
         return out
 
     def _analyze_utmp_family(self, ctx: AgentContext,
@@ -614,5 +626,216 @@ class LinuxForensicatorAgent(Agent):
                     })],
                     hypotheses_supported=["H_INSIDER_DATA_EXFIL",
                                            "H_OPPORTUNISTIC_COMMODITY"],
+                )))
+        return out
+
+    def _analyze_auditd(self, ctx: AgentContext,
+                         exports: Path) -> list[Finding]:
+        """Read /var/log/audit/audit.log* (raw + .gz rotations) and
+        surface aggregations + suspicious-execve hits as Findings.
+        See el/skills/auditd.py for the parser; this is the
+        finding-emission glue."""
+        from el.skills import auditd as ad
+        # Locate the audit dir under both extraction layouts.
+        candidates = [exports / "var" / "log" / "audit",
+                       exports / "log" / "audit",
+                       exports / "audit"]
+        audit_dir = next((p for p in candidates if p.is_dir()), None)
+        if audit_dir is None:
+            return []
+        events = ad.parse_audit_dir(audit_dir)
+        if not events:
+            return []
+        out: list[Finding] = []
+        # First file's sha256 is enough to anchor the evidence chain;
+        # parse_audit_dir already sorts events globally.
+        sample_file = next(iter(audit_dir.glob("audit.log*")), None)
+        sha = "0" * 64
+        if sample_file is not None and sample_file.is_file():
+            sha = hashlib.sha256(sample_file.read_bytes()).hexdigest()
+        bt = ad.by_type(events)
+        bu = ad.by_user(events)
+        bk = ad.by_key(events)
+        ev_summary = EvidenceItem(
+            tool="el.auditd", version="0.1.0",
+            command=f"parse_audit_dir({audit_dir})",
+            output_sha256=sha,
+            output_path=str(sample_file or audit_dir),
+            extracted_facts={
+                "audit_dir": str(audit_dir),
+                "event_count": len(events),
+                "type_breakdown": dict(sorted(
+                    bt.items(), key=lambda kv: -kv[1])[:10]),
+                "top_users": dict(sorted(
+                    bu.items(), key=lambda kv: -kv[1])[:10]),
+                "top_keys": dict(sorted(
+                    bk.items(), key=lambda kv: -kv[1])[:10]),
+            },
+            source_reliability="B", info_credibility="2",
+        )
+        out.append(self.emit(ctx, Finding(
+            case_id=ctx.case_id, agent=self.name,
+            confidence="medium",
+            claim=(f"auditd: parsed {len(events)} structured event(s) "
+                   f"across {len(list(audit_dir.glob('audit.log*')))} "
+                   f"audit log file(s). Top types: "
+                   f"{', '.join(f'{k}={v}' for k, v in sorted(bt.items(), key=lambda kv: -kv[1])[:5])}."),
+            evidence=[ev_summary],
+            hypotheses_supported=[],
+        )))
+        sus = ad.suspicious_executions(events)
+        if sus:
+            samples = [
+                f"argv0={(e.argv[0] if e.argv else e.exe)!r} "
+                f"uid={e.auid or e.uid} pid={e.pid}"
+                for e in sus[:5]
+            ]
+            ev_sus = EvidenceItem(
+                tool="el.auditd", version="0.1.0",
+                command=f"suspicious_executions({audit_dir})",
+                output_sha256=sha,
+                output_path=str(sample_file or audit_dir),
+                extracted_facts={
+                    "hit_count": len(sus),
+                    "samples": samples,
+                },
+                source_reliability="B", info_credibility="2",
+            )
+            out.append(self.emit(ctx, Finding(
+                case_id=ctx.case_id, agent=self.name,
+                confidence="high",
+                claim=(f"auditd: {len(sus)} EXECVE event(s) match the "
+                       f"watchlist of post-exploit / persistence-abuse "
+                       f"binaries (nc, socat, msfvenom, chattr, base64, "
+                       f"useradd, etc.). Samples: "
+                       f"{'; '.join(samples)}."),
+                evidence=[ev_sus],
+                hypotheses_supported=["H_LIVING_OFF_THE_LAND",
+                                        "H_C2_OR_REVERSE_SHELL"],
+            )))
+        return out
+
+    def _analyze_webserver_access(self, ctx: AgentContext,
+                                    exports: Path) -> list[Finding]:
+        """nginx/Apache access-log scanner. Finds webshell URIs,
+        scripted-client UAs, admin-path hits, 4xx recon bursts,
+        verb tunnels, and POST upload bursts."""
+        from el.skills import webserver_access as wa
+        candidates = [exports / "var" / "log",
+                       exports / "log",
+                       exports]
+        results: list = []
+        for c in candidates:
+            if not c.is_dir():
+                continue
+            results = wa.scan_tree(c)
+            if results:
+                break
+        if not results:
+            return []
+        out: list[Finding] = []
+        for r in results:
+            if not r.hits:
+                continue
+            sha = "0" * 64
+            if Path(r.path).is_file():
+                sha = hashlib.sha256(
+                    Path(r.path).read_bytes()).hexdigest()
+            for h in r.hits:
+                # WEB_SCRIPTED_CLIENT_GENERIC and WEB_VERB_TUNNEL are
+                # informational; the others are concrete attacker shape.
+                conf = "medium" if h.pattern_id in (
+                    "WEB_SCRIPTED_CLIENT_GENERIC", "WEB_VERB_TUNNEL"
+                ) else "high"
+                ev = EvidenceItem(
+                    tool="el.webserver_access", version="0.1.0",
+                    command=f"scan_path({r.path.name})",
+                    output_sha256=sha, output_path=str(r.path),
+                    extracted_facts={
+                        "pattern_id": h.pattern_id,
+                        "hit_count": h.count,
+                        "samples": h.matches[:5],
+                        "attack_techniques": [t for t, _ in h.attack_techniques],
+                    },
+                    source_reliability="B", info_credibility="2",
+                )
+                out.append(self.emit(ctx, Finding(
+                    case_id=ctx.case_id, agent=self.name,
+                    confidence=conf,
+                    claim=(f"Webserver {h.pattern_id}: {h.count} "
+                           f"hit(s) in {r.path.name}. {h.description}"),
+                    evidence=[ev],
+                    hypotheses_supported=h.hypotheses or ["H_APT_ESPIONAGE"],
+                )))
+        return out
+
+    def _analyze_rootkit_scanners(self, ctx: AgentContext,
+                                    exports: Path) -> list[Finding]:
+        """chkrootkit / rkhunter / Lynis. Each scanner targets the
+        mounted root via its --rootdir flag; output is parsed into
+        Finding(severity, message). Always emits a per-tool summary
+        even when the scanner isn't installed (audit-trail clarity)."""
+        from el.skills import rootkit_scanners as rs
+        out_dir = ctx.case_dir / "analysis" / "rootkit_scanners"
+        results = rs.run_all(exports, out_dir=out_dir)
+        out: list[Finding] = []
+        for r in results:
+            if not r.available:
+                # The scanner wasn't installed — surface the gap so
+                # the audit trail records that we tried.
+                out.append(self.emit(ctx, Finding(
+                    case_id=ctx.case_id, agent=self.name,
+                    confidence="insufficient",
+                    claim=(f"rootkit-scan {r.tool}: scanner not "
+                           f"installed on this SIFT. {r.error}"),
+                )))
+                continue
+            sha = "0" * 64
+            if r.raw_path and Path(r.raw_path).is_file():
+                sha = hashlib.sha256(
+                    Path(r.raw_path).read_bytes()).hexdigest()
+            ev = EvidenceItem(
+                tool=f"el.rootkit_scanners.{r.tool}", version="0.1.0",
+                command=f"run_{r.tool}({exports.name})",
+                output_sha256=sha, output_path=r.raw_path or str(exports),
+                extracted_facts={
+                    "vulnerable_count": r.vulnerable_count,
+                    "warning_count": r.warning_count,
+                    "samples": [str(f) for f in r.findings[:8]],
+                },
+                source_reliability="B", info_credibility="2",
+            )
+            if r.vulnerable_count:
+                out.append(self.emit(ctx, Finding(
+                    case_id=ctx.case_id, agent=self.name,
+                    confidence="high",
+                    claim=(f"rootkit-scan {r.tool}: "
+                           f"{r.vulnerable_count} vulnerable / "
+                           f"infected hit(s), {r.warning_count} "
+                           f"warning(s). Investigate top items: "
+                           f"{'; '.join(str(f)[:120] for f in r.findings[:3])}."),
+                    evidence=[ev],
+                    hypotheses_supported=["H_ROOTKIT",
+                                            "H_PERSISTENCE_SERVICE"],
+                )))
+            elif r.warning_count:
+                out.append(self.emit(ctx, Finding(
+                    case_id=ctx.case_id, agent=self.name,
+                    confidence="medium",
+                    claim=(f"rootkit-scan {r.tool}: "
+                           f"{r.warning_count} warning(s), no confirmed "
+                           f"infection. Top: "
+                           f"{'; '.join(str(f)[:120] for f in r.findings[:3])}."),
+                    evidence=[ev],
+                    hypotheses_supported=[],
+                )))
+            else:
+                out.append(self.emit(ctx, Finding(
+                    case_id=ctx.case_id, agent=self.name,
+                    confidence="low",
+                    claim=(f"rootkit-scan {r.tool}: clean run, "
+                           f"no findings."),
+                    evidence=[ev],
+                    hypotheses_supported=[],
                 )))
         return out

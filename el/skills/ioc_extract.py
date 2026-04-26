@@ -350,6 +350,48 @@ def extract(text: str, drop_noise: bool = True,
             "regkey": regkey, "winpath": winpath, "btc": btc}
 
 
+def apply_umbrella_filter(iocs: dict[str, set[str] | list[str]],
+                            *, threshold: int = 50_000
+                            ) -> dict[str, set[str] | list[str]]:
+    """Strip popular domains (and the URLs / IPs anchored to them)
+    from a freshly-extracted IOC dict using the Cisco Umbrella
+    top-1M allowlist. Operates in-place on a *copy* — original
+    input is unchanged.
+
+    Opt-in noise filter: callers that want long-tail-only
+    indicators (network_analyst before emitting domain-bearing
+    findings; coordinator before writing the IOC catalog) call
+    this once. When no Umbrella CSV is staged
+    (``EL_UMBRELLA_TOP1M`` unset and the default path missing),
+    the cached allowlist is empty and this is a no-op — the
+    return is identical to the input. Default-to-fire-findings.
+    """
+    from el.skills.umbrella_allowlist import cached
+    al = cached()
+    if not al.loaded:
+        return {k: (set(v) if isinstance(v, set) else list(v))
+                for k, v in iocs.items()}
+    out: dict[str, set[str] | list[str]] = {}
+    for k, v in iocs.items():
+        if k == "domain":
+            kept = {d for d in v
+                    if not al.is_top(d, threshold=threshold)}
+            out[k] = kept if isinstance(v, set) else list(kept)
+        elif k == "url":
+            kept_u: set[str] = set()
+            for u in v:
+                # Pull host from `scheme://host/...`; fall back to the
+                # raw URL if it's malformed (regex shouldn't but be
+                # defensive).
+                host = u.split("://", 1)[-1].split("/", 1)[0].split("?", 1)[0]
+                if not al.is_top(host, threshold=threshold):
+                    kept_u.add(u)
+            out[k] = kept_u if isinstance(v, set) else list(kept_u)
+        else:
+            out[k] = set(v) if isinstance(v, set) else list(v)
+    return out
+
+
 # Path shapes that are exclusively filesystem path listings — for these we
 # want to apply source_kind="fs_paths" so domain/url/email regex are skipped.
 _FS_PATH_FILENAMES = {
