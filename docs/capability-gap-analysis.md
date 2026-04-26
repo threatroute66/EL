@@ -557,6 +557,57 @@ Beyond the Tier 1–4 shortlist, the following category items landed:
 | ~~IOC noise — Windows filename TLDs~~ ✅ | `66c9894` | .pf / .fon / .ttc / .mum / .cat etc. dropped from domain bucket |
 | Detection engineering — IOC rarity scoring + ubiquitous-noise suppression | `84359ba` | MITRE CAR analytic import (overlaps SIGMA) |
 
-Corpus-gated (waiting on Evidence-Locker downloads): T3-2 Linux,
-T3-4 macOS, T3-5 Mobile. Everything else in the doc is shipped or
-listed under a deferred-with-rationale item above.
+## Corpus-gated tier-3 status (refreshed April 2026)
+
+| Tier | Item | Status | Evidence validated against |
+|---|---|---|---|
+| T3-2 | Linux forensicator family | ✅ Complete | BelkaCTF Kidnapper case + several SRL cases |
+| T3-4 | macOS / APFS family | ◐ Mostly shipped — see open items below | macOS BigSur APFS image |
+| T3-5 | Mobile (iOS + Android) family | ◐ Mostly shipped — see open items below | iPhone SE iOS 14.3 AFU dump |
+
+**T3-2 Linux** — `el.skills.linux_triage`,
+`el.skills.linux_artifacts`, `el.skills.utmp`,
+`el.skills.systemd_journal`, `el.skills.thunderbird_mbox`,
+`el.skills.narcotic_lexicon`, plus April 2026 additions
+`el.skills.auditd`, `el.skills.webserver_access`, and
+`el.skills.rootkit_scanners` — all consumed by
+`LinuxForensicatorAgent`. 41+ passing tests.
+
+**T3-4 macOS / APFS** — shipped: `el.skills.apfs`,
+`el.skills.macos_artifacts`, `el.skills.macos_triage`,
+`MacOSForensicatorAgent`, four triage detectors
+(launch-persistence, shell-history malicious, quarantine unusual
+source, Safari downloads suspicious). Validated against the
+operator's BigSur APFS image. **Open items** (not corpus-gated —
+shipped April 2026 as part of the hypothesis-set wire-up):
+- ✅ `H_MAC_LAUNCH_DAEMON_PERSISTENCE`, `H_MAC_TCC_BYPASS`,
+  `H_MAC_FILELESS_AMFI_BYPASS` registered + scored + ATT&CK-mapped
+  (T1543.001/004, T1548.006, T1556, T1620, T1027.007).
+
+  **Truly corpus-gated** (still open): dedicated
+  `unified_log_parse` skill (needs a macOS host — `log show
+  --style json` only runs on Apple platforms), dedicated
+  `fsevents_parse` skill, vol3 `mac.*` family branch in
+  `MemoryForensicator` (needs a macOS memory image with matching
+  ISF symbols).
+
+**T3-5 Mobile** — shipped: `el.skills.ileapp`,
+`el.skills.ios_artifacts`, `el.skills.ios_triage`,
+`el.skills.android_artifacts`, `el.skills.android_triage`,
+`IOSForensicatorAgent`, `AndroidForensicatorAgent`, four triage
+detectors per platform. Validated against the operator's iPhone
+SE AFU dump. **Open items** (shipped April 2026):
+- ✅ `H_MOBILE_SPYWARE_PERSISTENCE`, `H_MOBILE_SIDELOADED_APP`,
+  `H_MOBILE_MDM_ABUSE` registered + scored + ATT&CK-mapped
+  (T1547, T1404, T1476, T1444, T1481, T1462).
+
+  **Truly corpus-gated** (still open): dedicated `aleapp` wrapper
+  module (Android coverage currently rides on direct
+  `android_artifacts.py` extraction; the ALEAPP toolchain wrap
+  needs a real Android FS dump or rooted-device backup to
+  validate), `ios_backup_parse` for encrypted iTunes/Finder
+  backups (`iphone-backup-decrypt` Python lib — needs a
+  passcode-known backup to validate the decrypt path).
+
+Everything else in the doc is shipped or listed under a
+deferred-with-rationale item above.

@@ -81,9 +81,11 @@ TECHNIQUE_TACTIC: dict[str, str] = {
     "T1404":      "Privilege Escalation",  # Mobile PrivEsc
     "T1548.002":  "Privilege Escalation",
     "T1548.003":  "Privilege Escalation",
+    "T1548.006":  "Privilege Escalation",  # Mac TCC Manipulation
     # Defense Evasion
     "T1027":      "Defense Evasion",
     "T1027.002":  "Defense Evasion",
+    "T1027.007":  "Defense Evasion",   # Dynamic API Resolution (AMFI bypass)
     "T1036.005":  "Defense Evasion",
     "T1070":      "Defense Evasion",
     "T1070.001":  "Defense Evasion",
@@ -94,7 +96,9 @@ TECHNIQUE_TACTIC: dict[str, str] = {
     "T1218.011":  "Defense Evasion",
     "T1444":      "Defense Evasion",  # Mobile: Masquerade as Legit App
     "T1478":      "Defense Evasion",  # Mobile: Install Insecure Config
+    "T1556":      "Defense Evasion",   # Modify Authentication Process (TCC bypass)
     "T1556.006":  "Defense Evasion",
+    "T1620":      "Defense Evasion",   # Reflective Code Loading (AMFI bypass)
     "T1565.001":  "Defense Evasion",   # Stored Data Manipulation
     "T1622":      "Defense Evasion",   # Debugger Evasion
     "T1505.003":  "Persistence",       # Server Software Component: Web Shell
@@ -143,6 +147,8 @@ TECHNIQUE_TACTIC: dict[str, str] = {
     "T1219":      "Command and Control",
     "T1568.001":  "Command and Control",
     "T1568.002":  "Command and Control",
+    "T1481":      "Command and Control",  # Mobile: Web Service C2
+    "T1462":      "Defense Evasion",       # Mobile: Manipulate Device Communication (MDM abuse)
     "T1571":      "Command and Control",
     # Exfiltration
     "T1041":      "Exfiltration",

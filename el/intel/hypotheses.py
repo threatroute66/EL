@@ -73,6 +73,15 @@ def _h_benign(f: Finding) -> int:
                 "H_BEC_ACCOUNT_TAKEOVER", "H_CLOUD_PERSISTENCE",
                 "H_BRUTE_FORCE", "H_LATERAL_MOVEMENT", "H_ROOTKIT",
                 "H_PERSISTENCE_SERVICE", "H_INSIDER_EMAIL_EXFIL",
+                # macOS + Mobile platform-specific compromise tags
+                # are deliberate signals; they refute the null the
+                # same way a Windows persistence-service does.
+                "H_MAC_LAUNCH_DAEMON_PERSISTENCE",
+                "H_MAC_TCC_BYPASS",
+                "H_MAC_FILELESS_AMFI_BYPASS",
+                "H_MOBILE_SPYWARE_PERSISTENCE",
+                "H_MOBILE_SIDELOADED_APP",
+                "H_MOBILE_MDM_ABUSE",
                 # PR-P: log-clearing + WMI event-consumer registration +
                 # RDP-session EIDs are almost never benign in the DFIR
                 # context.
@@ -429,6 +438,72 @@ HYPOTHESES: list[Hypothesis] = [
                "when the attacker's other signals are absent but the "
                "tampering itself is visible (Rathbun VHDX shape).",
                _h_anti_forensics),
+    # macOS-specific persistence + integrity-bypass hypotheses. The
+    # Mac forensicator emits these instead of generic
+    # H_PERSISTENCE_SERVICE so an analyst reading the ranking can
+    # tell the difference between "Windows service installed" and
+    # "LaunchDaemon plist dropped under /tmp" — the playbooks
+    # diverge after the first cell.
+    Hypothesis("H_MAC_LAUNCH_DAEMON_PERSISTENCE",
+               "macOS LaunchAgent / LaunchDaemon persistence",
+               "Attacker-installed plist under /Library/LaunchDaemons, "
+               "/Library/LaunchAgents, ~/Library/LaunchAgents, or "
+               "/System/Library/LaunchDaemons referencing a "
+               "non-standard path (/tmp, /Users/Shared, hidden dot-"
+               "directory). The Mac equivalent of "
+               "H_PERSISTENCE_SERVICE.",
+               lambda f: (3 if "H_MAC_LAUNCH_DAEMON_PERSISTENCE"
+                          in f.hypotheses_supported else 0)),
+    Hypothesis("H_MAC_TCC_BYPASS",
+               "macOS TCC (Transparency / Consent / Control) bypass",
+               "Attacker manipulating ~/Library/Application Support/"
+               "com.apple.TCC/TCC.db or /Library/Application Support/"
+               "com.apple.TCC/TCC.db to grant their binary "
+               "FullDiskAccess / Camera / Microphone / Accessibility "
+               "without user consent. Hallmark of macOS-targeted "
+               "spyware (XCSSET, Silver Sparrow, NSO post-exploit).",
+               lambda f: (3 if "H_MAC_TCC_BYPASS"
+                          in f.hypotheses_supported else 0)),
+    Hypothesis("H_MAC_FILELESS_AMFI_BYPASS",
+               "macOS AMFI / fileless code-execution bypass",
+               "Apple Mobile File Integrity bypass: unsigned binary "
+               "executing via dyld injection, reflective Mach-O "
+               "loading, or amfid hooking. Distinct from "
+               "H_PROCESS_INJECTION because the AMFI surface is "
+               "Apple-platform-specific.",
+               lambda f: (3 if "H_MAC_FILELESS_AMFI_BYPASS"
+                          in f.hypotheses_supported else 0)),
+    # Mobile (iOS + Android) hypotheses. The Mobile forensicators
+    # already emit family-specific tags; these are the case-level
+    # rollups the ACH ranking actually scores against.
+    Hypothesis("H_MOBILE_SPYWARE_PERSISTENCE",
+               "Mobile spyware persistence",
+               "Pegasus / Predator / FinSpy-class artifact patterns: "
+               "DataUsage.sqlite anomalies, jailbreak indicators on "
+               "non-jailbroken iOS, /data/local/tmp executables on "
+               "Android, rooted-device markers on a phone the user "
+               "didn't own-root. Strong APT-mobile fingerprint.",
+               lambda f: (3 if "H_MOBILE_SPYWARE_PERSISTENCE"
+                          in f.hypotheses_supported else 0)),
+    Hypothesis("H_MOBILE_SIDELOADED_APP",
+               "Mobile sideloaded application",
+               "App installed outside the App Store / Play Store: "
+               "iOS enterprise-signed IPA without matching MDM "
+               "profile, Android APK installed via PackageInstaller "
+               "from non-Play sources. Frequent vector for "
+               "commodity Android trojans + iOS-targeted RATs.",
+               lambda f: (3 if "H_MOBILE_SIDELOADED_APP"
+                          in f.hypotheses_supported else 0)),
+    Hypothesis("H_MOBILE_MDM_ABUSE",
+               "Mobile MDM-profile abuse",
+               "Unexpected mobile-device-management profile installed: "
+               "iOS configuration profile granting full device control "
+               "to an unknown URL, Android device-admin app the user "
+               "doesn't recognise. The persistence ladder for "
+               "lawful-intercept-grade and supply-chain mobile "
+               "compromise.",
+               lambda f: (3 if "H_MOBILE_MDM_ABUSE"
+                          in f.hypotheses_supported else 0)),
 ]
 
 

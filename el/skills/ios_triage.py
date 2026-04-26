@@ -94,11 +94,19 @@ class IOSHit:
 
 
 _FAMILY_HYPOTHESES: dict[str, list[str]] = {
-    "jailbreak_indicator":         ["H_APT_ESPIONAGE",
+    # Jailbreak indicator on a phone the user didn't own-jailbreak is
+    # the canonical Pegasus-class fingerprint — emit the spyware tag
+    # alongside H_APT_ESPIONAGE so ACH ranks both at the case level.
+    "jailbreak_indicator":         ["H_MOBILE_SPYWARE_PERSISTENCE",
+                                      "H_APT_ESPIONAGE",
                                       "H_LIVING_OFF_THE_LAND"],
-    "sideloaded_app":              ["H_APT_ESPIONAGE",
+    "sideloaded_app":              ["H_MOBILE_SIDELOADED_APP",
+                                      "H_APT_ESPIONAGE",
                                       "H_OPPORTUNISTIC_COMMODITY"],
-    "provisioning_profile":        ["H_APT_ESPIONAGE"],
+    # Provisioning profiles are the iOS MDM mechanism — the family
+    # IS the MDM-abuse signal.
+    "provisioning_profile":        ["H_MOBILE_MDM_ABUSE",
+                                      "H_APT_ESPIONAGE"],
     "messenger_presence":          ["H_DISK_ARTIFACTS"],
 }
 

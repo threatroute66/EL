@@ -222,7 +222,13 @@ def test_run_all_combines_families(tmp_path):
 
 
 def test_hypotheses_for_map():
-    assert "H_PERSISTENCE_SERVICE" in mt.hypotheses_for(
+    # Mac launch-daemon persistence now lifts the platform-specific
+    # H_MAC_LAUNCH_DAEMON_PERSISTENCE alongside H_APT_ESPIONAGE — the
+    # generic H_PERSISTENCE_SERVICE was a Windows-shaped tag and
+    # didn't ACH-rank correctly when paired with Mac-only evidence.
+    assert "H_MAC_LAUNCH_DAEMON_PERSISTENCE" in mt.hypotheses_for(
+        "launch_persistence_suspicious")
+    assert "H_APT_ESPIONAGE" in mt.hypotheses_for(
         "launch_persistence_suspicious")
     assert mt.hypotheses_for("nonexistent") == []
 
@@ -253,7 +259,7 @@ def test_agent_emits_finding_on_hit(tmp_path, monkeypatch):
     persist = [f for f in findings
                if "launch_persistence_suspicious" in f.claim]
     assert persist and persist[0].confidence == "high"
-    assert "H_PERSISTENCE_SERVICE" in persist[0].hypotheses_supported
+    assert "H_MAC_LAUNCH_DAEMON_PERSISTENCE" in persist[0].hypotheses_supported
 
 
 def test_agent_insufficient_when_no_exports(tmp_path, monkeypatch):

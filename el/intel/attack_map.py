@@ -59,6 +59,33 @@ HYPOTHESIS_MAP: dict[str, list[Technique]] = {
     "H_PERSISTENCE_SERVICE": [
         ("T1543.003", "Create or Modify System Process: Windows Service"),
     ],
+    # macOS-specific persistence + integrity-bypass.
+    "H_MAC_LAUNCH_DAEMON_PERSISTENCE": [
+        ("T1543.001", "Create or Modify System Process: Launch Agent"),
+        ("T1543.004", "Create or Modify System Process: Launch Daemon"),
+    ],
+    "H_MAC_TCC_BYPASS": [
+        ("T1548.006", "Abuse Elevation Control Mechanism: TCC Manipulation"),
+        ("T1556", "Modify Authentication Process"),
+    ],
+    "H_MAC_FILELESS_AMFI_BYPASS": [
+        ("T1620", "Reflective Code Loading"),
+        ("T1027.007", "Obfuscated Files or Information: Dynamic API Resolution"),
+    ],
+    # Mobile (iOS + Android) — uses MITRE ATT&CK Mobile T-IDs where
+    # they exist; falls back to enterprise IDs for shared concepts.
+    "H_MOBILE_SPYWARE_PERSISTENCE": [
+        ("T1547", "Boot or Logon Autostart Execution"),
+        ("T1404", "Exploitation for Privilege Escalation"),
+    ],
+    "H_MOBILE_SIDELOADED_APP": [
+        ("T1476", "Deliver Malicious App via Other Means"),
+        ("T1444", "Masquerade as Legitimate Application"),
+    ],
+    "H_MOBILE_MDM_ABUSE": [
+        ("T1481", "Web Service"),
+        ("T1462", "Manipulate Device Communication"),
+    ],
     "H_INSIDER_EMAIL_EXFIL": [
         ("T1048.003", "Exfiltration Over Unencrypted Non-C2 Protocol"),
         ("T1534", "Internal Spearphishing"),

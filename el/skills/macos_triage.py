@@ -68,7 +68,11 @@ class MacOSHit:
 
 
 _FAMILY_HYPOTHESES: dict[str, list[str]] = {
-    "launch_persistence_suspicious": ["H_PERSISTENCE_SERVICE",
+    # The Mac-platform-specific tag fires alongside H_APT_ESPIONAGE so
+    # the case-level rollup keeps both: ACH ranks H_MAC_LAUNCH_DAEMON_
+    # PERSISTENCE for the local "what kind of persistence?" question
+    # and H_APT_ESPIONAGE for "who is doing this?".
+    "launch_persistence_suspicious": ["H_MAC_LAUNCH_DAEMON_PERSISTENCE",
                                         "H_APT_ESPIONAGE"],
     "shell_history_malicious":       ["H_LIVING_OFF_THE_LAND",
                                         "H_C2_OR_REVERSE_SHELL"],

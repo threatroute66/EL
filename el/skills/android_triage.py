@@ -66,11 +66,18 @@ class AndroidHit:
 
 
 _FAMILY_HYPOTHESES: dict[str, list[str]] = {
-    "rooted_device":              ["H_APT_ESPIONAGE",
+    # Root markers on a phone the user didn't own-root are a strong
+    # spyware fingerprint (Pegasus / FinSpy ship rooting payloads).
+    "rooted_device":              ["H_MOBILE_SPYWARE_PERSISTENCE",
+                                     "H_APT_ESPIONAGE",
                                      "H_LIVING_OFF_THE_LAND"],
-    "sideloaded_apk":             ["H_APT_ESPIONAGE",
+    "sideloaded_apk":             ["H_MOBILE_SIDELOADED_APP",
+                                     "H_APT_ESPIONAGE",
                                      "H_OPPORTUNISTIC_COMMODITY"],
-    "data_local_tmp_executable":  ["H_APT_ESPIONAGE",
+    # /data/local/tmp executables are the Android post-exploit
+    # staging area — directly tied to spyware persistence.
+    "data_local_tmp_executable":  ["H_MOBILE_SPYWARE_PERSISTENCE",
+                                     "H_APT_ESPIONAGE",
                                      "H_LIVING_OFF_THE_LAND"],
     "messenger_presence":         ["H_DISK_ARTIFACTS"],
 }
