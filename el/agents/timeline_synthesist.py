@@ -115,48 +115,49 @@ class TimelineSynthesistAgent(Agent):
 
 
 def _l2tcsv_time_range(csv_path) -> tuple[str | None, str | None]:
-    """Scan an l2tcsv for the earliest + latest event timestamps.
-    Reads forward through the head and backward through the tail
-    rather than loading the whole CSV — Plaso super-timelines are
-    typically hundreds of MB to multi-GB."""
-    from datetime import datetime, timezone
-    def _parse(date_field: str, time_field: str) -> str | None:
+    """Scan an l2tcsv for the earliest + latest plausible event timestamps.
+
+    Plaso reads literally everything including manufacturing dates baked
+    into Windows install media (often 1990s) and NTFS records with
+    overflow timestamps (2106-02-07 is the classic Y2038-cousin
+    artifact). Both are real evidence-derived data but useless for
+    narrative time-range — they'd present a 100-year case span.
+    Filter to a plausible analyst-relevant window: 1995-01-01 .. now+1d.
+    """
+    from datetime import datetime, timezone, timedelta
+    def _parse(date_field: str, time_field: str) -> datetime | None:
         try:
             dt = datetime.strptime(
                 f"{date_field.strip()} {time_field.strip()}",
                 "%m/%d/%Y %H:%M:%S")
-            return dt.replace(tzinfo=timezone.utc).isoformat()
+            return dt.replace(tzinfo=timezone.utc)
         except Exception:
             return None
-    first_ts: str | None = None
-    last_ts: str | None = None
+    floor = datetime(1995, 1, 1, tzinfo=timezone.utc)
+    ceiling = datetime.now(timezone.utc) + timedelta(days=1)
+    def _plausible(dt: datetime) -> bool:
+        return floor <= dt <= ceiling
+    first_dt: datetime | None = None
+    last_dt: datetime | None = None
+    # Single forward pass. Tail-scan was clean in theory but l2tcsv is
+    # time-sorted ascending, and the m57-jean reference run had 54 k
+    # overflow rows (2106-02-07, 44227-08-27 — FAT/NTFS records with
+    # 0xff…ff timestamps) clustered at the end, beyond any reasonable
+    # tail window. One forward sweep through a 1 GB CSV is ~30-60 s,
+    # which is rounding error on a 12-min Plaso run.
     try:
         with open(csv_path, "r", errors="ignore") as f:
-            header = f.readline()
-            del header
+            f.readline()  # header
             for line in f:
                 parts = line.split(",", 3)
                 if len(parts) < 2:
                     continue
-                t = _parse(parts[0], parts[1])
-                if t:
-                    first_ts = t
-                    break
-        # Tail scan — walk back for the last parseable line.
-        with open(csv_path, "rb") as f:
-            f.seek(0, 2)
-            size = f.tell()
-            chunk = min(64 * 1024, size)
-            f.seek(size - chunk)
-            tail = f.read().decode("utf-8", errors="ignore")
-            for line in reversed(tail.splitlines()):
-                parts = line.split(",", 3)
-                if len(parts) < 2:
-                    continue
-                t = _parse(parts[0], parts[1])
-                if t:
-                    last_ts = t
-                    break
+                dt = _parse(parts[0], parts[1])
+                if dt and _plausible(dt):
+                    if first_dt is None:
+                        first_dt = dt
+                    last_dt = dt
     except Exception:
         return (None, None)
-    return (first_ts, last_ts)
+    return (first_dt.isoformat() if first_dt else None,
+            last_dt.isoformat() if last_dt else None)

@@ -487,7 +487,16 @@ def synthesize(
         attack_chain = []
 
     # Earliest / latest artifact-time across the whole ledger.
-    all_times = [evidence_time(f) for f in findings if evidence_time(f)]
+    # timeline_synthesist's super-timeline finding carries Plaso's
+    # absolute first/last events (Firefox cache expiration dates,
+    # NTFS overflow rows from FILE_NAME attributes with 0xff…ff
+    # timestamps, etc.) — those are real evidence-derived data but
+    # they balloon the case-glance window from "when activity
+    # happened on this host" to "every timestamp Plaso could parse".
+    # The curated findings from the other agents are what an analyst
+    # actually wants framing the case.
+    all_times = [evidence_time(f) for f in findings
+                  if evidence_time(f) and f.agent != "timeline_synthesist"]
     time_range = (
         min(all_times).isoformat(timespec="seconds") if all_times else None,
         max(all_times).isoformat(timespec="seconds") if all_times else None,

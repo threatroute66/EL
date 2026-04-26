@@ -702,8 +702,12 @@ _JS = r"""
     lanes.forEach((l, i) => { laneIdx[l.beat] = i; });
 
     // Collect all events. evidence_time wins; created_utc is fallback.
+    // Skip timeline_synthesist — its super-timeline finding spans the
+    // case (Plaso bookends), so a single dot at the earliest event is
+    // misleading and stretches the X axis without conveying density.
     const events = [];
     (data.findings || []).forEach(f => {
+      if (f.agent === "timeline_synthesist") return;
       const t = f.evidence_time || f.created_utc || "";
       if (!t) return;
       if (laneIdx[f.beat] === undefined) return;
