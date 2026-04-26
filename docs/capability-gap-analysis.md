@@ -600,14 +600,35 @@ SE AFU dump. **Open items** (shipped April 2026):
 - ✅ `H_MOBILE_SPYWARE_PERSISTENCE`, `H_MOBILE_SIDELOADED_APP`,
   `H_MOBILE_MDM_ABUSE` registered + scored + ATT&CK-mapped
   (T1547, T1404, T1476, T1444, T1481, T1462).
+- ✅ **`el.skills.aleapp`** — dedicated ALEAPP wrapper, mirrors
+  the iLEAPP shape (auto-detect mode from extension, parse
+  `_TSV_Exports/` into `ArtifactTable` records). Validated
+  against the Android 12 Magnet TAR (`/mnt/hgfs/hackathon/
+  Android 12/TAR File/`).
+- ✅ **`el.skills.ios_backup_parse`** — iTunes/Finder logical
+  backup parser. Reads `Manifest.plist` + `Manifest.db`,
+  surfaces device metadata (iOS version, product type,
+  encryption flag, application count), enumerates the file
+  inventory keyed by domain. Encrypted-backup decryption path
+  available when the operator stages
+  `iphone_backup_decrypt`. Validated against the encrypted
+  iPhone8,4 backup at `/mnt/hgfs/hackathon/ios_13_4_1`.
+- ✅ **`el.skills.sysdiagnose`** — iOS sysdiagnose tarball
+  triage. Extract + index by subsystem (crashes_and_spins,
+  logs, summaries, system_logs.logarchive, …); parse `.ips`
+  records (Apple's JSON-then-JSON crash / jetsam / wakeups
+  format); surface largestProcess + memory state on Jetsam
+  events. Validated against the iOS 13.4.1 sysdiagnose at
+  `/mnt/hgfs/hackathon/ios_13_4_1/iOS 13.4.1 Extraction/
+  Sysdiagnose Logs/`.
 
-  **Truly corpus-gated** (still open): dedicated `aleapp` wrapper
-  module (Android coverage currently rides on direct
-  `android_artifacts.py` extraction; the ALEAPP toolchain wrap
-  needs a real Android FS dump or rooted-device backup to
-  validate), `ios_backup_parse` for encrypted iTunes/Finder
-  backups (`iphone-backup-decrypt` Python lib — needs a
-  passcode-known backup to validate the decrypt path).
+  **Truly corpus-gated** (still open): full
+  `system_logs.logarchive` Unified Log replay (Apple-only
+  `log show`/`log archive` tools; the sysdiagnose skill
+  surfaces a clear "needs macOS host" marker when the archive
+  is present). MTD/YAFFS2-formatted older Android phone dumps
+  (e.g. `/mnt/hgfs/hackathon/Case2/`) — would need a YAFFS2
+  parser; deferred until a case actually requires it.
 
 Everything else in the doc is shipped or listed under a
 deferred-with-rationale item above.
