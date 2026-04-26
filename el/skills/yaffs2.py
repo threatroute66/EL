@@ -193,16 +193,78 @@ def is_yaffs2(path: Path,
     return out
 
 
+# Canonical YAFFS2 NAND geometries the wrapper tries when
+# ``unyaffs -d`` autodetect fails. Order matters — most common
+# Android phone geometries first. The list is conservative
+# (avoids exotic 4K-page configurations) so the worst-case
+# extract attempt count stays bounded.
+_FALLBACK_GEOMETRIES = (
+    ("-b", "-c", "2", "-s", "64"),    # 2K page + 64B OOB + bad-block (most Android NAND)
+    ("-c", "2", "-s", "64"),           # 2K page + 64B OOB, no bad-block
+    ("-c", "2", "-s", "32"),           # 2K page + 32B OOB
+    ("-c", "2", "-s", "16"),           # 2K page + 16B OOB (older NAND)
+    ("-c", "4", "-s", "128"),          # 4K page + 128B OOB (newer NAND)
+    (),                                 # autodetect (default)
+)
+
+
+def _detect_layout(binr: str, image: Path,
+                    timeout: int) -> tuple[str, ...] | None:
+    """Run ``unyaffs -d <image>`` to ask the binary for its
+    autodetected layout. Returns the flag tuple to use for
+    extraction (e.g. ``("-b", "-c", "2", "-s", "64")``) or None
+    when no layout is recognised."""
+    try:
+        proc = subprocess.run(
+            [binr, "-d", str(image)],
+            capture_output=True, text=True, timeout=timeout)
+    except (subprocess.TimeoutExpired, OSError):
+        return None
+    if proc.returncode != 0:
+        return None
+    # Output shape:
+    #   Detected flash layout(s):
+    #   -b -c 2  -s 64  : chunk size =  2K, spare size =  64, ...
+    for line in proc.stdout.splitlines():
+        line = line.strip()
+        if line.startswith("-"):
+            # Take the prefix before the colon — that's the flags
+            head = line.split(":", 1)[0].strip()
+            if head:
+                return tuple(head.split())
+    return None
+
+
+def _count_files(d: Path) -> tuple[int, int]:
+    file_count = 0
+    bytes_extracted = 0
+    for f in d.rglob("*"):
+        if f.is_file():
+            file_count += 1
+            try:
+                bytes_extracted += f.stat().st_size
+            except OSError:
+                pass
+    return file_count, bytes_extracted
+
+
 def extract(image: Path, out_dir: Path,
              *, timeout: int = 600) -> Yaffs2ExtractResult:
     """Extract a YAFFS2 image into ``out_dir`` via ``unyaffs``.
+
+    Workflow:
+      1. Run ``unyaffs -d`` to autodetect the flash layout.
+      2. Run extraction with the detected (or default) flags.
+      3. If 0 files extracted, walk through canonical fallback
+         geometries (2K/64B + bad-block, 2K/64B, 2K/32, 2K/16,
+         4K/128) and accept the first that produces files.
+
     Always returns a result (no raise) so the agent's _safe
     wrapper can write a clean Finding regardless of outcome.
-
-    The unyaffs CLI takes ``unyaffs <image> [destination]``. It
-    creates files relative to its current working directory when
-    no destination is given; we always pass an explicit
-    destination and pre-create it."""
+    Real-world unyaffs often emits "Giving up" on partition tail
+    bad blocks even when the bulk of the partition extracted
+    successfully — we count files-on-disk, not the rc, as the
+    success signal."""
     img = Path(image)
     out = Path(out_dir)
     res = Yaffs2ExtractResult(image_path=img, out_dir=out)
@@ -220,48 +282,74 @@ def extract(image: Path, out_dir: Path,
     out.mkdir(parents=True, exist_ok=True)
     res.stdout_path = out.parent / f"{out.name}.unyaffs.stdout"
     res.stderr_path = out.parent / f"{out.name}.unyaffs.stderr"
-    cmd = [binr, str(img), str(out)]
-    try:
-        proc = subprocess.run(cmd, capture_output=True, text=True,
-                               timeout=timeout)
-    except subprocess.TimeoutExpired as e:
-        res.error = f"unyaffs timed out after {timeout}s"
-        if res.stderr_path:
-            res.stderr_path.write_text(
-                (e.stderr or "")
-                + f"\n[el] timed out after {timeout}s")
-        return res
-    except OSError as e:
-        res.error = f"unyaffs invocation failed: {e}"
-        return res
-    res.rc = proc.returncode
-    if res.stdout_path:
-        res.stdout_path.write_text(proc.stdout or "")
-    if res.stderr_path:
-        res.stderr_path.write_text(proc.stderr or "")
-    if proc.returncode != 0:
-        res.error = (
-            f"unyaffs rc={proc.returncode}: "
-            f"{(proc.stderr or '').strip()[:300]}")
-        return res
-    # Walk the output to confirm something landed
-    file_count = 0
-    bytes_extracted = 0
-    for f in out.rglob("*"):
-        if f.is_file():
-            file_count += 1
-            try:
-                bytes_extracted += f.stat().st_size
-            except OSError:
-                pass
-    res.success = file_count > 0
-    res.file_count = file_count
-    res.bytes_extracted = bytes_extracted
+
+    # Build the geometry try-list: detected layout first, then
+    # fallbacks. Filter dups so we don't re-run the same geometry.
+    detected = _detect_layout(binr, img, timeout=60)
+    geometries: list[tuple[str, ...]] = []
+    if detected is not None:
+        geometries.append(detected)
+    for g in _FALLBACK_GEOMETRIES:
+        if g not in geometries:
+            geometries.append(g)
+
+    last_proc: subprocess.CompletedProcess | None = None
+    used_geometry: tuple[str, ...] | None = None
+    for g in geometries:
+        # Each try gets a fresh out dir so partial extracts from
+        # a wrong-geometry attempt don't pollute the next.
+        try:
+            for child in out.iterdir():
+                if child.is_dir():
+                    import shutil as _sh
+                    _sh.rmtree(child, ignore_errors=True)
+                else:
+                    child.unlink(missing_ok=True)
+        except OSError:
+            pass
+        cmd = [binr, *g, str(img), str(out)]
+        try:
+            proc = subprocess.run(
+                cmd, capture_output=True, text=True,
+                timeout=timeout)
+        except subprocess.TimeoutExpired as e:
+            res.error = (f"unyaffs timed out after {timeout}s "
+                         f"on geometry {' '.join(g) or '<auto>'}")
+            if res.stderr_path:
+                res.stderr_path.write_text(
+                    (e.stderr or "")
+                    + f"\n[el] timed out after {timeout}s")
+            return res
+        except OSError as e:
+            res.error = f"unyaffs invocation failed: {e}"
+            return res
+        last_proc = proc
+        # Count files on disk regardless of rc — unyaffs emits
+        # "Giving up" rc=1 even when most of the partition
+        # extracted cleanly (tail bad blocks).
+        file_count, bytes_extracted = _count_files(out)
+        if file_count > 0:
+            res.success = True
+            res.rc = proc.returncode
+            res.file_count = file_count
+            res.bytes_extracted = bytes_extracted
+            used_geometry = g
+            break
+
+    if res.stdout_path and last_proc is not None:
+        res.stdout_path.write_text(last_proc.stdout or "")
+    if res.stderr_path and last_proc is not None:
+        res.stderr_path.write_text(last_proc.stderr or "")
+
     if not res.success:
+        res.rc = last_proc.returncode if last_proc else -1
         res.error = (
-            "unyaffs returned 0 but produced no files — image "
-            "may use a non-default page/OOB geometry; try "
-            "page-size variants or ``yaffs2utils`` from source.")
+            f"unyaffs failed across {len(geometries)} layout(s) "
+            f"(detected={detected}); last stderr: "
+            f"{(last_proc.stderr if last_proc else '').strip()[:300]}")
+    elif used_geometry is not None and used_geometry:
+        res.error = (
+            f"used geometry: {' '.join(used_geometry)}")
     return res
 
 

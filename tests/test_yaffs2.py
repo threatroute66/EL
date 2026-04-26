@@ -101,20 +101,45 @@ def test_extract_missing_image(tmp_path, monkeypatch):
     assert "image not found" in r.error
 
 
+def _make_fake_run(extract_action=None,
+                    extract_rc: int = 0,
+                    extract_stderr: str = ""):
+    """Helper to build a fake subprocess.run that handles both
+    the autodetect probe (``unyaffs -d``) and the real extract.
+    ``extract_action`` is called on the extract invocation with
+    the cmd list — typically writes synthetic files into out_dir."""
+
+    def fake_run(cmd, capture_output, text, timeout):
+        # Detect the autodetect probe vs the real extract:
+        # ``-d`` is the only flag the probe carries.
+        if "-d" in cmd:
+            return subprocess.CompletedProcess(
+                args=cmd, returncode=0,
+                # No layout detected — falls through to fallbacks.
+                stdout="Detected flash layout(s):\n-- none --\n",
+                stderr="")
+        if extract_action is not None:
+            extract_action(cmd)
+        return subprocess.CompletedProcess(
+            args=cmd, returncode=extract_rc,
+            stdout="", stderr=extract_stderr)
+    return fake_run
+
+
 def test_extract_subprocess_success(tmp_path, monkeypatch):
     monkeypatch.setattr(y, "_unyaffs_bin", lambda: "/fake/unyaffs")
     img = tmp_path / "x.dd"; img.write_bytes(b"x" * 1024)
 
-    def fake_run(cmd, capture_output, text, timeout):
-        # Simulate unyaffs creating files in the output dir
-        out_dir = Path(cmd[2])
-        (out_dir / "etc").mkdir()
+    def make_files(cmd):
+        out_dir = Path(cmd[-1])
+        out_dir.mkdir(parents=True, exist_ok=True)
+        (out_dir / "etc").mkdir(exist_ok=True)
         (out_dir / "etc" / "hosts").write_text("127.0.0.1 localhost\n")
         (out_dir / "system.txt").write_text("system file\n")
-        return subprocess.CompletedProcess(
-            args=cmd, returncode=0, stdout="", stderr="")
 
-    monkeypatch.setattr(y.subprocess, "run", fake_run)
+    monkeypatch.setattr(y.subprocess, "run",
+                         _make_fake_run(extract_action=make_files,
+                                          extract_rc=0))
     r = y.extract(img, tmp_path / "out")
     assert r.success is True
     assert r.rc == 0
@@ -125,29 +150,33 @@ def test_extract_subprocess_success(tmp_path, monkeypatch):
 def test_extract_subprocess_failure(tmp_path, monkeypatch):
     monkeypatch.setattr(y, "_unyaffs_bin", lambda: "/fake/unyaffs")
     img = tmp_path / "x.dd"; img.write_bytes(b"x")
-    monkeypatch.setattr(
-        y.subprocess, "run",
-        lambda *a, **kw: subprocess.CompletedProcess(
-            args=[], returncode=1, stdout="",
-            stderr="unyaffs: bad header"))
+    # Every fallback geometry returns rc=1 + bad-header stderr,
+    # producing 0 files. Wrapper reports the failure with the
+    # last-stderr context.
+    monkeypatch.setattr(y.subprocess, "run",
+                         _make_fake_run(extract_action=None,
+                                          extract_rc=1,
+                                          extract_stderr=(
+                                              "unyaffs: bad header")))
     r = y.extract(img, tmp_path / "out")
     assert r.success is False
-    assert "rc=1" in r.error
     assert "bad header" in r.error
+    # Wrapper reports how many layouts were tried
+    assert "layout" in r.error.lower()
 
 
 def test_extract_returns_zero_but_no_files(tmp_path, monkeypatch):
-    """unyaffs sometimes returns 0 even when it produced nothing
-    (page-geometry mismatch). The wrapper flags this clearly."""
+    """unyaffs returns 0 but produces no files (geometry
+    mismatch). Wrapper iterates all fallbacks; when none
+    produce files, the error explains that."""
     monkeypatch.setattr(y, "_unyaffs_bin", lambda: "/fake/unyaffs")
     img = tmp_path / "x.dd"; img.write_bytes(b"x")
-    monkeypatch.setattr(
-        y.subprocess, "run",
-        lambda *a, **kw: subprocess.CompletedProcess(
-            args=[], returncode=0, stdout="", stderr=""))
+    monkeypatch.setattr(y.subprocess, "run",
+                         _make_fake_run(extract_action=None,
+                                          extract_rc=0))
     r = y.extract(img, tmp_path / "out")
     assert r.success is False
-    assert "produced no files" in r.error
+    assert "layout" in r.error.lower()
 
 
 def test_extract_timeout(tmp_path, monkeypatch):
@@ -180,8 +209,15 @@ def test_walk_bundle_skips_non_yaffs2_partitions(tmp_path,
     extracted_paths: list[Path] = []
 
     def fake_run(cmd, capture_output, text, timeout):
-        extracted_paths.append(Path(cmd[1]))
-        out_dir = Path(cmd[2])
+        if "-d" in cmd:
+            return subprocess.CompletedProcess(
+                args=cmd, returncode=0,
+                stdout="Detected flash layout(s):\n-- none --\n",
+                stderr="")
+        # Real extract: image path is the second-to-last arg
+        extracted_paths.append(Path(cmd[-2]))
+        out_dir = Path(cmd[-1])
+        out_dir.mkdir(parents=True, exist_ok=True)
         (out_dir / "marker").write_text("ok")
         return subprocess.CompletedProcess(
             args=cmd, returncode=0, stdout="", stderr="")

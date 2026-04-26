@@ -190,6 +190,45 @@ class AndroidForensicatorAgent(Agent):
         "Logcat":                 ("logcat snapshots",    "low",    []),
     }
 
+    @staticmethod
+    def _yaffs2_role(extract_root: Path) -> str | None:
+        """Sniff the Android partition role from a YAFFS2 extract's
+        top-level directories. Returns ``"system"``, ``"data"``,
+        ``"cache"``, or None when the role is ambiguous.
+
+        - system partition: build.prop + framework/ + (app/ or bin/
+                            or lib/) at root → "system"
+        - data partition:   data/ + app/ + dalvik-cache/ OR
+                            ``data/system/packages.xml`` directly
+                            visible → "data"
+        - cache partition:  download/ + recovery/ + lost+found at
+                            root with no other markers → "cache"
+        """
+        d = Path(extract_root)
+        if not d.is_dir():
+            return None
+        names = {p.name for p in d.iterdir()}
+        # Strong system signal — build.prop is exclusive to /system
+        if ("build.prop" in names
+                and ("framework" in names or "app" in names
+                     or "lib" in names)):
+            return "system"
+        # Data partition shape — Android puts /data contents at root
+        # of the userdata YAFFS2 (so root has app/, data/, system/,
+        # dalvik-cache/, app-private/ etc.). The discriminator from
+        # /system is the absence of build.prop + presence of
+        # dalvik-cache/ or app-private/.
+        if ("dalvik-cache" in names or "app-private" in names
+                or "anr" in names
+                or (d / "data" / "system"
+                    / "packages.xml").is_file()):
+            return "data"
+        # Cache partition shape
+        if names <= {"download", "recovery", "lost+found",
+                      "lost.dir", "fota"}:
+            return "cache"
+        return None
+
     def _run_yaffs2_bundle(self, ctx: AgentContext, bundle: Path
                             ) -> tuple[list[Finding], Path | None]:
         """Extract YAFFS2-shaped partitions from an MTD bundle via
@@ -258,29 +297,49 @@ class AndroidForensicatorAgent(Agent):
                     evidence=[ev],
                     hypotheses_supported=["H_DISK_ARTIFACTS"],
                 )))
-                # Merge into the unified FS root by copying the
-                # partition's content directly under merged/. Old
-                # Android partitions are role-specific (one carries
-                # /system content, another carries /data content);
-                # their top-level directory names rarely collide
-                # (system/etc/lib vs app/data/cache). When they do
-                # collide, dirs_exist_ok=True merges. The downstream
-                # android-artifacts walker (rglob "data/system/
-                # packages.xml" etc.) finds the markers regardless
-                # of which partition contributed them.
+                # Merge into the unified FS root. A YAFFS2 image is
+                # the *contents* of an Android partition mounted at
+                # a role-specific path (/system, /data, /cache), so
+                # the extract's top-level dirs map differently per
+                # role. We sniff the role from the extracted shape
+                # and re-mount it under the right role-named
+                # subdirectory so the downstream android-artifacts
+                # walker (which hunts for "data/system/packages.xml"
+                # etc.) can find its markers regardless of which
+                # partition contributed them.
+                role = self._yaffs2_role(ex.out_dir)
                 try:
                     import shutil as _shutil
-                    for child in ex.out_dir.iterdir():
-                        target = merged / child.name
-                        if child.is_dir():
-                            _shutil.copytree(
-                                child, target, symlinks=False,
-                                dirs_exist_ok=True)
-                        else:
-                            target.parent.mkdir(
-                                parents=True, exist_ok=True)
-                            if not target.exists():
-                                _shutil.copy2(child, target)
+                    if role:
+                        # Re-mount under merged/<role>/...
+                        target = merged / role
+                        target.mkdir(parents=True, exist_ok=True)
+                        for child in ex.out_dir.iterdir():
+                            child_target = target / child.name
+                            if child.is_dir():
+                                _shutil.copytree(
+                                    child, child_target,
+                                    symlinks=False,
+                                    dirs_exist_ok=True)
+                            else:
+                                if not child_target.exists():
+                                    _shutil.copy2(
+                                        child, child_target)
+                    else:
+                        # Unknown role — pour the content directly
+                        # into merged/ so at least artefact-level
+                        # matches still fire on filename basenames.
+                        for child in ex.out_dir.iterdir():
+                            child_target = merged / child.name
+                            if child.is_dir():
+                                _shutil.copytree(
+                                    child, child_target,
+                                    symlinks=False,
+                                    dirs_exist_ok=True)
+                            else:
+                                if not child_target.exists():
+                                    _shutil.copy2(
+                                        child, child_target)
                 except OSError as e:
                     out.append(self.emit(ctx, Finding(
                         case_id=ctx.case_id, agent=self.name,

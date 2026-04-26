@@ -148,16 +148,28 @@ def test_android_agent_extracts_and_chains_to_artifacts_walker(
                          lambda: "/fake/unyaffs")
 
     def fake_unyaffs(cmd, capture_output, text, timeout):
-        # Simulate unyaffs creating an Android-shaped extraction:
-        # data/system/packages.xml + data/data/<pkg>/databases/
-        out_dir = Path(cmd[2])
-        (out_dir / "data" / "system").mkdir(parents=True)
-        (out_dir / "data" / "system" / "packages.xml").write_text(
+        # Layout autodetect probe: return "no layout" so we go
+        # through to the fallback geometries.
+        if "-d" in cmd:
+            return subprocess.CompletedProcess(
+                args=cmd, returncode=0,
+                stdout="Detected flash layout(s):\n-- none --\n",
+                stderr="")
+        # Real extract: out_dir is always the last arg.
+        # YAFFS2 dumps of the userdata partition extract with
+        # root = the contents of /data; so top-level looks like
+        # system/ + data/ + app/ + dalvik-cache/. The role
+        # detector needs at least one of those markers
+        # (dalvik-cache, app-private, anr, or system/packages.xml)
+        # to flag this as the data partition.
+        out_dir = Path(cmd[-1])
+        out_dir.mkdir(parents=True, exist_ok=True)
+        (out_dir / "system").mkdir(exist_ok=True)
+        (out_dir / "system" / "packages.xml").write_text(
             "<packages/>")
-        (out_dir / "data" / "data" / "com.example").mkdir(
-            parents=True)
-        (out_dir / "data" / "data" / "com.example"
-         / "shared_prefs").mkdir()
+        (out_dir / "data" / "com.example"
+         / "shared_prefs").mkdir(parents=True, exist_ok=True)
+        (out_dir / "dalvik-cache").mkdir(exist_ok=True)
         return subprocess.CompletedProcess(
             args=cmd, returncode=0, stdout="", stderr="")
 

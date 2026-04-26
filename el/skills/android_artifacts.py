@@ -148,6 +148,37 @@ def extract_android_artifacts(input_dir: Path,
     input_dir = Path(input_dir)
     exports_dir = Path(exports_dir)
 
+    # /system partition contents — top-level build.prop +
+    # framework/ + app/ + lib/ shape. Lands at the partition root
+    # when the source is a YAFFS2 system-partition extract, OR
+    # under /system/ when role-detection moved it there during a
+    # YAFFS2 merge. Both paths are recognised.
+    for system_root in (input_dir / "system", input_dir):
+        bp = system_root / "build.prop"
+        if bp.is_file():
+            sys_out = exports_dir / "system"
+            if _sudo_cp(bp, sys_out / "build.prop"):
+                out["system_build_prop"] = (
+                    out.get("system_build_prop", 0) + 1)
+            # System-app inventory (just listing — copying the
+            # whole framework + lib + app subtrees would balloon
+            # the case directory). Listing names is enough to
+            # fingerprint the ROM build / OEM customisation.
+            for sub in ("app", "framework", "lib", "etc"):
+                d = system_root / sub
+                if d.is_dir():
+                    listing = sorted(
+                        p.name for p in d.iterdir()
+                        if p.is_file() or p.is_dir())[:1000]
+                    if listing:
+                        out_listing = (
+                            sys_out / f"{sub}.listing.txt")
+                        out_listing.parent.mkdir(
+                            parents=True, exist_ok=True)
+                        out_listing.write_text("\n".join(listing))
+                        out[f"system_{sub}_entries"] = len(listing)
+            break  # handle only the first matching system root
+
     # /data/system/* core config
     sysdir = input_dir / "data" / "system"
     if sysdir.is_dir():
