@@ -50,27 +50,46 @@ class AndroidForensicatorAgent(Agent):
         if src.is_file() and src.suffix.lower() in (
                 ".tar", ".zip", ".gz"):
             return self._run_aleapp(ctx, src)
+        # MTD/YAFFS2 bundle path: input is a directory of mtdN.dd
+        # raw partition dumps (old-Android phones, Case2-style).
+        # Run the YAFFS2 extract first; if any partition produces a
+        # filesystem tree, re-point src at the merged extract dir
+        # and let the standard android-artifacts walker take over.
+        if src.is_dir() and (
+                ctx.shared.get("evidence_kind") == "android-mtd-bundle"):
+            yaffs_findings, redirected = self._run_yaffs2_bundle(
+                ctx, src)
+            if redirected is not None:
+                src = redirected               # downstream walks the extract
+                pre_findings = yaffs_findings
+            else:
+                # Nothing extracted — return only the YAFFS2 findings
+                # (each will be insufficient or low-confidence).
+                return yaffs_findings
+        else:
+            pre_findings: list[Finding] = []
         if not src.is_dir():
             return [self.emit(ctx, Finding(
                 case_id=ctx.case_id, agent=self.name,
                 confidence="insufficient",
                 claim=("AndroidForensicator: input is not a directory "
-                       "or supported archive (.tar / .zip / .gz). "
-                       "Android cases arrive as file-system trees "
-                       "(Belkasoft / UFED / adb-pull) or as Magnet/"
-                       "UFED archive bundles."),
+                       "or supported archive (.tar / .zip / .gz / "
+                       "MTD/YAFFS2 bundle). Android cases arrive as "
+                       "file-system trees (Belkasoft / UFED / adb-"
+                       "pull), Magnet/UFED archive bundles, or "
+                       "old-Android mtd*.dd partition dumps."),
             ))]
 
         exports = ctx.case_dir / "exports" / "android-artifacts"
         try:
             counts = aa.extract_android_artifacts(src, exports)
         except Exception as e:
-            return [self.emit(ctx, Finding(
+            return pre_findings + [self.emit(ctx, Finding(
                 case_id=ctx.case_id, agent=self.name,
                 confidence="insufficient",
                 claim=f"Android extraction errored: {e}",
             ))]
-        out: list[Finding] = []
+        out: list[Finding] = list(pre_findings)
         if not counts:
             out.append(self.emit(ctx, Finding(
                 case_id=ctx.case_id, agent=self.name,
@@ -170,6 +189,120 @@ class AndroidForensicatorAgent(Agent):
         "Notification":           ("notification history","low",    []),
         "Logcat":                 ("logcat snapshots",    "low",    []),
     }
+
+    def _run_yaffs2_bundle(self, ctx: AgentContext, bundle: Path
+                            ) -> tuple[list[Finding], Path | None]:
+        """Extract YAFFS2-shaped partitions from an MTD bundle via
+        unyaffs. Returns ``(findings, extracted_root)``. The
+        extracted_root is the merged FS that the standard
+        android-artifacts walker should consume; None when no
+        partition produced files (caller emits the YAFFS2 findings
+        and bails)."""
+        from el.skills import yaffs2 as y_skill
+        out: list[Finding] = []
+        extract_root = ctx.case_dir / "exports" / "yaffs2"
+        extract_root.mkdir(parents=True, exist_ok=True)
+        # Per-partition extract; merged into a single FS root for
+        # the downstream walker. Mounting the system + userdata
+        # partitions side-by-side under one root mirrors the way
+        # Android lays them at runtime.
+        merged = ctx.case_dir / "exports" / "yaffs2-merged"
+        merged.mkdir(parents=True, exist_ok=True)
+        res = y_skill.walk_bundle(bundle, extract_root)
+        if not res.extractions:
+            out.append(self.emit(ctx, Finding(
+                case_id=ctx.case_id, agent=self.name,
+                confidence="insufficient",
+                claim=(f"MTD bundle at {bundle.name}: no YAFFS2-"
+                       f"shaped partitions detected by the "
+                       f"heuristic detector across "
+                       f"{len(list(bundle.glob('mtd*.dd')))} mtd*.dd "
+                       f"file(s). The dump may use a non-default "
+                       f"page/OOB geometry, or only the bootloader "
+                       f"+ kernel partitions are present."),
+            )))
+            return out, None
+        any_success = False
+        for ex in res.extractions:
+            sha = "0" * 64
+            try:
+                sha = hashlib.sha256(
+                    ex.image_path.read_bytes()[:4096]
+                ).hexdigest()
+            except OSError:
+                pass
+            ev = EvidenceItem(
+                tool="unyaffs", version="0.9.7",
+                command=f"unyaffs {ex.image_path.name} "
+                         f"{ex.out_dir.name}",
+                output_sha256=sha,
+                output_path=str(ex.out_dir),
+                extracted_facts={
+                    "image": ex.image_path.name,
+                    "rc": ex.rc,
+                    "file_count": ex.file_count,
+                    "bytes_extracted": ex.bytes_extracted,
+                    "error": ex.error[:500],
+                },
+                source_reliability="A", info_credibility="1",
+            )
+            if ex.success:
+                any_success = True
+                out.append(self.emit(ctx, Finding(
+                    case_id=ctx.case_id, agent=self.name,
+                    confidence="high",
+                    claim=(f"YAFFS2 partition {ex.image_path.name} "
+                           f"extracted via unyaffs: "
+                           f"{ex.file_count} file(s), "
+                           f"{ex.bytes_extracted:,} byte(s)."),
+                    evidence=[ev],
+                    hypotheses_supported=["H_DISK_ARTIFACTS"],
+                )))
+                # Merge into the unified FS root by copying the
+                # partition's content directly under merged/. Old
+                # Android partitions are role-specific (one carries
+                # /system content, another carries /data content);
+                # their top-level directory names rarely collide
+                # (system/etc/lib vs app/data/cache). When they do
+                # collide, dirs_exist_ok=True merges. The downstream
+                # android-artifacts walker (rglob "data/system/
+                # packages.xml" etc.) finds the markers regardless
+                # of which partition contributed them.
+                try:
+                    import shutil as _shutil
+                    for child in ex.out_dir.iterdir():
+                        target = merged / child.name
+                        if child.is_dir():
+                            _shutil.copytree(
+                                child, target, symlinks=False,
+                                dirs_exist_ok=True)
+                        else:
+                            target.parent.mkdir(
+                                parents=True, exist_ok=True)
+                            if not target.exists():
+                                _shutil.copy2(child, target)
+                except OSError as e:
+                    out.append(self.emit(ctx, Finding(
+                        case_id=ctx.case_id, agent=self.name,
+                        confidence="insufficient",
+                        claim=(f"YAFFS2 merge of "
+                               f"{ex.image_path.name} into "
+                               f"{merged.name}/ failed: {e}. "
+                               f"Per-partition extract is still "
+                               f"available at "
+                               f"{ex.out_dir.relative_to(ctx.case_dir)}."),
+                        evidence=[ev],
+                    )))
+            else:
+                out.append(self.emit(ctx, Finding(
+                    case_id=ctx.case_id, agent=self.name,
+                    confidence="insufficient",
+                    claim=(f"YAFFS2 partition "
+                           f"{ex.image_path.name} extract failed: "
+                           f"{ex.error[:200]}"),
+                    evidence=[ev],
+                )))
+        return out, merged if any_success else None
 
     def _run_aleapp(self, ctx: AgentContext, src: Path
                     ) -> list[Finding]:

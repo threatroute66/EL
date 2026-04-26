@@ -622,13 +622,27 @@ SE AFU dump. **Open items** (shipped April 2026):
   `/mnt/hgfs/hackathon/ios_13_4_1/iOS 13.4.1 Extraction/
   Sysdiagnose Logs/`.
 
+- ✅ **`el.skills.yaffs2`** — MTD/YAFFS2 phone-dump support.
+  Wraps the SIFT-bundled `unyaffs` CLI (added to
+  `provisioning/apt-packages.txt`); structural detector
+  identifies YAFFS2 partitions by stride-aligned object
+  headers (parent_id range + null-padded ASCII name +
+  multiple-stride support: 512 / 1024 / 2048 / 4096 B
+  pages). `walk_bundle()` chains: detect → extract → merge
+  partitions into a unified FS tree → standard
+  android-artifacts walker. Validated against
+  `/mnt/hgfs/hackathon/Case2/` (2011-vintage Android phone,
+  10 mtd*.dd partitions): mtd6 (system: linker /
+  printenv / debuggerd / wipe) + mtd8 (userdata:
+  cc_data / databases / mailstore.gmail.com.db-journal /
+  accounts.db) detected; bootloader / kernel / cache
+  partitions correctly stay False.
+
   **Truly corpus-gated** (still open): full
   `system_logs.logarchive` Unified Log replay (Apple-only
   `log show`/`log archive` tools; the sysdiagnose skill
   surfaces a clear "needs macOS host" marker when the archive
-  is present). MTD/YAFFS2-formatted older Android phone dumps
-  (e.g. `/mnt/hgfs/hackathon/Case2/`) — would need a YAFFS2
-  parser; deferred until a case actually requires it.
+  is present).
 
 Everything else in the doc is shipped or listed under a
 deferred-with-rationale item above.

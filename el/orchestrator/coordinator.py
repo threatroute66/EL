@@ -76,6 +76,10 @@ KIND_TO_AGENT: dict[str, type[Agent]] = {
     # canonical /data layout) — same agent, ALEAPP wrap takes over
     # from the FS-walk path.
     "android-archive": AndroidForensicatorAgent,
+    # Old-Android MTD/YAFFS2 bundle (pre-Android-4 phones,
+    # mtdN.dd raw partition dumps) — same agent, YAFFS2 extract
+    # path chains into the standard android-artifacts walker.
+    "android-mtd-bundle": AndroidForensicatorAgent,
     "ios-fs-dir": IOSForensicatorAgent,
     # iTunes/Finder backup directory (Manifest.plist + Manifest.db)
     "itunes-backup": IOSForensicatorAgent,

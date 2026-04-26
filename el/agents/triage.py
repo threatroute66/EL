@@ -244,6 +244,42 @@ class TriageAgent(Agent):
         out: list[Finding] = []
         d = ctx.input_path
 
+        # MTD/YAFFS2 bundle — old Android phone dumps (pre-Android-4)
+        # arrive as a directory with multiple mtdN.dd raw partition
+        # files. AndroidForensicator's YAFFS2 path runs unyaffs on the
+        # YAFFS2-shaped partitions, then chains the extracted FS into
+        # the standard android-artifacts walker.
+        from el.skills import yaffs2 as y_skill
+        if y_skill.is_mtd_bundle_dir(d):
+            ctx.shared["evidence_kind"] = "android-mtd-bundle"
+            mtd_files = sorted(d.glob("mtd*.dd"))
+            sha = hashlib.sha256(
+                b"".join(f.name.encode() for f in mtd_files)
+            ).hexdigest()
+            ev = EvidenceItem(
+                tool="el.triage", version="0.1.0",
+                command=f"mtd-bundle probe {d.name}",
+                output_sha256=sha, output_path=str(d),
+                extracted_facts={
+                    "mtd_partition_count": len(mtd_files),
+                    "mtd_files": [f.name for f in mtd_files][:20],
+                    "has_sdcard_dump":
+                        (d / "sdcard.dd").is_file(),
+                },
+            )
+            out.append(self.emit(ctx, Finding(
+                case_id=ctx.case_id, agent=self.name,
+                confidence="high",
+                claim=(f"Input directory looks like an MTD/YAFFS2 "
+                       f"phone dump ({len(mtd_files)} mtd*.dd "
+                       f"partition file(s); old-Android shape). "
+                       f"Routes to AndroidForensicator's YAFFS2 "
+                       f"extract path (unyaffs)."),
+                evidence=[ev],
+                hypotheses_supported=["H_DISK_ARTIFACTS"],
+            )))
+            return out
+
         # iTunes / Finder backup directory — Manifest.plist + Manifest.db
         # at the top level. Distinct from a generic iOS FS tree because
         # it's blob-keyed-by-sha1, not a real filesystem.
