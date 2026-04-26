@@ -43,14 +43,22 @@ class AndroidForensicatorAgent(Agent):
 
     def run(self, ctx: AgentContext) -> list[Finding]:
         src = ctx.input_path
+        # ALEAPP-only path: input is a .tar/.zip/.gz archive of an
+        # Android extraction (Magnet Acquire / UFED export). The
+        # archive-mode wrap drives ALEAPP directly without
+        # filesystem extract — the wrap handles unpacking.
+        if src.is_file() and src.suffix.lower() in (
+                ".tar", ".zip", ".gz"):
+            return self._run_aleapp(ctx, src)
         if not src.is_dir():
             return [self.emit(ctx, Finding(
                 case_id=ctx.case_id, agent=self.name,
                 confidence="insufficient",
-                claim=("AndroidForensicator: input is not a directory. "
+                claim=("AndroidForensicator: input is not a directory "
+                       "or supported archive (.tar / .zip / .gz). "
                        "Android cases arrive as file-system trees "
-                       "(Belkasoft / UFED / adb-pull), not as block "
-                       "images."),
+                       "(Belkasoft / UFED / adb-pull) or as Magnet/"
+                       "UFED archive bundles."),
             ))]
 
         exports = ctx.case_dir / "exports" / "android-artifacts"
@@ -125,5 +133,127 @@ class AndroidForensicatorAgent(Agent):
                 evidence=[ev],
                 hypotheses_supported=at.hypotheses_for(h.family)
                                        or ["H_DISK_ARTIFACTS"],
+            )))
+        # ALEAPP wrap — Brignoni's 150+-artifact Android parser.
+        # Skips silently when ALEAPP isn't installed; emits one
+        # Finding per surfaced high-value artefact (contacts2,
+        # mmssms, Chrome history, app-data DBs, Wi-Fi config).
+        out.extend(self._run_aleapp(ctx, src))
+        return out
+
+    # ALEAPP TSV name → (display label, confidence, hypotheses).
+    # Curated to high-signal artefacts so the ledger doesn't flood
+    # on the 150+ tables ALEAPP can produce. Names are substring-
+    # matched case-insensitive against table.name.
+    _ALEAPP_HIGH_VALUE = {
+        "Contacts":               ("contacts",            "low",    []),
+        "SMS":                    ("SMS / MMS",           "medium", []),
+        "MMS":                    ("SMS / MMS",           "medium", []),
+        "Call":                   ("call history",        "medium", []),
+        "Chrome":                 ("Chrome history",      "medium", []),
+        "Chrome History":         ("Chrome history",      "medium", []),
+        "Browser":                ("browser history",     "medium", []),
+        "WhatsApp":               ("WhatsApp messages",   "medium", []),
+        "Telegram":               ("Telegram messages",   "medium", []),
+        "Signal":                 ("Signal messages",     "medium", []),
+        "Installed Apps":         ("installed apps",      "low",
+                                    ["H_DISK_ARTIFACTS"]),
+        "Package":                ("package inventory",   "low",
+                                    ["H_DISK_ARTIFACTS"]),
+        "WiFi":                   ("Wi-Fi configuration", "medium",
+                                    ["H_DISK_ARTIFACTS"]),
+        "Wifi":                   ("Wi-Fi configuration", "medium",
+                                    ["H_DISK_ARTIFACTS"]),
+        "Bluetooth":              ("Bluetooth pairings",  "low",    []),
+        "Location":               ("location history",    "medium", []),
+        "Locations":              ("location history",    "medium", []),
+        "Notification":           ("notification history","low",    []),
+        "Logcat":                 ("logcat snapshots",    "low",    []),
+    }
+
+    def _run_aleapp(self, ctx: AgentContext, src: Path
+                    ) -> list[Finding]:
+        from el.skills import aleapp as aleapp_skill
+        if not aleapp_skill.is_aleapp_available():
+            return [self.emit(ctx, Finding(
+                case_id=ctx.case_id, agent=self.name,
+                confidence="insufficient",
+                claim=("ALEAPP not installed at /opt/ALEAPP "
+                       "(or `EL_ALEAPP_DIR`). Skipping the 150+-"
+                       "artifact Brignoni parser pass; the four "
+                       "built-in detectors above still ran."),
+            ))]
+        out_dir = ctx.case_dir / "exports" / "aleapp"
+        try:
+            r = aleapp_skill.run(src, out_dir)
+        except aleapp_skill.ALeappError as e:
+            return [self.emit(ctx, Finding(
+                case_id=ctx.case_id, agent=self.name,
+                confidence="insufficient",
+                claim=f"ALEAPP failed: {e}",
+            ))]
+        out: list[Finding] = []
+        populated = sum(1 for t in r.tables if t.populated)
+        ev = EvidenceItem(
+            tool="ALEAPP", version=r.version or "unknown",
+            command=(f"aleapp.py -t {aleapp_skill.detect_mode(src)} "
+                      f"-i {src.name} -o {out_dir.name}"),
+            output_sha256=hashlib.sha256(
+                r.stdout_path.read_bytes() if r.stdout_path.exists()
+                else b"").hexdigest(),
+            output_path=str(r.report_dir),
+            extracted_facts={
+                "tables": len(r.tables),
+                "populated_tables": populated,
+                "rc": r.rc,
+            },
+        )
+        out.append(self.emit(ctx, Finding(
+            case_id=ctx.case_id, agent=self.name, confidence="high",
+            claim=(f"ALEAPP v{r.version or '?'} parsed "
+                   f"{len(r.tables)} artefact module(s); "
+                   f"{populated} populated. "
+                   f"Report: {r.report_dir.name}"),
+            evidence=[ev],
+            hypotheses_supported=["H_DISK_ARTIFACTS"],
+        )))
+        for table in r.tables:
+            if not table.populated:
+                continue
+            label, conf, hyps = (None, "low", [])
+            for needle, (lbl, c, h) in self._ALEAPP_HIGH_VALUE.items():
+                if needle.lower() in table.name.lower():
+                    label, conf, hyps = lbl, c, h
+                    break
+            if label is None:
+                continue
+            sample = ""
+            if table.rows:
+                cols_to_show = min(3, len(table.headers))
+                sample = " | ".join(
+                    table.rows[0][i] for i in range(cols_to_show)
+                    if i < len(table.rows[0])
+                )[:200]
+            tev = EvidenceItem(
+                tool="ALEAPP", version=r.version or "unknown",
+                command=f"_TSV/{table.name}",
+                output_sha256=hashlib.sha256(
+                    table.path.read_bytes()).hexdigest(),
+                output_path=str(table.path),
+                extracted_facts={
+                    "artifact": label, "rows": table.total_rows,
+                    "headers": table.headers[:8],
+                    "truncated": table.truncated,
+                },
+            )
+            out.append(self.emit(ctx, Finding(
+                case_id=ctx.case_id, agent=self.name, confidence=conf,
+                claim=(f"ALEAPP {label}: {table.total_rows} row(s) "
+                       f"parsed from {table.name}"
+                       + (f" (sample: {sample!r})" if sample else "")
+                       + (" [truncated for display]"
+                          if table.truncated else "")),
+                evidence=[tev],
+                hypotheses_supported=hyps,
             )))
         return out

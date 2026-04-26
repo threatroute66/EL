@@ -81,6 +81,54 @@ class TriageAgent(Agent):
         if ctx.input_path.is_dir():
             return self._classify_directory(ctx, analysis)
 
+        # File-shape early detections that don't need the magic-byte
+        # path: iOS sysdiagnose tarballs (filename signature), Magnet/
+        # UFED Android archive bundles (.tar/.zip extension + Android
+        # marker file inside).
+        name = ctx.input_path.name
+        if (name.startswith("sysdiagnose_")
+                and (name.endswith(".tar.gz") or name.endswith(".tgz"))):
+            ctx.shared["evidence_kind"] = "ios-sysdiagnose"
+            sha = hashlib.sha256(name.encode()).hexdigest()
+            ev = EvidenceItem(
+                tool="el.triage", version="0.1.0",
+                command=f"sysdiagnose-shape probe {name}",
+                output_sha256=sha, output_path=str(ctx.input_path),
+                extracted_facts={"signature": "sysdiagnose_*.tar.gz"},
+            )
+            out.append(self.emit(ctx, Finding(
+                case_id=ctx.case_id, agent=self.name,
+                confidence="high",
+                claim=(f"Input is an iOS sysdiagnose tarball "
+                       f"({name}) — routes to IOSForensicator's "
+                       f"sysdiagnose triage path."),
+                evidence=[ev],
+                hypotheses_supported=["H_DISK_ARTIFACTS"],
+            )))
+            return out
+        if (ctx.input_path.is_file()
+                and ctx.input_path.suffix.lower() in (".tar", ".zip")
+                and self._archive_looks_android(ctx.input_path)):
+            ctx.shared["evidence_kind"] = "android-archive"
+            sha = hashlib.sha256(name.encode()).hexdigest()
+            ev = EvidenceItem(
+                tool="el.triage", version="0.1.0",
+                command=f"android-archive probe {name}",
+                output_sha256=sha, output_path=str(ctx.input_path),
+                extracted_facts={"signature":
+                                  "data/system/packages.xml or data/data/"},
+            )
+            out.append(self.emit(ctx, Finding(
+                case_id=ctx.case_id, agent=self.name,
+                confidence="high",
+                claim=(f"Input is an Android extraction archive "
+                       f"({name}) — routes to AndroidForensicator's "
+                       f"ALEAPP wrap."),
+                evidence=[ev],
+                hypotheses_supported=["H_DISK_ARTIFACTS"],
+            )))
+            return out
+
         with ctx.input_path.open("rb") as f:
             head = f.read(64)
         head_path = analysis / "head.bin"
@@ -157,11 +205,72 @@ class TriageAgent(Agent):
             )))
         return out
 
+    @staticmethod
+    def _archive_looks_android(path: Path) -> bool:
+        """Cheap probe — list the archive without extracting and
+        look for canonical Android root markers in the member
+        names. Avoids a full unpack (Magnet TARs are 25 GB+)."""
+        name = path.name.lower()
+        try:
+            if name.endswith(".tar"):
+                import tarfile
+                with tarfile.open(path, "r") as tf:
+                    for i, m in enumerate(tf):
+                        if i > 200:
+                            break
+                        n = m.name.lower()
+                        if ("data/system/packages.xml" in n
+                                or "data/data/" in n
+                                or "system/build.prop" in n):
+                            return True
+            elif name.endswith(".zip"):
+                import zipfile
+                with zipfile.ZipFile(path) as zf:
+                    for i, n in enumerate(zf.namelist()):
+                        if i > 500:
+                            break
+                        nl = n.lower()
+                        if ("data/system/packages.xml" in nl
+                                or "data/data/" in nl
+                                or "system/build.prop" in nl):
+                            return True
+        except (OSError, Exception):                       # noqa: BLE001
+            return False
+        return False
+
     def _classify_directory(self, ctx: AgentContext, analysis) -> list[Finding]:
         """Classify a directory input: Windows artifacts vs Velociraptor collection vs unknown."""
         import hashlib
         out: list[Finding] = []
         d = ctx.input_path
+
+        # iTunes / Finder backup directory — Manifest.plist + Manifest.db
+        # at the top level. Distinct from a generic iOS FS tree because
+        # it's blob-keyed-by-sha1, not a real filesystem.
+        if (d / "Manifest.plist").is_file() and \
+                (d / "Manifest.db").is_file():
+            ctx.shared["evidence_kind"] = "itunes-backup"
+            sha = hashlib.sha256(
+                (d / "Manifest.plist").read_bytes()).hexdigest()
+            ev = EvidenceItem(
+                tool="el.triage", version="0.1.0",
+                command=f"itunes-backup probe {d.name}",
+                output_sha256=sha,
+                output_path=str(d / "Manifest.plist"),
+                extracted_facts={"manifest_plist": True,
+                                  "manifest_db": True},
+            )
+            out.append(self.emit(ctx, Finding(
+                case_id=ctx.case_id, agent=self.name,
+                confidence="high",
+                claim=(f"Input directory looks like an iTunes/Finder "
+                       f"backup (Manifest.plist + Manifest.db at top "
+                       f"level) — routes to IOSForensicator's "
+                       f"backup-parse path."),
+                evidence=[ev],
+                hypotheses_supported=["H_DISK_ARTIFACTS"],
+            )))
+            return out
 
         # Cheap path-shape checks FIRST. iOS/Android trees can contain
         # hundreds of thousands of files across app-data subtrees; on a
@@ -275,7 +384,6 @@ class TriageAgent(Agent):
         listing_path = analysis / "directory-listing.txt"
         listing_path.write_text("\n".join(sorted(names))[:200_000])
         sha = hashlib.sha256(listing_path.read_bytes()).hexdigest()
-        from el.schemas.finding import EvidenceItem
         ev = EvidenceItem(
             tool="el.triage", version="0.1.0",
             command=f"file inventory of {d}",

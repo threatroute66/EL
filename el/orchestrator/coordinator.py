@@ -72,7 +72,15 @@ KIND_TO_AGENT: dict[str, type[Agent]] = {
     "windows-artifacts-dir": WindowsArtifactAgent,
     "velociraptor-collection": EndpointAnalystAgent,
     "android-fs-dir": AndroidForensicatorAgent,
+    # Magnet/UFED Android extraction archive (.tar/.zip with the
+    # canonical /data layout) — same agent, ALEAPP wrap takes over
+    # from the FS-walk path.
+    "android-archive": AndroidForensicatorAgent,
     "ios-fs-dir": IOSForensicatorAgent,
+    # iTunes/Finder backup directory (Manifest.plist + Manifest.db)
+    "itunes-backup": IOSForensicatorAgent,
+    # iOS sysdiagnose tarball (sysdiagnose_*.tar.gz)
+    "ios-sysdiagnose": IOSForensicatorAgent,
     "linux-fs-dir": LinuxForensicatorAgent,
     "qnap-nas-dir": LinuxForensicatorAgent,
     "macos-fs-dir": MacOSForensicatorAgent,
