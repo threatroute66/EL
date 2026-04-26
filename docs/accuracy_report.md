@@ -58,12 +58,13 @@ external compromise — pretexting-driven exfil.
 | Measure | EL | [Basilmellow writeup](https://github.com/Basilmellow/Autopsy-M57-Linux-Forensics) | [jynxora writeup](https://github.com/jynxora/M57-Jean-Case-Analysis) |
 |---|---|---|---|
 | Leading hypothesis | ✅ BEC / pretext exfil | ❌ Invented "USB insider" (on a Win7 path — image is XP) | ❌ "Browser exploit + AIM6 bundleware", missed email vector |
-| ACH gap over runner-up | +44 (score 57 vs 13) | — | — |
+| ACH gap over runner-up | +42 (score 57 vs H_ANTI_FORENSICS 15) | — | — |
 | Exfil email identified | ✅ Two subjects ("Thanks!" + "Please send me the information now") | ❌ Invented `confidential_client_list.xls` | ❌ Named the file but missed the outbound |
 | Attachment name + size | ✅ `1_m57biz.xls (291840 B)` named inline in narrative | ❌ | ❌ |
 | Display-name vs SMTP mismatch | ✅ 4 findings (2 inbound phishing + 2 reply-chain precursors) | — | — |
 | IE5 tracker-sync URLs | ✅ 24 `__utm` session-sync patterns flagged from 4778 parsed records | — | ✅ partial |
-| Anti-forensics wiped binaries | ✅ 15 zero-size + 15 zero-timestamp system binaries | — | ✅ partial |
+| Anti-forensics wiped binaries | ✅ 15 zero-size + 15 zero-timestamp + 15 MACB-timestomp-skew | — | ✅ partial |
+| Activity envelope (post-2026-04 timeline sweep) | ✅ Case-glance window `2001-08-23 → 2008-07-20` (timestomp anomaly → exfil emails) — was previously `1995 → 2106` from Plaso bookends | — | — |
 
 EL is the only analysis of the three that reached the canonical
 conclusion, and it did so with per-finding evidence citations
@@ -82,6 +83,24 @@ that a judge can verify by recomputing `output_sha256` on each
 | Anti-forensics | ✅ 15 zero-size + 15 zero-timestamp Windows system binaries |
 | PE deep-dive | ✅ 149/150 carved PEs analyzed, 1 with `credential_dump` import signature (OpenProcess + ReadProcessMemory) |
 | Cross-case knowledge overlap | ✅ 19 Layer-3 hits linking memory IOCs to 14 prior Qakbot/Valak/Ursnif/Icedid/Ta551 pcap campaigns |
+
+### nromanoff (Find Evil 2017 / Lone Wolf — Win7, 9.6 GB, `--timeline`)
+
+The denser-case stress run for the timeline + swimlane rendering layer.
+Plaso super-timeline emitted 3.6 GB of `events.plaso` (`--parsers win_gen`,
+`--vss-stores all`).
+
+| Signal | Result |
+|---|---|
+| Leading hypothesis | H_APT_ESPIONAGE score 38 (gap +20 over H_LATERAL_MOVEMENT 18) |
+| Activity envelope (case-glance window) | 2008-04-14 → 2012-04-06 — earliest MACB-skew anomaly to latest system-binary wipe |
+| ATT&CK chain detected | 9 tactics: Initial Access (T1566.002) → Execution (T1053.005, T1569.002) → Persistence (T1543.003) → Privilege Escalation (T1055) → Defense Evasion (T1218) → Credential Access (T1003, T1003.001) → Lateral Movement (T1021.002, T1534) → C2 (T1071, T1571) → Exfiltration (T1048.003) |
+| Masqueraded svchost | ✅ `[SVCHOST_OUTSIDE_SYSTEM32]` — `/Windows/System32/dllhost/svchost.exe` (fake `dllhost` directory — classic Mr. Evil signature) |
+| Mimikatz presence | ✅ `[MIMIKATZ_NAMED_BINARY]` — file literally named "mimikatz" |
+| PsExec lateral pivot | ✅ `[PSEXEC_SERVICE_ARTIFACT]` (Prefetch + Windows root) + 7 EID 7045 service-installs of PSEXESVC, first 2012-04-03 21:11:07, last 2012-04-04 18:52:11 |
+| RDP inbound activity | ✅ TerminalServices 1149 ×75 between 2011-07-05 and 2012-04-06 |
+| Generic remote service-creation | ✅ 69 EID 7045 events over a 1-year window (2011-04-01 → 2012-04-06) |
+| Sensitive-attachment exfil chain | ✅ `nromanoff--nromanoff@star…` outbound mail flagged |
 
 ### FOR508 Stark Research Labs (SRL-2018) — 36-case corpus
 
@@ -217,6 +236,33 @@ Tool tables contain their own field names + CSV headers
 naïve regex. Fix: skip IOC extraction from the first few
 columns of CSV/TSV files + from known tool-output header
 patterns.
+
+---
+
+## Display-layer accuracy bugs — fixed in 2026-04 timeline sweep
+
+Distinct from the false-positive classes above: these were
+silent failures in the rendering path that did not invent
+claims (the underlying Findings remained correct), but they
+either suppressed evidence the analyst should have seen or
+mislabelled what was shown. Surfaced when stress-running
+m57-jean and nromanoff with `--timeline` and reading the
+output side-by-side with ground-truth scenarios. All committed
+on `main`; no per-bug regression test yet (each fix has a
+linked validation case).
+
+| Bug | Symptom | Root cause | Fix (commit) |
+|---|---|---|---|
+| Plaso super-timeline silently empty | Every `--timeline` run emitted an 86 KB `events.plaso` with zero events; downstream agents had no super-timeline to draw on | `el/skills/plaso.py` passed `<storage> <source>` as positionals; modern log2timeline rejects with rc=2 | `--storage_file` switch + source positional (`de3a6fd`) |
+| Plaso preset rejected | log2timeline error "Unknown parser or plugin names: `win10`" | Plaso 2024+ removed/renamed the `win10` preset | Changed default to `win_gen` (`04f3301`) |
+| Attack Event Timeline showed EL ingest time, not artifact time | Per-finding `evidence_time` defaulted to ~ now, not the actual event time on the host | `narrative._TIME_KEYS` missed seven keys agents already populate (`date_utc`, `mtime_utc`, `first_ts_utc`, `last_ts_utc`, `last_used_start_utc`, `last_seen_utc`, `backup_date_utc`) | Extended `_TIME_KEYS` (`de3a6fd`) |
+| Timeline stamped knowledge_lookup ingest time as artifact time | Cross-case overlap findings carry `first_seen_utc` = IOC's first ingest into `~/.el/knowledge.sqlite`; this leaked into per-case timeline as artifact time | Mining `evidence_time` from `knowledge_lookup` findings | Exclude `knowledge_lookup` from `evidence_time()` + route to `prologue` beat (`de3a6fd`) |
+| Narrative synthesis silently skipped on every Windows EVTX case | `report.md` carried `_(Narrative synthesis skipped: can't compare offset-naive and offset-aware datetimes)_` instead of the executive narrative | `lateral_movement_analyst` / `credential_analyst` / `powershell_analyst` emit `first_seen_utc` without `+00:00`; `min(candidates)` mixed naive + aware | Fold naive datetimes to UTC in `_parse_any_dt` (`90bcbc3`) |
+| Case-glance window blown out by Plaso bookends | `Artifact-time span: 1995 → 2106` from Firefox cache `Expiration Time` rows + NTFS FILE_NAME records with 0xff…ff timestamps | Plaso parses every timestamp including future/overflow; the absolute first/last bookended the case-glance | Plausible-window filter (1995-01-01 → now+1d) on Plaso CSV scan + exclude `timeline_synthesist` findings from case-glance time-range derivation (`55e1ad3`) |
+
+Validation cases:
+- `cases/m57-jean-tl-r3` — narrative collapses from no time-range to `2001-08-23 → 2008-07-20` (timestomp anomaly to exfil emails)
+- `cases/nromanoff-tl-r1` — narrative collapses from `1995 → 2022` raw to `2008-04-14 → 2012-04-06` curated; full 9-tactic kill chain renders
 
 ---
 
