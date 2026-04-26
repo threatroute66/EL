@@ -28,7 +28,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from el.skills.evtx_triage import (
-    EvtxEvent, EvtxTriageError, _summary, by_channel_eid, iter_events,
+    EvtxEvent, EvtxTriageError, _build_index_streaming,
+    _summary, by_channel_eid, iter_events,
 )
 
 
@@ -247,12 +248,13 @@ ALL_DETECTORS = (
 
 
 def run_all(csv_path: Path) -> list[CredHit]:
-    """One-shot: parse the EvtxECmd CSV and run every credential detector."""
-    events = iter_events(csv_path)
-    idx = by_channel_eid(events)
+    """One-shot: stream the EvtxECmd CSV → build (channel, EventId)
+    index → run every credential detector. Streaming index keeps
+    DC-class CSVs (5 M+ rows) within memory."""
+    idx = _build_index_streaming(csv_path)
     out: list[CredHit] = []
     for fn in ALL_DETECTORS:
-        out.extend(fn(events, idx))
+        out.extend(fn([], idx))
     return out
 
 
