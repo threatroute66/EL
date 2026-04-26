@@ -184,16 +184,25 @@ _ISO_RE = re.compile(
 
 
 def _parse_any_dt(s: str) -> datetime | None:
+    """Parse a string to a UTC-aware datetime. Naive timestamps are
+    assumed UTC — agents are required to emit UTC by EL's charter, but
+    several emit `2012-04-03 21:11:07.4823242` (no offset) which
+    `datetime.fromisoformat` produces as naive. Mixing naive + aware
+    in `min()` raises and previously aborted narrative synthesis."""
+    def _ensure_utc(dt: datetime) -> datetime:
+        if dt.tzinfo is None:
+            return dt.replace(tzinfo=timezone.utc)
+        return dt
     try:
-        return datetime.fromisoformat(s.replace("Z", "+00:00"))
+        return _ensure_utc(datetime.fromisoformat(s.replace("Z", "+00:00")))
     except Exception:
         pass
     m = _ISO_RE.search(s)
     if not m:
         return None
     try:
-        return datetime.fromisoformat(m.group(1).replace(" ", "T")
-                                       .replace("Z", "+00:00"))
+        return _ensure_utc(datetime.fromisoformat(
+            m.group(1).replace(" ", "T").replace("Z", "+00:00")))
     except Exception:
         return None
 
