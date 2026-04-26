@@ -97,12 +97,18 @@ class SysmonEvent:
     # variants Sysmon configs emit (with/without certain fields).
     @property
     def image(self) -> str:
+        # Sysmon ProcessCreate (EID 1)         → Image
+        # Sysmon ProcessAccess (EID 10)        → SourceImage
+        # Windows Security 4688 (process new)  → NewProcessName
         return (self.data.get("Image", "")
-                or self.data.get("SourceImage", ""))
+                or self.data.get("SourceImage", "")
+                or self.data.get("NewProcessName", ""))
 
     @property
     def parent_image(self) -> str:
-        return self.data.get("ParentImage", "")
+        # Sysmon → ParentImage; Security 4688 → ParentProcessName
+        return (self.data.get("ParentImage", "")
+                or self.data.get("ParentProcessName", ""))
 
     @property
     def target_image(self) -> str:
@@ -115,7 +121,8 @@ class SysmonEvent:
     @property
     def process_id(self) -> str:
         return (self.data.get("ProcessId", "")
-                or self.data.get("SourceProcessId", ""))
+                or self.data.get("SourceProcessId", "")
+                or self.data.get("NewProcessId", ""))
 
     @property
     def parent_process_id(self) -> str:
@@ -123,7 +130,9 @@ class SysmonEvent:
 
     @property
     def user(self) -> str:
-        return self.data.get("User", "")
+        # Sysmon → User; Security 4688 → SubjectUserName
+        return (self.data.get("User", "")
+                or self.data.get("SubjectUserName", ""))
 
     @property
     def query_name(self) -> str:
@@ -292,13 +301,15 @@ def find_process_creates(events: list[SysmonEvent],
                           *, image_substr: str | None = None,
                           cmdline_substr: str | None = None,
                           ) -> list[SysmonEvent]:
-    """ProcessCreate (EID 1) filtered by image basename or command-
-    line substring. Both filters are case-insensitive."""
+    """ProcessCreate filtered by image basename or command-line
+    substring. Accepts both Sysmon EID 1 and Windows Security
+    EID 4688 — the matrix's coverage corpus mixes both shapes
+    and the field accessors normalise them."""
     out: list[SysmonEvent] = []
     img_n = (image_substr or "").lower() or None
     cl_n = (cmdline_substr or "").lower() or None
     for e in events:
-        if e.eid != 1:
+        if e.eid not in (1, 4688):
             continue
         img = e.image.lower()
         cl = e.command_line.lower()
