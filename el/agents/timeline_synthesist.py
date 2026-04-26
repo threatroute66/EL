@@ -92,9 +92,71 @@ class TimelineSynthesistAgent(Agent):
             )))
             return out
 
+        # Mine first / last event time from psort output so the
+        # super-timeline lands on the kill-chain swimlane. l2tcsv
+        # column 0 is `date` (MM/DD/YYYY), column 1 is `time` (HH:MM:SS),
+        # column 2 is timezone. Header row is the first line. We scan
+        # forward + backward for the first / last parseable timestamp
+        # rather than loading the whole CSV.
+        first_ts, last_ts = _l2tcsv_time_range(ps.output_path)
+        ts_facts: dict = {"phase": "render"}
+        if first_ts:
+            ts_facts["first_ts_utc"] = first_ts
+        if last_ts and last_ts != first_ts:
+            ts_facts["last_ts_utc"] = last_ts
         out.append(self.emit(ctx, Finding(
             case_id=ctx.case_id, agent=self.name, confidence="high",
-            claim=f"Super-timeline rendered: {ps.output_path.name}",
-            evidence=[ps.as_evidence({"phase": "render"})],
+            claim=(f"Super-timeline rendered: {ps.output_path.name}"
+                   + (f" — events span {first_ts} → {last_ts}"
+                      if first_ts else "")),
+            evidence=[ps.as_evidence(ts_facts)],
         )))
         return out
+
+
+def _l2tcsv_time_range(csv_path) -> tuple[str | None, str | None]:
+    """Scan an l2tcsv for the earliest + latest event timestamps.
+    Reads forward through the head and backward through the tail
+    rather than loading the whole CSV — Plaso super-timelines are
+    typically hundreds of MB to multi-GB."""
+    from datetime import datetime, timezone
+    def _parse(date_field: str, time_field: str) -> str | None:
+        try:
+            dt = datetime.strptime(
+                f"{date_field.strip()} {time_field.strip()}",
+                "%m/%d/%Y %H:%M:%S")
+            return dt.replace(tzinfo=timezone.utc).isoformat()
+        except Exception:
+            return None
+    first_ts: str | None = None
+    last_ts: str | None = None
+    try:
+        with open(csv_path, "r", errors="ignore") as f:
+            header = f.readline()
+            del header
+            for line in f:
+                parts = line.split(",", 3)
+                if len(parts) < 2:
+                    continue
+                t = _parse(parts[0], parts[1])
+                if t:
+                    first_ts = t
+                    break
+        # Tail scan — walk back for the last parseable line.
+        with open(csv_path, "rb") as f:
+            f.seek(0, 2)
+            size = f.tell()
+            chunk = min(64 * 1024, size)
+            f.seek(size - chunk)
+            tail = f.read().decode("utf-8", errors="ignore")
+            for line in reversed(tail.splitlines()):
+                parts = line.split(",", 3)
+                if len(parts) < 2:
+                    continue
+                t = _parse(parts[0], parts[1])
+                if t:
+                    last_ts = t
+                    break
+    except Exception:
+        return (None, None)
+    return (first_ts, last_ts)

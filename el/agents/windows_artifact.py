@@ -329,21 +329,31 @@ class WindowsArtifactAgent(Agent):
             sample = "; ".join(
                 f"[{s.kind}] {s.url[:80]} ({s.filename})"
                 for s in suspects[:5])
+            # Earliest modified_utc across suspects → top-level mtime_utc
+            # so the kill-chain swimlane can place this finding on the
+            # real-world clock. Per-suspect modified_utc is nested in
+            # top_suspects[]; evidence_time mining only inspects
+            # top-level keys, so an explicit lift is required.
+            mtimes = [s.modified_utc for s in suspects if s.modified_utc]
+            facts: dict = {
+                "top_suspects": [
+                    {"kind": s.kind, "url": s.url[:200],
+                     "filename": s.filename,
+                     "modified_utc": s.modified_utc,
+                     "note": s.note}
+                    for s in suspects[:30]
+                ],
+                "total_suspects": len(suspects),
+            }
+            if mtimes:
+                facts["mtime_utc"] = min(mtimes)
+                facts["mtime_latest_utc"] = max(mtimes)
             ev = EvidenceItem(
                 tool="el.ie_cache", version="0.1.0",
                 command="flag_suspects over parsed IE5 records",
                 output_sha256="0" * 64,
                 output_path=str(out_dir),
-                extracted_facts={
-                    "top_suspects": [
-                        {"kind": s.kind, "url": s.url[:200],
-                         "filename": s.filename,
-                         "modified_utc": s.modified_utc,
-                         "note": s.note}
-                        for s in suspects[:30]
-                    ],
-                    "total_suspects": len(suspects),
-                },
+                extracted_facts=facts,
             )
             has_tracker = any(s.kind == "tracker_sync" for s in suspects)
             hyp = (["H_INITIAL_ACCESS_WEB", "H_BEC_ACCOUNT_TAKEOVER"]

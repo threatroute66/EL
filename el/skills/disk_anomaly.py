@@ -21,6 +21,13 @@ class PathHit:
     matches: list[str]
     hypotheses: list[str]
     attack_techniques: list[tuple[str, str]] = field(default_factory=list)
+    # Earliest / latest non-zero mtime (Unix seconds) across matched
+    # rows when the detector parses bodyfile columns. None for path-
+    # pattern matches that scan text without line-level structure.
+    # Populated by row-wise detectors so anomaly findings can carry
+    # real artifact time on the kill-chain swimlane.
+    earliest_unix: int | None = None
+    latest_unix: int | None = None
 
 
 @dataclass
@@ -286,8 +293,10 @@ def _scan_bodyfile_rowwise(text: str) -> list[PathHit]:
        catches the realistic case.
     """
     zero_size: list[str] = []
+    zero_size_mtimes: list[int] = []
     zero_ts: list[str] = []
     macb_skew: list[str] = []
+    macb_skew_mtimes: list[int] = []
     # Floor: crtime more than SEVEN_DAYS before mtime is the trip point.
     _SKEW_FLOOR_SECONDS = 7 * 24 * 60 * 60
     for line in text.splitlines():
@@ -314,6 +323,8 @@ def _scan_bodyfile_rowwise(text: str) -> list[PathHit]:
         if is_system_path and size == 0 and not is_fname_attr:
             if len(zero_size) < 15:
                 zero_size.append(name[-120:])
+            if mtime > 0:
+                zero_size_mtimes.append(mtime)
         if (is_system_path and atime == mtime == ctime == crtime == 0
                 and not is_fname_attr):
             if len(zero_ts) < 15:
@@ -328,6 +339,7 @@ def _scan_bodyfile_rowwise(text: str) -> list[PathHit]:
             if len(macb_skew) < 15:
                 days = (mtime - crtime) // 86400
                 macb_skew.append(f"{name[-120:]} (B→M skew {days} days)")
+            macb_skew_mtimes.append(mtime)
     hits: list[PathHit] = []
     if zero_size:
         hits.append(PathHit(
@@ -343,6 +355,8 @@ def _scan_bodyfile_rowwise(text: str) -> list[PathHit]:
                 ("T1565.001",
                   "Stored Data Manipulation"),
             ],
+            earliest_unix=min(zero_size_mtimes) if zero_size_mtimes else None,
+            latest_unix=max(zero_size_mtimes) if zero_size_mtimes else None,
         ))
     if zero_ts:
         hits.append(PathHit(
@@ -372,6 +386,8 @@ def _scan_bodyfile_rowwise(text: str) -> list[PathHit]:
             attack_techniques=[
                 ("T1070.006", "Indicator Removal: Timestomp"),
             ],
+            earliest_unix=min(macb_skew_mtimes) if macb_skew_mtimes else None,
+            latest_unix=max(macb_skew_mtimes) if macb_skew_mtimes else None,
         ))
     return hits
 

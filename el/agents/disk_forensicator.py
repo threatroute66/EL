@@ -706,12 +706,23 @@ class DiskForensicatorAgent(Agent):
             return out
 
         import hashlib
+        from datetime import datetime as _dt, timezone as _tz
         for h in hits:
             sample = "; ".join(h.matches[:3])
             facts = {"pattern_id": h.pattern_id,
                      "match_count": len(h.matches),
                      "samples": h.matches[:5],
                      "partition": part_label}
+            # Surface earliest mtime as artifact time so the kill-chain
+            # swimlane and Attack Event Timeline can place this anomaly
+            # on the real-world clock. Only row-wise detectors populate
+            # earliest_unix; path-pattern hits leave it None.
+            if h.earliest_unix:
+                facts["mtime_utc"] = _dt.fromtimestamp(
+                    h.earliest_unix, tz=_tz.utc).isoformat()
+            if h.latest_unix and h.latest_unix != h.earliest_unix:
+                facts["mtime_latest_utc"] = _dt.fromtimestamp(
+                    h.latest_unix, tz=_tz.utc).isoformat()
             ev = EvidenceItem(
                 tool="el.disk_anomaly", version="0.1.0",
                 command=f"disk_anomaly.scan_file({bodyfile_path.name})",
