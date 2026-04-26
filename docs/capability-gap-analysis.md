@@ -623,20 +623,37 @@ SE AFU dump. **Open items** (shipped April 2026):
   Sysdiagnose Logs/`.
 
 - ✅ **`el.skills.yaffs2`** — MTD/YAFFS2 phone-dump support.
-  Wraps the SIFT-bundled `unyaffs` CLI (added to
-  `provisioning/apt-packages.txt`); structural detector
-  identifies YAFFS2 partitions by stride-aligned object
-  headers (parent_id range + null-padded ASCII name +
-  multiple-stride support: 512 / 1024 / 2048 / 4096 B
-  pages). `walk_bundle()` chains: detect → extract → merge
-  partitions into a unified FS tree → standard
-  android-artifacts walker. Validated against
+  Two-stage extraction chain:
+    1. **`unyaffs`** (Whitechapel, apt — added to
+       `provisioning/apt-packages.txt`); 6 canonical Android
+       NAND geometries (`-b -c 2 -s 64`, `-c 2 -s 64`, …,
+       autodetect).
+    2. **`unyaffs2`** (yaffs2utils, source-built — `install.sh`
+       clones + builds to `/opt/yaffs2utils/`); 6 page+spare
+       combos (`-p 2048 -s 64`, `-p 2048 -s 32`, …,
+       `-p 4096 -s 128`, `-p 512 -s 16`, autodetect).
+  Stage 2 fires when stage 1 produces 0 files — handles the
+  long tail of NAND layouts unyaffs 0.9.7 doesn't recognise.
+  Structural detector identifies YAFFS2 partitions by
+  stride-aligned object headers (parent_id range +
+  null-padded ASCII name + 512 / 1024 / 2048 / 4096 B page
+  support). `walk_bundle()` chains: detect → extract → merge
+  partitions into a unified FS tree (special-file-aware
+  copy that skips FIFOs / sockets / device nodes that
+  unyaffs2 faithfully preserved) → role detection
+  (system / data / cache from extracted shape) → standard
+  android-artifacts walker. Validated end-to-end against
   `/mnt/hgfs/hackathon/Case2/` (2011-vintage Android phone,
-  10 mtd*.dd partitions): mtd6 (system: linker /
-  printenv / debuggerd / wipe) + mtd8 (userdata:
-  cc_data / databases / mailstore.gmail.com.db-journal /
-  accounts.db) detected; bootloader / kernel / cache
-  partitions correctly stay False.
+  10 mtd*.dd partitions): mtd6 extracted via unyaffs (615
+  files, 118 MB system partition); **mtd8 extracted via
+  unyaffs2 (1,997 files, 182 MB userdata partition** with
+  `accounts.db`, `packages.xml`, KakaoTalk + Google Maps +
+  YouTube + 30+ per-app data dirs); 2 FIFOs/sockets skipped
+  during merge (low-confidence note). Standard android-
+  artifacts walker recognises both extracted shapes:
+  `anr_traces=1, app_contacts_files=1,
+  app_telephony_files=2, system_app_entries=140,
+  system_build_prop=1`.
 
   **Truly corpus-gated** (still open): full
   `system_logs.logarchive` Unified Log replay (Apple-only

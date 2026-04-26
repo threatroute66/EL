@@ -114,6 +114,8 @@ def survey() -> list[ToolStatus]:
         probe_simple("tshark", ["-v"]),
         probe_simple("foremost", ["-V"]),
         probe_simple("photorec"),
+        probe_simple("unyaffs"),
+        _probe_path("/opt/yaffs2utils/unyaffs2", "unyaffs2"),
         probe_simple("ssdeep", ["-V"]),
         probe_simple("hashdeep", ["-V"]),
         probe_simple("exiftool", ["-ver"]),

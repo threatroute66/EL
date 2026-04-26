@@ -85,17 +85,22 @@ def test_is_yaffs2_missing_file(tmp_path):
 
 # --- extract -----------------------------------------------------------
 
-def test_extract_unavailable_when_binary_missing(tmp_path,
-                                                   monkeypatch):
+def test_extract_unavailable_when_both_binaries_missing(
+        tmp_path, monkeypatch):
+    """Neither unyaffs nor unyaffs2 installed → install hint."""
     monkeypatch.setattr(y, "_unyaffs_bin", lambda: None)
+    monkeypatch.setattr(y, "_unyaffs2_bin", lambda: None)
     img = tmp_path / "x.dd"; img.write_bytes(b"x")
     r = y.extract(img, tmp_path / "out")
     assert r.success is False
-    assert "unyaffs not installed" in r.error
+    assert "unyaffs" in r.error
+    assert "unyaffs2" in r.error
+    assert "install.sh" in r.error or "apt-get" in r.error
 
 
 def test_extract_missing_image(tmp_path, monkeypatch):
     monkeypatch.setattr(y, "_unyaffs_bin", lambda: "/fake/unyaffs")
+    monkeypatch.setattr(y, "_unyaffs2_bin", lambda: None)
     r = y.extract(tmp_path / "absent.dd", tmp_path / "out")
     assert r.success is False
     assert "image not found" in r.error
@@ -128,6 +133,7 @@ def _make_fake_run(extract_action=None,
 
 def test_extract_subprocess_success(tmp_path, monkeypatch):
     monkeypatch.setattr(y, "_unyaffs_bin", lambda: "/fake/unyaffs")
+    monkeypatch.setattr(y, "_unyaffs2_bin", lambda: None)
     img = tmp_path / "x.dd"; img.write_bytes(b"x" * 1024)
 
     def make_files(cmd):
@@ -145,42 +151,83 @@ def test_extract_subprocess_success(tmp_path, monkeypatch):
     assert r.rc == 0
     assert r.file_count == 2
     assert r.bytes_extracted > 0
+    assert "unyaffs" in r.error                # success note carries tool name
+
+
+def test_extract_falls_through_to_unyaffs2_when_unyaffs_fails(
+        tmp_path, monkeypatch):
+    """When unyaffs produces 0 files across all geometries, the
+    wrapper falls through to unyaffs2 (yaffs2utils) — the
+    Case2-mtd8-style scenario where userdata has a layout
+    unyaffs 0.9.7 doesn't recognise but unyaffs2 does."""
+    monkeypatch.setattr(y, "_unyaffs_bin", lambda: "/fake/unyaffs")
+    monkeypatch.setattr(y, "_unyaffs2_bin",
+                         lambda: "/fake/unyaffs2")
+    img = tmp_path / "x.dd"; img.write_bytes(b"x" * 1024)
+
+    def fake_run(cmd, capture_output, text, timeout):
+        # unyaffs -d probe → no layout
+        if "-d" in cmd:
+            return subprocess.CompletedProcess(
+                args=cmd, returncode=0,
+                stdout="-- none --", stderr="")
+        # unyaffs invocations: 0 files (every geometry fails)
+        if cmd[0] == "/fake/unyaffs":
+            return subprocess.CompletedProcess(
+                args=cmd, returncode=1, stdout="", stderr="")
+        # unyaffs2 invocation: extract files into out_dir
+        if cmd[0] == "/fake/unyaffs2":
+            out_dir = Path(cmd[-1])
+            out_dir.mkdir(parents=True, exist_ok=True)
+            (out_dir / "data").mkdir(exist_ok=True)
+            (out_dir / "data" / "x.txt").write_text("ok")
+            return subprocess.CompletedProcess(
+                args=cmd, returncode=0, stdout="", stderr="")
+        return subprocess.CompletedProcess(
+            args=cmd, returncode=1, stdout="", stderr="")
+
+    monkeypatch.setattr(y.subprocess, "run", fake_run)
+    r = y.extract(img, tmp_path / "out")
+    assert r.success is True
+    assert r.file_count == 1
+    assert "unyaffs2" in r.error                # success note records tool
 
 
 def test_extract_subprocess_failure(tmp_path, monkeypatch):
+    """Both extractors fail → "all tools failed" diagnostic."""
     monkeypatch.setattr(y, "_unyaffs_bin", lambda: "/fake/unyaffs")
+    monkeypatch.setattr(y, "_unyaffs2_bin",
+                         lambda: "/fake/unyaffs2")
     img = tmp_path / "x.dd"; img.write_bytes(b"x")
-    # Every fallback geometry returns rc=1 + bad-header stderr,
-    # producing 0 files. Wrapper reports the failure with the
-    # last-stderr context.
     monkeypatch.setattr(y.subprocess, "run",
                          _make_fake_run(extract_action=None,
                                           extract_rc=1,
                                           extract_stderr=(
-                                              "unyaffs: bad header")))
+                                              "bad header")))
     r = y.extract(img, tmp_path / "out")
     assert r.success is False
-    assert "bad header" in r.error
-    # Wrapper reports how many layouts were tried
-    assert "layout" in r.error.lower()
+    assert "all tools" in r.error.lower()
+    assert "unyaffs" in r.error and "unyaffs2" in r.error
 
 
 def test_extract_returns_zero_but_no_files(tmp_path, monkeypatch):
-    """unyaffs returns 0 but produces no files (geometry
-    mismatch). Wrapper iterates all fallbacks; when none
-    produce files, the error explains that."""
+    """Both extractors return rc=0 but produce no files —
+    wrapper reports "all tools failed"."""
     monkeypatch.setattr(y, "_unyaffs_bin", lambda: "/fake/unyaffs")
+    monkeypatch.setattr(y, "_unyaffs2_bin",
+                         lambda: "/fake/unyaffs2")
     img = tmp_path / "x.dd"; img.write_bytes(b"x")
     monkeypatch.setattr(y.subprocess, "run",
                          _make_fake_run(extract_action=None,
                                           extract_rc=0))
     r = y.extract(img, tmp_path / "out")
     assert r.success is False
-    assert "layout" in r.error.lower()
+    assert "all tools" in r.error.lower()
 
 
 def test_extract_timeout(tmp_path, monkeypatch):
     monkeypatch.setattr(y, "_unyaffs_bin", lambda: "/fake/unyaffs")
+    monkeypatch.setattr(y, "_unyaffs2_bin", lambda: None)
     img = tmp_path / "x.dd"; img.write_bytes(b"x")
 
     def raise_timeout(*a, **kw):
@@ -189,7 +236,12 @@ def test_extract_timeout(tmp_path, monkeypatch):
     monkeypatch.setattr(y.subprocess, "run", raise_timeout)
     r = y.extract(img, tmp_path / "out", timeout=1)
     assert r.success is False
-    assert "timed out" in r.error
+    # Timeout from stage 1 short-circuits — the message either
+    # carries "timed out" (stage 1 returned the error directly)
+    # or "all tools failed" (stage 2 wasn't installed so we
+    # fall through). Either way, success is False.
+    assert ("timed out" in r.error
+             or "all tools" in r.error.lower())
 
 
 # --- walk_bundle -------------------------------------------------------

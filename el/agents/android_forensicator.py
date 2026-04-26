@@ -30,6 +30,25 @@ from el.skills import android_artifacts as aa
 from el.skills import android_triage as at
 
 
+def _describe_node(p: Path) -> str:
+    """One-word label for a non-regular FS node — used in YAFFS2
+    merge error strings."""
+    try:
+        st = p.stat()
+    except OSError:
+        return "unknown"
+    import stat
+    if stat.S_ISFIFO(st.st_mode):
+        return "FIFO"
+    if stat.S_ISSOCK(st.st_mode):
+        return "socket"
+    if stat.S_ISCHR(st.st_mode):
+        return "char-device"
+    if stat.S_ISBLK(st.st_mode):
+        return "block-device"
+    return "special"
+
+
 _CONFIDENCE_BY_FAMILY = {
     "rooted_device":              "medium",
     "sideloaded_apk":             "high",
@@ -191,6 +210,54 @@ class AndroidForensicatorAgent(Agent):
     }
 
     @staticmethod
+    def _merge_yaffs2_tree(src: Path, dst: Path) -> list[str]:
+        """Walk a YAFFS2 extract and copy every regular file +
+        directory into ``dst``, skipping special files (FIFOs,
+        sockets, character devices) that ``shutil.copy*`` can't
+        handle. Returns a list of human-readable per-file error
+        strings (empty when the merge was clean).
+
+        Old Android NAND dumps faithfully preserved by unyaffs2
+        carry FIFOs (e.g. ``misc/ril/pppd-notifier.fifo``) and
+        Unix domain sockets (``misc/ril/RIL_RDS_SOCKET``) — these
+        are runtime IPC nodes, not data, so we skip them rather
+        than letting copytree explode."""
+        import shutil as _shutil
+        errors: list[str] = []
+        src = Path(src)
+        for path in src.rglob("*"):
+            try:
+                rel = path.relative_to(src)
+            except ValueError:
+                continue
+            target = dst / rel
+            try:
+                if path.is_symlink():
+                    # Preserve symlinks as link content rather than
+                    # following them.
+                    if target.exists() or target.is_symlink():
+                        continue
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    target.symlink_to(path.readlink())
+                elif path.is_dir():
+                    target.mkdir(parents=True, exist_ok=True)
+                elif path.is_file():
+                    if target.exists():
+                        continue
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    _shutil.copy2(path, target)
+                else:
+                    # FIFO, socket, character/block device —
+                    # log + skip.
+                    errors.append(
+                        f"skipped special file: "
+                        f"{rel} ({_describe_node(path)})")
+            except OSError as e:
+                errors.append(
+                    f"copy {rel} → {target.name}: {e}")
+        return errors
+
+    @staticmethod
     def _yaffs2_role(extract_root: Path) -> str | None:
         """Sniff the Android partition role from a YAFFS2 extract's
         top-level directories. Returns ``"system"``, ``"data"``,
@@ -287,11 +354,17 @@ class AndroidForensicatorAgent(Agent):
             )
             if ex.success:
                 any_success = True
+                # ex.error on success carries the success note —
+                # "extracted via unyaffs (-b -c 2 -s 64)" or
+                # "extracted via unyaffs2 (-p 2048 -s 64)" —
+                # plumb it into the Finding claim so the analyst
+                # sees which extractor + geometry won.
+                tool_note = ex.error or "via extractor"
                 out.append(self.emit(ctx, Finding(
                     case_id=ctx.case_id, agent=self.name,
                     confidence="high",
                     claim=(f"YAFFS2 partition {ex.image_path.name} "
-                           f"extracted via unyaffs: "
+                           f"{tool_note}: "
                            f"{ex.file_count} file(s), "
                            f"{ex.bytes_extracted:,} byte(s)."),
                     evidence=[ev],
@@ -308,48 +381,29 @@ class AndroidForensicatorAgent(Agent):
                 # etc.) can find its markers regardless of which
                 # partition contributed them.
                 role = self._yaffs2_role(ex.out_dir)
-                try:
-                    import shutil as _shutil
-                    if role:
-                        # Re-mount under merged/<role>/...
-                        target = merged / role
-                        target.mkdir(parents=True, exist_ok=True)
-                        for child in ex.out_dir.iterdir():
-                            child_target = target / child.name
-                            if child.is_dir():
-                                _shutil.copytree(
-                                    child, child_target,
-                                    symlinks=False,
-                                    dirs_exist_ok=True)
-                            else:
-                                if not child_target.exists():
-                                    _shutil.copy2(
-                                        child, child_target)
-                    else:
-                        # Unknown role — pour the content directly
-                        # into merged/ so at least artefact-level
-                        # matches still fire on filename basenames.
-                        for child in ex.out_dir.iterdir():
-                            child_target = merged / child.name
-                            if child.is_dir():
-                                _shutil.copytree(
-                                    child, child_target,
-                                    symlinks=False,
-                                    dirs_exist_ok=True)
-                            else:
-                                if not child_target.exists():
-                                    _shutil.copy2(
-                                        child, child_target)
-                except OSError as e:
+                target_root = (merged / role) if role else merged
+                target_root.mkdir(parents=True, exist_ok=True)
+                merge_errs = self._merge_yaffs2_tree(
+                    ex.out_dir, target_root)
+                if merge_errs:
+                    # Most errors are special-file warts (FIFOs /
+                    # sockets like pppd-notifier.fifo /
+                    # RIL_RDS_SOCKET that unyaffs2 faithfully
+                    # preserved from the original NAND). They're
+                    # noise for the artefacts walker — log them
+                    # but don't fail the whole extract.
                     out.append(self.emit(ctx, Finding(
                         case_id=ctx.case_id, agent=self.name,
-                        confidence="insufficient",
+                        confidence="low",
                         claim=(f"YAFFS2 merge of "
-                               f"{ex.image_path.name} into "
-                               f"{merged.name}/ failed: {e}. "
-                               f"Per-partition extract is still "
-                               f"available at "
-                               f"{ex.out_dir.relative_to(ctx.case_dir)}."),
+                               f"{ex.image_path.name} skipped "
+                               f"{len(merge_errs)} special-file "
+                               f"entries (FIFOs / sockets / "
+                               f"unreadable nodes); rest of "
+                               f"the partition merged into "
+                               f"{merged.name}/{role or ''}. "
+                               f"Sample: "
+                               f"{merge_errs[0][:140]}"),
                         evidence=[ev],
                     )))
             else:

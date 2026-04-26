@@ -96,15 +96,16 @@ def test_triage_requires_minimum_partitions(tmp_path, monkeypatch):
 
 # --- Android agent: YAFFS2 wire-up --------------------------------------
 
-def test_android_agent_unyaffs_missing_emits_per_partition_blockers(
+def test_android_agent_extractors_missing_emits_per_partition_blockers(
         tmp_path, monkeypatch):
-    """When unyaffs is missing entirely, each YAFFS2 partition the
-    detector flags should produce one insufficient Finding pointing
-    at the install path."""
+    """When BOTH unyaffs and unyaffs2 are missing, each YAFFS2
+    partition the detector flags produces one insufficient
+    Finding pointing at the install path."""
     src, m = _make_case(tmp_path, monkeypatch, "t-andr-mtd-noun")
     bundle = tmp_path / "bundle"
     _make_mtd_bundle(bundle, with_yaffs=True)
     monkeypatch.setattr(y_skill, "_unyaffs_bin", lambda: None)
+    monkeypatch.setattr(y_skill, "_unyaffs2_bin", lambda: None)
     ctx = AgentContext(
         case_id="t-andr-mtd-noun", case_dir=Path(m.case_dir),
         input_path=bundle, manifest=m.__dict__,
@@ -113,7 +114,7 @@ def test_android_agent_unyaffs_missing_emits_per_partition_blockers(
     blockers = [f for f in findings
                  if f.confidence == "insufficient"
                  and "extract failed" in f.claim
-                 and "unyaffs not installed" in f.claim]
+                 and ("unyaffs" in f.claim or "install.sh" in f.claim)]
     assert blockers
 
 
@@ -125,6 +126,7 @@ def test_android_agent_no_yaffs_partitions_emits_blocker(
     src, m = _make_case(tmp_path, monkeypatch, "t-andr-mtd-noyaffs")
     bundle = tmp_path / "bundle"
     _make_mtd_bundle(bundle, with_yaffs=False)
+    monkeypatch.setattr(y_skill, "_unyaffs2_bin", lambda: None)
     ctx = AgentContext(
         case_id="t-andr-mtd-noyaffs", case_dir=Path(m.case_dir),
         input_path=bundle, manifest=m.__dict__,
@@ -146,6 +148,7 @@ def test_android_agent_extracts_and_chains_to_artifacts_walker(
     _make_mtd_bundle(bundle, with_yaffs=True)
     monkeypatch.setattr(y_skill, "_unyaffs_bin",
                          lambda: "/fake/unyaffs")
+    monkeypatch.setattr(y_skill, "_unyaffs2_bin", lambda: None)
 
     def fake_unyaffs(cmd, capture_output, text, timeout):
         # Layout autodetect probe: return "no layout" so we go

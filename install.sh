@@ -76,6 +76,41 @@ else
     log "skipping apt phase"
 fi
 
+# --- yaffs2utils (source-built) ---------------------------------------------
+# The Debian-packaged `unyaffs` covers the canonical 2K+64B Android NAND
+# layout, but real-world userdata partitions sometimes use a layout it
+# doesn't recognise. yaffs2utils ships unyaffs2/mkyaffs2/unspare2 with
+# explicit -p/-s page+spare flags that handle the long tail of NAND
+# geometries. We clone + build to /opt/yaffs2utils/ so the YAFFS2 skill's
+# stage-2 fallback finds it. Idempotent — re-runs noop when already built.
+Y2U_DIR="/opt/yaffs2utils"
+if [[ ${skip_apt} -eq 0 ]] && command -v gcc >/dev/null 2>&1; then
+    if [[ ! -x "${Y2U_DIR}/unyaffs2" ]]; then
+        log "building yaffs2utils from source -> ${Y2U_DIR}"
+        Y2U_BUILD="$(mktemp -d)"
+        if git clone --depth 1 https://github.com/justsoso8/yaffs2utils.git \
+                "${Y2U_BUILD}/yaffs2utils" >/dev/null 2>&1; then
+            (cd "${Y2U_BUILD}/yaffs2utils/src" && make -s 2>&1 | tail -20) \
+                || log "yaffs2utils build failed (gcc warnings?) — continuing"
+            sudo mkdir -p "${Y2U_DIR}"
+            for bin in unyaffs2 mkyaffs2 unspare2; do
+                if [[ -x "${Y2U_BUILD}/yaffs2utils/src/${bin}" ]]; then
+                    sudo cp -p "${Y2U_BUILD}/yaffs2utils/src/${bin}" \
+                        "${Y2U_DIR}/${bin}"
+                fi
+            done
+            rm -rf "${Y2U_BUILD}"
+            if [[ -x "${Y2U_DIR}/unyaffs2" ]]; then
+                log "yaffs2utils installed at ${Y2U_DIR}/"
+            fi
+        else
+            log "yaffs2utils clone failed — skill's unyaffs2 fallback unavailable"
+        fi
+    else
+        log "yaffs2utils already at ${Y2U_DIR} — skipping build"
+    fi
+fi
+
 # --- venv phase -------------------------------------------------------------
 if [[ ! -d "${EL_DIR}/.venv" ]]; then
     log "creating Python venv at ${EL_DIR}/.venv"
