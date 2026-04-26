@@ -167,6 +167,14 @@ class Coordinator:
             # these every case just adds noise to the report.
             if rarity.bucket == "ubiquitous":
                 continue
+            # Partition prior observations into real EL cases vs
+            # external-feed pulls (case_id starts with "feed:"). Both
+            # surface in the Finding, but the claim text and
+            # extracted_facts call out feed provenance separately so
+            # the analyst doesn't read "observed in N cases" when
+            # really the source is a MISP/TAXII curator's list.
+            feed_cases = [c for c in cases if c.startswith("feed:")]
+            real_cases = [c for c in cases if not c.startswith("feed:")]
             ev = EvidenceItem(
                 tool="el.knowledge", version="0.1.0",
                 command=f"kb.lookup_iocs([{value}])",
@@ -175,22 +183,50 @@ class Coordinator:
                 extracted_facts={
                     "ioc_value": value,
                     "ioc_type": ioc_type,
-                    "previously_seen_in_cases": cases,
-                    "first_seen_utc": min(o["observed_utc"] for o in observations),
+                    "previously_seen_in_cases": real_cases,
+                    "external_feed_sources": feed_cases,
+                    "first_seen_utc": min(
+                        o["observed_utc"] for o in observations),
                     "rarity_bucket": rarity.bucket,
                     "prior_case_count": rarity.case_count,
                 },
+                # Feed-sourced priors carry the threat_feeds tier (C2 —
+                # fairly reliable, probably true). Real-case priors
+                # inherit the original analyst-vetted tier (B2).
+                source_reliability="C" if feed_cases and not real_cases else "B",
+                info_credibility="2",
             )
+            if feed_cases and not real_cases:
+                # Feed-only prior — name the feed source, not the
+                # case count.
+                feed_label = ", ".join(c[len("feed:"):] for c in feed_cases[:2])
+                claim = (
+                    f"External-feed match [{rarity.bucket}]: {ioc_type} "
+                    f"`{value[:80]}` listed by {feed_label}"
+                    f"{' …' if len(feed_cases) > 2 else ''}. "
+                    "External threat-intel feeds are reputable curators "
+                    "but EL did not observe this IOC directly in another "
+                    "case — confidence stays 'low' for the same reason "
+                    "real cross-case overlap does."
+                )
+                agent_name = "knowledge_lookup"
+            else:
+                hybrid = (f", plus {len(feed_cases)} external feed(s)"
+                          if feed_cases else "")
+                claim = (
+                    f"Cross-case overlap [{rarity.bucket}]: {ioc_type} "
+                    f"`{value[:80]}` previously observed in "
+                    f"{len(real_cases)} case(s) "
+                    f"({', '.join(real_cases[:3])}"
+                    f"{' …' if len(real_cases) > 3 else ''}{hybrid}). "
+                    "Suggestive only — confidence stays 'low' because "
+                    "cross-case overlap is context, not evidence for this "
+                    "case's hypotheses."
+                )
+                agent_name = "knowledge_lookup"
             f = Finding(
-                case_id=ctx.case_id, agent="knowledge_lookup",
-                claim=(f"Cross-case overlap [{rarity.bucket}]: {ioc_type} "
-                       f"`{value[:80]}` previously observed in "
-                       f"{rarity.case_count} case(s) "
-                       f"({', '.join(cases[:3])}"
-                       f"{' …' if len(cases) > 3 else ''}). "
-                       "Suggestive only — confidence stays 'low' because cross-case "
-                       "overlap is context, not evidence for this case's hypotheses."),
-                confidence="low", evidence=[ev],
+                case_id=ctx.case_id, agent=agent_name,
+                claim=claim, confidence="low", evidence=[ev],
             )
             ledger_insert(ctx.case_dir, f)
 

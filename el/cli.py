@@ -108,10 +108,30 @@ def seal_verify_cmd(
 
 @app.command("knowledge")
 def knowledge_cmd(
-    action: str = typer.Argument(..., help="stats | lookup <value>"),
+    action: str = typer.Argument(...,
+        help="stats | lookup <value> | pull-feed --backend <misp|taxii>"),
     value: str = typer.Argument(None, help="IOC value (for lookup action)"),
+    backend: str = typer.Option(None, "--backend",
+        help="Feed backend (misp | taxii) for pull-feed action"),
+    server: str = typer.Option(None, "--server",
+        help="Feed server URL (else env EL_MISP_URL / EL_TAXII_URL)"),
+    api_key: str = typer.Option(None, "--api-key",
+        help="MISP API key (else env EL_MISP_KEY)"),
+    collection: str = typer.Option(None, "--collection",
+        help="TAXII collection ID (else env EL_TAXII_COLLECTION)"),
+    username: str = typer.Option(None, "--username",
+        help="TAXII basic-auth user (else env EL_TAXII_USER)"),
+    password: str = typer.Option(None, "--password",
+        help="TAXII basic-auth password (else env EL_TAXII_PASS)"),
+    since_days: int = typer.Option(30, "--since-days",
+        help="MISP: pull attributes from the last N days (default 30)"),
+    limit: int = typer.Option(5000, "--limit",
+        help="Max IOCs to pull per request (default 5000)"),
+    insecure: bool = typer.Option(False, "--insecure",
+        help="Skip TLS verification (self-signed internal feeds)"),
 ) -> None:
-    """Query the institutional knowledge store (~/.el/knowledge.sqlite)."""
+    """Query / write the institutional knowledge store
+    (~/.el/knowledge.sqlite)."""
     from el import knowledge as kb
     if action == "stats":
         s = kb.stats()
@@ -130,6 +150,35 @@ def knowledge_cmd(
             for o in observations:
                 console.print(f"  - {o['observed_utc']} · case={o['case_id']} "
                               f"· type={o['ioc_type']} · agent={o['agent']}")
+        return
+    if action == "pull-feed":
+        from el.skills import threat_feeds as tf
+        if backend not in ("misp", "taxii"):
+            console.print("[red]pull-feed requires --backend misp|taxii[/red]")
+            raise typer.Exit(2)
+        verify_tls = not insecure
+        if backend == "misp":
+            r = tf.pull_misp(
+                server_url=server or "", api_key=api_key or "",
+                since_days=since_days, limit=limit,
+                verify_tls=verify_tls)
+        else:
+            r = tf.pull_taxii(
+                discovery_url=server or "",
+                collection_id=collection or "",
+                username=username, password=password,
+                limit=limit, verify_tls=verify_tls)
+        if not r.ok:
+            console.print(f"[red]{backend} pull failed: {r.error}[/red]")
+            raise typer.Exit(1)
+        n = tf.record(r)
+        console.print(
+            f"[green]{backend}[/green]: pulled "
+            f"[bold]{len(r.iocs)}[/bold] IOC(s) from "
+            f"[cyan]{r.server}[/cyan]; "
+            f"[bold]{n}[/bold] new row(s) inserted under "
+            f"case_id=[cyan]{r.case_id}[/cyan]"
+        )
         return
     console.print(f"[red]unknown action: {action}[/red]")
     raise typer.Exit(2)
