@@ -120,6 +120,11 @@ def _beat_from_finding(f: Finding) -> str:
     """Classify a finding into one of the 10 beats. Priority:
     (1) explicit hypothesis tag → beat, (2) ATT&CK technique → tactic
     → beat, (3) agent-name fallback."""
+    # Cross-case overlap findings (Layer-3 institutional knowledge)
+    # are context, not kill-chain evidence — route to prologue so the
+    # swimlane Execution lane isn't dominated by IOC-store hits.
+    if (f.agent or "") == "knowledge_lookup":
+        return "prologue"
     for h in f.hypotheses_supported:
         if h in _HYPOTHESIS_TO_BEAT:
             return _HYPOTHESIS_TO_BEAT[h]
@@ -162,6 +167,15 @@ _TIME_KEYS = (
     "mactime_earliest", "m_earliest",
     "event_time_utc", "logon_time_utc",
     "observed_utc",
+    # Keys agents emit that are real artifact times — adding here
+    # populates the Attack Event Timeline. `date_utc` is email
+    # client_submit / delivery_time; `mtime_utc` is filesystem
+    # last-modified; `first_ts_utc` / `last_ts_utc` are window edges
+    # of an aggregated event stream (logon/process bursts).
+    "date_utc", "mtime_utc",
+    "first_ts_utc", "last_ts_utc",
+    "last_used_start_utc", "last_seen_utc",
+    "backup_date_utc",
 )
 
 
@@ -189,6 +203,13 @@ def evidence_time(f: Finding) -> datetime | None:
     finding's evidence, or None when no artifact time is embedded.
     Mines extracted_facts first (structured), then searches the claim
     text for a date pattern as last-resort."""
+    # Layer-3 cross-case overlap findings carry `first_seen_utc` that
+    # is the IOC's first ingest into ~/.el/knowledge.sqlite — meta-
+    # time about EL's institutional knowledge store, not artifact
+    # time on this host. Excluded so the Attack Event Timeline shows
+    # only real-world events from the case under investigation.
+    if f.agent == "knowledge_lookup":
+        return None
     candidates: list[datetime] = []
     for ev in f.evidence:
         facts = ev.extracted_facts or {}
@@ -262,6 +283,17 @@ class NarrativeReport:
     alt_beats: list[BeatBlock]      # populated when gap < 3
     unresolved_count: int
     insufficient_count: int
+    # Tier-2 narrative enrichments — populated by synthesize().
+    # `attack_chain` is the ordered list of (tactic, [(tid, name)]) pairs
+    # mined from per-finding ATT&CK mappings. `evidence_time_range` is
+    # (earliest, latest) ISO across artifact-timed findings, drives the
+    # one-line "Case spans …" header. `prologue_facts` carries the host
+    # metadata pulled from the triage finding + manifest.
+    attack_chain: list[tuple[str, list[tuple[str, str]]]] = field(default_factory=list)
+    evidence_time_range: tuple[str | None, str | None] = (None, None)
+    prologue_facts: dict[str, str] = field(default_factory=dict)
+    insufficient_findings: list[Finding] = field(default_factory=list)
+    pivots: list[str] = field(default_factory=list)
 
     def as_markdown(self) -> str:
         return render_markdown(self)
@@ -290,6 +322,23 @@ def _cite(f: Finding) -> str:
     return f"[{f.finding_id}]"
 
 
+def _dedup_findings(fs: list[Finding]) -> list[tuple[Finding, list[str]]]:
+    """Collapse byte-identical-claim findings into a single bullet,
+    preserving order of first occurrence and accumulating the
+    finding_ids of duplicates. Same agent + same claim = same bullet.
+    Returns [(representative_finding, [duplicate_finding_ids])]."""
+    seen: dict[tuple[str, str], int] = {}
+    out: list[tuple[Finding, list[str]]] = []
+    for f in fs:
+        key = (f.agent or "", (f.claim or "").strip())
+        if key in seen:
+            out[seen[key]][1].append(f.finding_id)
+        else:
+            seen[key] = len(out)
+            out.append((f, []))
+    return out
+
+
 def _paragraph_for_beat(beat: str, fs: list[Finding]) -> str:
     """Build the prose paragraph for one beat from its top findings.
     The template is a simple natural-language scaffold with slot-fills;
@@ -314,14 +363,17 @@ def _paragraph_for_beat(beat: str, fs: list[Finding]) -> str:
     when = (f"As of **{earliest.isoformat(timespec='seconds')}**"
             if earliest else "")
 
+    deduped = _dedup_findings(fs)
     bullets: list[str] = []
-    for f in fs[:5]:
+    for rep, dup_ids in deduped[:5]:
         when_f = ""
-        dt = evidence_time(f)
+        dt = evidence_time(rep)
         if dt:
             when_f = f" ({dt.isoformat(timespec='seconds')})"
+        dup_note = (f" _(+{len(dup_ids)} duplicate finding(s))_"
+                    if dup_ids else "")
         bullets.append(
-            f"- {f.agent}: {f.claim.rstrip('.')}. {_cite(f)}{when_f}")
+            f"- {rep.agent}: {rep.claim.rstrip('.')}. {_cite(rep)}{when_f}{dup_note}")
 
     lead = {
         "prologue":   "This case's evidence shape + triage classification:",
@@ -414,6 +466,116 @@ def synthesize(
                 paragraph=_paragraph_for_beat(beat, fs),
             ))
 
+    # Attack chain — ordered list of (tactic, [(tid, name)]) pairs
+    # mined from per-finding ATT&CK mappings. Tactic order follows
+    # MITRE's kill-chain ordering so the chain reads left-to-right.
+    attack_chain: list[tuple[str, list[tuple[str, str]]]] = []
+    try:
+        from el.intel.attack_map import map_finding
+        from el.intel.attack_tactics import tactic_for, TACTICS as TACTIC_ORDER
+        per_tactic: dict[str, dict[str, str]] = {}
+        for f in findings:
+            if f.confidence == "insufficient":
+                continue
+            for tid, name in map_finding(f):
+                tac = tactic_for(tid) or "Unknown"
+                per_tactic.setdefault(tac, {})[tid] = name
+        for tac in TACTIC_ORDER:
+            if tac in per_tactic:
+                attack_chain.append((tac, sorted(per_tactic[tac].items())))
+    except Exception:
+        attack_chain = []
+
+    # Earliest / latest artifact-time across the whole ledger.
+    all_times = [evidence_time(f) for f in findings if evidence_time(f)]
+    time_range = (
+        min(all_times).isoformat(timespec="seconds") if all_times else None,
+        max(all_times).isoformat(timespec="seconds") if all_times else None,
+    )
+
+    # Prologue facts — host metadata pulled from triage finding
+    # extracted_facts + manifest. Cheap projection, no new probes.
+    prologue_facts: dict[str, str] = {}
+    if manifest:
+        if manifest.get("input_path"):
+            prologue_facts["evidence"] = str(manifest["input_path"]).split("/")[-1]
+        if manifest.get("input_size_bytes"):
+            sz = int(manifest["input_size_bytes"])
+            prologue_facts["size"] = (f"{sz/1024/1024/1024:.2f} GiB"
+                                       if sz > 1024**3
+                                       else f"{sz/1024/1024:.1f} MiB")
+        if manifest.get("input_sha256"):
+            prologue_facts["sha256"] = str(manifest["input_sha256"])[:16] + "…"
+    for f in findings:
+        if f.agent != "triage":
+            continue
+        for ev in f.evidence:
+            facts = ev.extracted_facts or {}
+            if facts.get("matched"):
+                prologue_facts["evidence_kind"] = str(facts["matched"])
+        break
+    # Confidence histogram
+    conf_counts: dict[str, int] = {"high": 0, "medium": 0, "low": 0,
+                                    "insufficient": 0}
+    for f in findings:
+        conf_counts[f.confidence] = conf_counts.get(f.confidence, 0) + 1
+    prologue_facts["finding_mix"] = (
+        f"high={conf_counts['high']}, medium={conf_counts['medium']}, "
+        f"low={conf_counts['low']}, insufficient={conf_counts['insufficient']}")
+
+    # Insufficient-confidence findings — explicit list (not just count).
+    insufficient_findings = [f for f in findings
+                              if f.confidence == "insufficient"]
+
+    # Suggested pivots — heuristic next-steps drawn from anomaly
+    # findings + insufficient-confidence gaps. Each pivot is concrete
+    # and grounded in a specific finding_id; no LLM, no hallucination.
+    pivots: list[str] = []
+    seen_pivots: set[str] = set()
+    for f in findings:
+        claim = (f.claim or "").lower()
+        agent = f.agent or ""
+        if "exe_in_temp" in claim or "executable in user-writable temp" in claim:
+            tag = "exe_in_temp"
+            if tag not in seen_pivots:
+                pivots.append(
+                    f"Submit dropper(s) under user Temp to malware-lab "
+                    f"sandbox + capa for behavioural fingerprint. "
+                    f"Anchor: [{f.finding_id}]")
+                seen_pivots.add(tag)
+        elif "system_binary_zero" in claim or "macb_timestomp" in claim:
+            tag = "anti_forensics"
+            if tag not in seen_pivots:
+                pivots.append(
+                    f"Recover the wiped/timestomped system binaries from "
+                    f"VSS or unallocated (`tsk_recover` or `bulk_extractor`) "
+                    f"to obtain pre-tampering hashes. Anchor: [{f.finding_id}]")
+                seen_pivots.add(tag)
+        elif agent == "email_forensicator" and (
+                "display-name" in claim or "spoofed" in claim):
+            tag = "email_actor"
+            if tag not in seen_pivots:
+                pivots.append(
+                    f"Pivot the spoofing correspondent through mail-flow "
+                    f"logs / SPF / DKIM history to attribute the inbound "
+                    f"sender. Anchor: [{f.finding_id}]")
+                seen_pivots.add(tag)
+        elif "cobalt_strike" in claim or "trickbot" in claim:
+            tag = "malware_hunt"
+            if tag not in seen_pivots:
+                pivots.append(
+                    f"Run the family-fingerprint hits against memory "
+                    f"region dumps + a vetted CS/Trickbot ruleset (vt-yara, "
+                    f"florian-roth) for a stronger second source. "
+                    f"Anchor: [{f.finding_id}]")
+                seen_pivots.add(tag)
+    # Fallback when no recognised anomaly fired but insufficient findings exist
+    if not pivots and insufficient_findings:
+        pivots.append(
+            "No structured pivots derived from current findings — review "
+            "the insufficient list above; each documents a missing data "
+            "source whose collection would unblock further analysis.")
+
     return NarrativeReport(
         case_id=case_id,
         leading_hypothesis=leader.hyp_id if leader else None,
@@ -425,6 +587,11 @@ def synthesize(
         alt_beats=alt_beats,
         unresolved_count=unresolved,
         insufficient_count=insufficient,
+        attack_chain=attack_chain,
+        evidence_time_range=time_range,
+        prologue_facts=prologue_facts,
+        insufficient_findings=insufficient_findings,
+        pivots=pivots,
     )
 
 
@@ -450,6 +617,45 @@ def render_markdown(nr: NarrativeReport) -> str:
                      "more than one theory. Both are presented below. A "
                      "report that advocates only one is sycophantic.")
     lines.append("")
+
+    # Case header — single-glance metadata block. Pulls from manifest +
+    # triage + finding-time range. Empty fields are silently omitted so
+    # the block grows with available data and never lies about absent
+    # state.
+    if nr.prologue_facts or any(nr.evidence_time_range):
+        lines.append("## Case at a glance")
+        lines.append("")
+        if nr.prologue_facts.get("evidence"):
+            lines.append(f"- **Evidence**: `{nr.prologue_facts['evidence']}`")
+        if nr.prologue_facts.get("evidence_kind"):
+            lines.append(f"- **Kind**: {nr.prologue_facts['evidence_kind']}")
+        if nr.prologue_facts.get("size"):
+            lines.append(f"- **Size**: {nr.prologue_facts['size']}")
+        if nr.prologue_facts.get("sha256"):
+            lines.append(f"- **SHA-256**: `{nr.prologue_facts['sha256']}`")
+        if nr.prologue_facts.get("finding_mix"):
+            lines.append(f"- **Finding mix**: {nr.prologue_facts['finding_mix']}")
+        if nr.evidence_time_range[0]:
+            lines.append(
+                f"- **Artifact-time span**: "
+                f"`{nr.evidence_time_range[0]}` → "
+                f"`{nr.evidence_time_range[1]}` "
+                f"(when the events EL could timestamp actually happened)")
+        lines.append("")
+
+    # ATT&CK kill-chain — one-liner per tactic, linked technique IDs.
+    # When empty, omitted entirely (no "Detected chain: nothing"
+    # filler).
+    if nr.attack_chain:
+        lines.append("## Detected ATT&CK chain")
+        lines.append("")
+        chain_parts = []
+        for tac, items in nr.attack_chain:
+            tids = " · ".join(f"`{tid}`" for tid, _ in items[:3])
+            extra = (f" _(+{len(items)-3})_" if len(items) > 3 else "")
+            chain_parts.append(f"**{tac}** {tids}{extra}")
+        lines.append(" → ".join(chain_parts))
+        lines.append("")
 
     for block in nr.beats:
         if block.finding_count == 0 and block.beat not in ("trigger", "impact"):
@@ -490,6 +696,33 @@ def render_markdown(nr: NarrativeReport) -> str:
                           f"what EL could not extract and exist so the gap "
                           f"is visible to the analyst. 'I don't know' is a "
                           f"first-class output.")
+        lines.append("")
+        # Concrete enumeration so the analyst can act on each gap rather
+        # than read a count and shrug. First evidence command is shown
+        # so the gap has a re-run handle.
+        if nr.insufficient_findings:
+            for f in nr.insufficient_findings[:10]:
+                cmd = ""
+                if f.evidence:
+                    cmd = (f.evidence[0].command or "")[:80]
+                cmd_part = f" — `{cmd}…`" if cmd else ""
+                lines.append(f"  - `{f.finding_id}` ({f.agent}): "
+                              f"{f.claim.rstrip('.')}.{cmd_part}")
+            if len(nr.insufficient_findings) > 10:
+                lines.append(f"  - _… {len(nr.insufficient_findings)-10} more elided_")
+            lines.append("")
+
+    if nr.pivots:
+        lines.append("## Suggested pivots")
+        lines.append("")
+        lines.append("Concrete next steps grounded in specific findings on "
+                     "this case. Each pivot anchors to a finding_id so the "
+                     "analyst can trace the rationale back to evidence, and "
+                     "EL has not chased the pivot itself — it remains an "
+                     "open lead.")
+        lines.append("")
+        for pivot in nr.pivots:
+            lines.append(f"- {pivot}")
         lines.append("")
     return "\n".join(lines)
 

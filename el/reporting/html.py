@@ -30,8 +30,11 @@ from pathlib import Path
 from el.intel.attack_tactics import TACTICS, group_by_tactic
 from el.reporting.graph_export import export_graph
 from el.reporting.narrative import (
+    BEATS as _BEATS,
     evidence_time as _nar_evidence_time,
     synthesize as _narrative_synth,
+    _beat_from_finding as _nar_beat_from_finding,
+    _BEAT_HEADING as _NAR_BEAT_HEADING,
 )
 from el.schemas.finding import Finding
 
@@ -246,6 +249,36 @@ aside.drawer .evidence-item .sha { color: #484f58; font-size: 11px; margin-top: 
 .atl-empty { color: #8b949e; font-style: italic; padding: 16px;
     background: #161b22; border: 1px dashed #30363d; border-radius: 6px;
     margin-top: 10px; font-size: 13px; }
+
+/* Kill-chain swimlane — Y=beat, X=time. Per-case beat × time scatter
+   that turns the flat finding list into one-glance attacker progression. */
+.swimlane-wrap { background: #0d1117; border: 1px solid #30363d;
+    border-radius: 6px; padding: 8px; margin-top: 12px; }
+.swimlane-wrap svg { width: 100%; display: block; }
+.sw-lane-label { fill: #c9d1d9; font-size: 11px;
+    font-family: "SF Mono", Menlo, monospace; }
+.sw-lane-bg { fill: #0d1117; stroke: none; }
+.sw-lane-bg.alt { fill: #11161d; }
+.sw-grid { stroke: #21262d; stroke-width: 1; }
+.sw-axis-label { fill: #8b949e; font-size: 10px;
+    font-family: "SF Mono", Menlo, monospace; }
+.sw-tick { stroke: #30363d; stroke-width: 1; }
+.sw-marker { cursor: pointer; transition: r 0.1s, opacity 0.1s; }
+.sw-marker:hover { r: 7; opacity: 1; }
+.sw-marker.high   { fill: #f85149; opacity: 0.95; }
+.sw-marker.medium { fill: #d29922; opacity: 0.85; }
+.sw-marker.low    { fill: #58a6ff; opacity: 0.70; }
+.sw-marker.insufficient { fill: #6e7681; opacity: 0.50; }
+.sw-marker.ingest { stroke: #6e7681; stroke-width: 1.5;
+    stroke-dasharray: 2 1; }
+.sw-empty { color: #8b949e; font-style: italic; padding: 16px;
+    background: #161b22; border: 1px dashed #30363d; border-radius: 6px;
+    margin-top: 10px; font-size: 13px; }
+.sw-legend { display: flex; flex-wrap: wrap; gap: 10px;
+    color: #8b949e; font-size: 11px; margin-top: 8px;
+    font-family: "SF Mono", Menlo, monospace; }
+.sw-legend .dot { display: inline-block; width: 8px; height: 8px;
+    border-radius: 50%; margin-right: 4px; vertical-align: middle; }
 
 /* Diagnostic findings (Heuer — high score-delta spread) */
 .diagnostic-list { margin-top: 16px; display: flex; flex-direction: column; gap: 8px; }
@@ -648,20 +681,144 @@ _JS = r"""
     history.replaceState(null, "", "#" + f.finding_id);
   }
 
+  // ----- Kill-chain swimlane -------------------------------------------
+  // Y axis: beat lanes from data.beat_lanes (ordered, MITRE-ish).
+  // X axis: time. Real artifact time when present (evidence_time),
+  //   else EL ingest time as fallback (created_utc, dashed stroke).
+  // Empty lanes are still drawn so absence is visible — that's the
+  // forensic point: a silent Persistence lane MEANS something.
+  function renderSwimlane() {
+    const svg = document.getElementById("swimlane-svg");
+    if (!svg) return;
+    while (svg.firstChild) svg.removeChild(svg.firstChild);
+    const ns = "http://www.w3.org/2000/svg";
+
+    const lanes = data.beat_lanes || [];
+    if (!lanes.length) {
+      svg.innerHTML = '<text x="20" y="30" class="sw-empty">No beat lanes defined.</text>';
+      return;
+    }
+    const laneIdx = {};
+    lanes.forEach((l, i) => { laneIdx[l.beat] = i; });
+
+    // Collect all events. evidence_time wins; created_utc is fallback.
+    const events = [];
+    (data.findings || []).forEach(f => {
+      const t = f.evidence_time || f.created_utc || "";
+      if (!t) return;
+      if (laneIdx[f.beat] === undefined) return;
+      events.push({
+        fid: f.finding_id, beat: f.beat,
+        ts: t, isArtifact: !!f.evidence_time,
+        conf: f.confidence, agent: f.agent, claim: f.claim,
+      });
+    });
+    if (!events.length) {
+      const txt = document.createElementNS(ns, "text");
+      txt.setAttribute("x", 20); txt.setAttribute("y", 30);
+      txt.setAttribute("class", "sw-empty");
+      txt.textContent = "No timeline-able findings yet.";
+      svg.appendChild(txt);
+      return;
+    }
+    const tmin = Math.min(...events.map(e => Date.parse(e.ts)));
+    const tmax = Math.max(...events.map(e => Date.parse(e.ts)));
+    const span = Math.max(tmax - tmin, 1);
+
+    const wrap = svg.parentElement;
+    const W = Math.max(wrap.clientWidth - 16, 600);
+    const LANE_H = 32, LABEL_W = 200, PAD_T = 18, PAD_B = 30;
+    const H = lanes.length * LANE_H + PAD_T + PAD_B;
+    const plotW = W - LABEL_W - 16;
+    svg.setAttribute("width", W);
+    svg.setAttribute("height", H);
+    svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
+
+    // Lane backgrounds + labels
+    lanes.forEach((l, i) => {
+      const y = PAD_T + i * LANE_H;
+      const bg = document.createElementNS(ns, "rect");
+      bg.setAttribute("x", 0); bg.setAttribute("y", y);
+      bg.setAttribute("width", W); bg.setAttribute("height", LANE_H);
+      bg.setAttribute("class", "sw-lane-bg" + (i % 2 ? " alt" : ""));
+      svg.appendChild(bg);
+      const lab = document.createElementNS(ns, "text");
+      lab.setAttribute("x", 8); lab.setAttribute("y", y + LANE_H / 2 + 4);
+      lab.setAttribute("class", "sw-lane-label");
+      lab.textContent = l.heading;
+      svg.appendChild(lab);
+      const div = document.createElementNS(ns, "line");
+      div.setAttribute("x1", LABEL_W); div.setAttribute("x2", W);
+      div.setAttribute("y1", y + LANE_H); div.setAttribute("y2", y + LANE_H);
+      div.setAttribute("class", "sw-grid");
+      svg.appendChild(div);
+    });
+
+    // X-axis ticks — 5 evenly spaced
+    for (let k = 0; k <= 4; k++) {
+      const frac = k / 4;
+      const x = LABEL_W + frac * plotW;
+      const tick = document.createElementNS(ns, "line");
+      tick.setAttribute("x1", x); tick.setAttribute("x2", x);
+      tick.setAttribute("y1", PAD_T - 4);
+      tick.setAttribute("y2", H - PAD_B + 4);
+      tick.setAttribute("class", "sw-tick");
+      svg.appendChild(tick);
+      const t = new Date(tmin + frac * span);
+      const lab = document.createElementNS(ns, "text");
+      lab.setAttribute("x", x); lab.setAttribute("y", H - PAD_B + 18);
+      lab.setAttribute("class", "sw-axis-label");
+      lab.setAttribute("text-anchor", "middle");
+      lab.textContent = t.toISOString().slice(0, 16).replace("T", " ");
+      svg.appendChild(lab);
+    }
+
+    // Markers — small jitter on Y so overlaps don't fully stack.
+    events.forEach(e => {
+      const x = LABEL_W + ((Date.parse(e.ts) - tmin) / span) * plotW;
+      const li = laneIdx[e.beat];
+      const yC = PAD_T + li * LANE_H + LANE_H / 2;
+      const jitter = (e.fid.charCodeAt(e.fid.length - 1) % 7) - 3;
+      const dot = document.createElementNS(ns, "circle");
+      dot.setAttribute("cx", x);
+      dot.setAttribute("cy", yC + jitter);
+      dot.setAttribute("r", 4.5);
+      dot.setAttribute("class",
+        "sw-marker " + e.conf + (e.isArtifact ? "" : " ingest"));
+      const ttl = document.createElementNS(ns, "title");
+      ttl.textContent = `${e.ts}\n${e.agent}: ${e.claim}\n` +
+        `${e.isArtifact ? "artifact time" : "ingest time (fallback)"}`;
+      dot.appendChild(ttl);
+      dot.addEventListener("click", () =>
+        openDrawer(findingsById[e.fid]));
+      svg.appendChild(dot);
+    });
+  }
+
   // ----- Timeline / diagnostic / matrix (narrative) --------------------
   function renderTimeline() {
     const pane = document.getElementById("tl-list");
     if (!pane) return;
+    // Sort key: prefer artifact time (evidence_time) when present,
+    // fall back to EL wall clock (created_utc). On a 30-minute EL run
+    // every created_utc clusters into a few minutes — the timeline
+    // is forensically meaningless without the evidence_time fallback.
+    const sortKey = f => f.evidence_time || f.created_utc || "";
     const ordered = [...data.findings].sort((a, b) =>
-      (a.created_utc || "").localeCompare(b.created_utc || "") ||
+      sortKey(a).localeCompare(sortKey(b)) ||
       a.finding_id.localeCompare(b.finding_id));
-    pane.innerHTML = ordered.map(f => `
+    pane.innerHTML = ordered.map(f => {
+      const t = f.evidence_time || f.created_utc || "";
+      const tag = f.evidence_time ? "artifact" : "ingest";
+      return `
       <div class="tl-item conf-${f.confidence}" data-fid="${esc(f.finding_id)}">
-        <span class="ts">${esc((f.created_utc || "").replace("T"," ").slice(0,19))}</span>
+        <span class="ts" title="${tag} time">${esc(t.replace("T"," ").slice(0,19))}</span>
         <span class="agent">${esc(f.agent)}</span>
         <span class="cnf">${esc(f.confidence)}</span>
+        <span class="cnf" style="background:#161b22;color:#8b949e">${tag}</span>
         <div class="claim">${esc(f.claim)}</div>
-      </div>`).join("") ||
+      </div>`;
+    }).join("") ||
       '<div style="color:#8b949e">No findings to lay on a timeline yet.</div>';
     pane.querySelectorAll(".tl-item").forEach(el => {
       el.addEventListener("click", () =>
@@ -837,6 +994,7 @@ _JS = r"""
 
   renderFindings();
   renderGraph();
+  renderSwimlane();
   renderTimeline();
   renderAttackTimeline();
   renderDiagnostic();
@@ -1127,6 +1285,10 @@ def _finding_to_dict(f: Finding) -> dict:
         # Discovery Timeline which uses created_utc above).
         "evidence_time": (_nar_evidence_time(f).isoformat()
                           if _nar_evidence_time(f) else ""),
+        # Beat assignment — drives the per-case kill-chain swimlane.
+        # Reuses the same classifier the Markdown narrative uses, so
+        # both views stay in lockstep with one beat-routing rule.
+        "beat": _nar_beat_from_finding(f),
     }
 
 
@@ -1170,6 +1332,11 @@ def render_html(
         "manifest": {k: str(v) for k, v in manifest.items()},
         "findings": [_finding_to_dict(f) for f in findings],
         "graph": graph,
+        # Beat lanes for the kill-chain swimlane — ordered list of
+        # (beat_id, heading) pairs, drives the per-case SVG view that
+        # converts "203 bullets" into a glance at attacker progression.
+        "beat_lanes": [{"beat": b, "heading": _NAR_BEAT_HEADING[b]}
+                       for b in _BEATS],
         # Serialisable technique map — `evidence_finding_ids` is already
         # a list of strings; include only the keys the JS renderer uses
         # to keep the embedded JSON tight.
@@ -1293,6 +1460,7 @@ def render_html(
     <a href="#narrative">Narrative</a>
     <a href="#summary">Summary</a>
     <a href="#ach">ACH</a>
+    <a href="#swimlane">Swimlane</a>
     <a href="#timeline">Timeline</a>
     <a href="#attack-timeline">Attack</a>
     <a href="#diagnostic">Diagnostic</a>
@@ -1325,6 +1493,18 @@ def render_html(
 <section id="ach">
   <h2>Hypothesis Ranking <span class="count">(Heuer ACH — highest = leading, never declared 'true')</span></h2>
   {ach_html}
+</section>
+
+<section id="swimlane">
+  <h2>Kill-Chain Swimlane <span class="count">(Y=attacker phase · X=artifact time — solid markers = real-world event time, dashed-stroke markers = EL ingest time only. Click a marker to open the finding.)</span></h2>
+  <div class="swimlane-wrap"><svg id="swimlane-svg"></svg></div>
+  <div class="sw-legend">
+    <span><span class="dot" style="background:#f85149"></span>high</span>
+    <span><span class="dot" style="background:#d29922"></span>medium</span>
+    <span><span class="dot" style="background:#58a6ff"></span>low</span>
+    <span><span class="dot" style="background:#6e7681"></span>insufficient</span>
+    <span style="margin-left:8px">○ dashed stroke = ingest-time fallback (no artifact time mined)</span>
+  </div>
 </section>
 
 <section id="timeline">

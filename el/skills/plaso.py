@@ -63,10 +63,11 @@ def log2timeline(image_or_path: Path, out_dir: Path, timeout: int = 7200,
     storage = out_dir / "events.plaso"
     stderr_path = out_dir / "log2timeline.stderr"
     cmd = [_which("log2timeline.py"), "--unattended", "--quiet",
-           "--parsers", parsers, "--hashers", hashers, "--timezone", "UTC"]
+           "--parsers", parsers, "--hashers", hashers, "--timezone", "UTC",
+           "--storage_file", str(storage)]
     if vss:
         cmd += ["--vss-stores", "all"]
-    cmd += [str(storage), str(image_or_path)]
+    cmd += [str(image_or_path)]
     try:
         proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
     except subprocess.TimeoutExpired as e:
