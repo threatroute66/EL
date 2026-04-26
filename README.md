@@ -43,6 +43,13 @@ and it produces:
   ATT&CK coverage heatmap grouped by tactic, and Diamond Model
   projection. Zero CDN, works from `file://`; `--watch` mode re-renders
   live as agents emit findings.
+- **A built-in HTTP viewer** (`el serve`) — local loopback web server
+  on `http://127.0.0.1:8089/` that browses every case under
+  `/opt/EL/cases/`. Snap-confined browsers (default Chromium on
+  Ubuntu) cannot read `/opt/` via `file://`; this is the supported
+  workaround. Optional systemd `--user` service install
+  (`el serve --install-service` or `./install.sh --with-serve`) for
+  auto-start at login.
 - **A STIX 2.1 bundle** + **machine-readable findings.json** + **per-case
   Kùzu graph** + **forensic_audit.log** + **per-case CLAUDE.md** for
   follow-on interactive analysis.
