@@ -51,10 +51,14 @@ def _which(name: str) -> str:
 
 
 def log2timeline(image_or_path: Path, out_dir: Path, timeout: int = 7200,
-                 parsers: str = "win10", hashers: str = "md5,sha256",
+                 parsers: str = "win_gen", hashers: str = "md5,sha256",
                  vss: bool = False) -> PlasoRun:
     """SKILL defaults applied:
-      - --parsers win10  (preferred for modern Windows, more complete than win7)
+      - --parsers win_gen  (generic Windows preset — covers XP/7/8/10/11.
+        Older Plaso builds had a `win10` preset which was renamed/removed
+        in 2024+ releases; `win_gen` is the version-stable choice and
+        produces 1.7M+ events on m57-jean where `win10` rejected as
+        "Unknown parser" and produced zero.)
       - --hashers md5,sha256  (hash all processed files)
       - --timezone UTC  (always)
       - --vss-stores all  (essential for intrusion cases — attackers delete files VSS preserves)

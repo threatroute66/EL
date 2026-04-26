@@ -20,7 +20,7 @@ def test_memory_plugin_set_includes_svcscan():
         "memory-analysis SKILL: svcscan surfaces hidden services and persistent service installations"
 
 
-def test_plaso_log2timeline_defaults_to_win10_utc(tmp_path):
+def test_plaso_log2timeline_defaults_to_wingen_utc(tmp_path):
     from unittest.mock import patch
     from el.skills import plaso
 
@@ -35,8 +35,10 @@ def test_plaso_log2timeline_defaults_to_win10_utc(tmp_path):
          patch("el.skills.plaso._which", return_value="/fake/log2timeline.py"):
         plaso.log2timeline(tmp_path / "img", tmp_path)
     cmd = captured["cmd"]
-    assert "--parsers" in cmd and "win10" in cmd, \
-        "plaso-timeline SKILL: --parsers win10 is the preferred default"
+    # win_gen replaces win10 — Plaso 2024+ removed/renamed the win10
+    # preset; win_gen is version-stable across XP / 7 / 8 / 10 / 11.
+    assert "--parsers" in cmd and "win_gen" in cmd, \
+        "plaso-timeline SKILL: --parsers win_gen is the version-stable default"
     assert "--hashers" in cmd and "md5,sha256" in cmd
     assert "--timezone" in cmd and "UTC" in cmd, \
         "plaso-timeline SKILL: always pass --timezone UTC"

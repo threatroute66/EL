@@ -257,7 +257,7 @@ without venv activation (this bit us on vol3 — see `_vol_executable`).
 skill wrapper for a tool covered by `~/.claude/skills/<area>/SKILL.md`,
 read the SKILL first and bake its operator-tier defaults into the
 wrapper's defaults. Examples currently live in:
-- `el/skills/plaso.py` — `--parsers win10 --hashers md5,sha256 --timezone UTC` defaults
+- `el/skills/plaso.py` — `--parsers win_gen --hashers md5,sha256 --timezone UTC` defaults (Plaso 2024+ removed `win10` preset; `win_gen` covers XP / 7 / 8 / 10 / 11)
 - `el/skills/sleuthkit.py` — `mactime -z UTC` default
 - `el/skills/ezt.py` — `EvtxECmd --maps`, `RECmd --bn Kroll_Batch.reb`, `MFTECmd --at`
 

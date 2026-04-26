@@ -16,7 +16,7 @@ class TimelineSynthesistAgent(Agent):
     name = "timeline_synthesist"
 
     def __init__(self, log2timeline_timeout: int = 7200, psort_timeout: int = 3600,
-                 parsers: str = "win10", vss: bool = True):
+                 parsers: str = "win_gen", vss: bool = True):
         self.log2timeline_timeout = log2timeline_timeout
         self.psort_timeout = psort_timeout
         self.parsers = parsers
