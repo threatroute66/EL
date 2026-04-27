@@ -200,21 +200,85 @@ slightly higher scores under the now-richer detector set
 
 ### Outstanding from the original shakedown — still open
 
-- Memory captures **not** included in this re-run (disk-only).
-  21 hosts × memory analysis would require unzipping 22 .7z files
-  (~60 GB uncompressed) and the host had to land a streaming-fix
-  PR before disk could complete; left for a follow-on.
-- Beacon-on-server-class-host calibration (#1) and
-  execution-corroborator volume-driven small lifts (#2) untouched.
-- SharePoint `:808` WCF false-positive class (#4) untouched.
+- Calibration #1 (server-class beacon noise) + #4 (SharePoint :808
+  WCF) — _**closed 2026-04-27 in commit `54250d1`** — added
+  `_INTERNAL_DIRECTORY_PORTS` set covering 88 / 389 / 636 / 3268 /
+  3269 / 808 to the beacon detector; suppress when destination is
+  RFC1918. APT C2 on :389 to a public IP still detected._
+- Calibration #2 (execution_corroborator H_BEC volume lifts) —
+  _**closed 2026-04-27 in commit `54250d1`** — `_h_bec` returns 0
+  when `f.agent == "execution_corroborator"`. The corroborator's
+  job is "this binary ran"; cloud/email signal belongs to
+  email_forensicator and cloud_forensicator._
+
+## 2026-04-27 memory pass — combined-r3 stitch
+
+After the disk-r2 stitch (`srl2018-enterprise-r2`), the 22 memory
+captures (.7z under `SRL-2018/`, ~21 GB compressed / ~60 GB
+extracted) were fed through a sequential extract-investigate-cleanup
+driver. v1 driver ran admin uncapped and was stuck > 4 hr in
+`malware_triage` capa+floss; killed and re-spec'd as v2 with
+`EL_MALWARE_TRIAGE_MAX_DUMPS=10` (new env-var introduced in
+commit `e044ac4`) which selects the 10 largest dumps per case.
+
+### Bugs surfaced in the memory pass → fixes landed
+
+| Commit | Gap | Fix |
+|---|---|---|
+| `e044ac4` | `malware_triage` capa+floss per-dump (5+10 min worst case) on DC-class hosts (admin had 30 dumps, mail had 312 in the original shakedown) blew the per-case time budget — would have been ~25 hours for mail alone. | `EL_MALWARE_TRIAGE_MAX_DUMPS=N` env var; default unchanged, the per-case investigation default remains uncapped. |
+| `54250d1` | Server-class beacon noise (calibration #1 + #4) and execution_corroborator H_BEC overlift (calibration #2) — both pre-existing observations from the 2026-04-21 doc. | Beacon detector suppresses internal-directory-port chatter to RFC1918 destinations; `_h_bec` early-outs when finding's agent is `execution_corroborator`. |
+| `e193134` | `malware_triage` over-tagged H_OPPORTUNISTIC_COMMODITY on every PE/macro/packed/sensitive-import finding — 25 findings × +3 each = +75 lift on every memory-rich host. rd-05 (originally "tied 0") came out at H_OPPORTUNISTIC_COMMODITY 89 against H_APT_ESPIONAGE 57. Mirror of PR-F's leak, this time in malware_triage instead of execution_corroborator. | Drop the blanket `H_OPPORTUNISTIC_COMMODITY` tag from 5 generic-PE-shape sites (VBA macro, RTF, packed, sensitive-import, ssdeep similarity); leave it on actual family-fingerprint matches via `malware_families.py` entries. |
+
+### Per-host memory leaders (combined-r3)
+
+After the `e193134` fix, 11 of the 12 over-lifted memory cases were
+re-investigated with `-r2` suffix and clean tagging. admin-r2 was
+killed mid-`malware_triage` at 2.5 hr (the cap-selects-largest path
+hit floss timeouts on multi-hundred-MB dumps); the v1 admin ledger
+was used in the stitch with the over-lift documented. mail
+OOM-killed in `memory_forensicator` (18 GB image into vol3); dc
+memory had the documented netscan smear (zero-row scoring).
+
+| Host | Memory leader (r3) | vs original 2026-04-21 |
+|---|---|---|
+| `admin` | H_OPPORTUNISTIC_COMMODITY 85 ⚠ | _was H_APT_ESPIONAGE 38; over-lift not corrected_ |
+| `av-r2` | H_APT_ESPIONAGE 58 | was 19 (corrected post-fix) |
+| `dc` | — (smear) | was — (smear) |
+| `elf-r2` | H_LATERAL_MOVEMENT 3 | was 3 |
+| `file` | H_LATERAL_MOVEMENT 24 | was 24 |
+| `file-snapshot5` | H_LATERAL_MOVEMENT 12 | was 12 |
+| `hunt` | H_LATERAL_MOVEMENT 9 | was 9 |
+| `mail` | — (OOM) | was 22; OOM-killed this pass |
+| `rd-01` | H_APT_ESPIONAGE 54 | was 26 |
+| `rd-02-r2` | H_LATERAL_MOVEMENT 3 | was 3 |
+| `rd-03-r2` | H_APT_ESPIONAGE 49 | was 20 (corrected) |
+| `rd-04` | H_APT_ESPIONAGE 81 | was 35 |
+| `rd-05-r2` | H_APT_ESPIONAGE 57 | was 0 (signal surfaced post-fix) |
+| `rd-06-r2` | H_APT_ESPIONAGE 56 | was 0 (signal surfaced post-fix) |
+| `sp` | H_LATERAL_MOVEMENT 6 | was 6 |
+| `wkstn-01` | H_LATERAL_MOVEMENT 6 | was 19 (closer to original wkstn-01-r2 6) |
+| `wkstn-02-r2` | H_LATERAL_MOVEMENT 3 | was 3 |
+| `wkstn-03-r2` | H_LATERAL_MOVEMENT 6 | was 6 |
+| `wkstn-04-r2` | H_APT_ESPIONAGE 58 | was 20 (corrected) |
+| `wkstn-05-r2` | H_LATERAL_MOVEMENT 3 | was 0 (signal surfaced post-fix) |
+| `wkstn-06-r2` | H_LATERAL_MOVEMENT 3 | was 3 |
+
+Combined-r3 headline: **28 cases stitched · 9,997 findings ·
+high=726 · 18 distinct ATT&CK techniques.** Cross-host signal
+matrix surfaces credential-access (LSASS) on multiple hosts,
+kerberoast RC4 across DC + servers, RDP inbound on operator-jump
+chain, and the Mr-Evil-style anti-forensic wipes across all 7
+disk hosts.
 
 ## Artifacts
 
 - Per-case outputs under `/opt/EL/cases/srl-*/` (sealed tar.gz in
   `/opt/EL/cases/_archives/`).
-- 2026-04-27 re-run combined output:
+- 2026-04-27 disk-only stitch:
   `/opt/EL/cases/_combined/srl2018-enterprise-r2/{report.md,combined.html}`.
-- 395k IOCs in `~/.el/knowledge.sqlite` with `case_id` provenance.
-- Commits on `origin/main`: PR-B through PR-G, AGPL, README, shakedown
-  writeup (this file) — all between `3fa18a6` (session start) and the
-  commit emitting this doc.
+- 2026-04-27 memory + disk stitch (28 cases):
+  `/opt/EL/cases/_combined/srl2018-enterprise-r3/{report.md,combined.html}`.
+- 395k+ IOCs in `~/.el/knowledge.sqlite` with `case_id` provenance.
+- Commits on `origin/main`: PR-B through PR-G, AGPL, README,
+  shakedown writeup (this file), and the 2026-04-27 sweep
+  (`de3a6fd` → `e193134`).
