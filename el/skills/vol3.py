@@ -3,6 +3,22 @@
 Deterministic. No LLM. Runs a vol3 plugin against a memory image, captures
 the JSON output to disk, hashes it, and returns a provenance bundle suitable
 for embedding directly into a Finding's evidence[] field.
+
+Two output modes:
+
+  * **Eager (default)** — `-r json`, full result list materialised into
+    `PluginRun.rows`. Suits small plugins (banners, hivelist) and any
+    case where the consumer wants random access.
+  * **Streaming (`streaming=True`)** — `-r jsonl`, subprocess stdout
+    streams directly to `stdout_path` with no in-memory buffer.
+    `PluginRun.rows` stays empty; consumers iterate via
+    `iter_rows(run)` line-by-line. Use for plugins whose output is
+    large enough to OOM (`netscan`, `malfind`, `vadinfo`,
+    `pslist`/`psscan` on DC-class images).
+
+The streaming path was added after the SRL-2018 mail capture (18 GB
+image into 16 GB host) OOM-killed `memory_forensicator` mid-run via
+the eager `proc.stdout` capture + full `json.loads`.
 """
 from __future__ import annotations
 
@@ -12,6 +28,7 @@ import shutil
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Iterator
 
 from el.schemas.finding import EvidenceItem
 
@@ -30,10 +47,20 @@ class PluginRun:
     rows: list[dict]
     command: list[str]
     version: str
+    # When True, `rows` is intentionally empty — output is JSON-Lines
+    # at `stdout_path`. Consume via `iter_rows(run)` rather than the
+    # `rows` list. `row_count` is populated by the wrapper after the
+    # streamed write completes (cheap line-count pass) so
+    # `as_evidence()` still reports a meaningful count.
+    streaming: bool = False
+    row_count: int = 0
 
     def as_evidence(self, facts: dict | None = None) -> EvidenceItem:
         sha = hashlib.sha256(self.stdout_path.read_bytes()).hexdigest()
-        merged_facts = {"row_count": len(self.rows), "rc": self.rc}
+        count = self.row_count if self.streaming else len(self.rows)
+        merged_facts = {"row_count": count, "rc": self.rc}
+        if self.streaming:
+            merged_facts["render_format"] = "jsonl"
         if facts:
             merged_facts.update(facts)
         return EvidenceItem(
@@ -44,6 +71,33 @@ class PluginRun:
             output_path=str(self.stdout_path),
             extracted_facts=merged_facts,
         )
+
+
+def iter_rows(run: PluginRun) -> Iterator[dict]:
+    """Yield rows from a vol3 PluginRun, streaming or eager.
+
+    For `streaming=True` runs, parses the JSON-Lines file one line at
+    a time — peak memory is one row + one line buffer.
+    For eager runs, returns the materialised `rows` list as-is.
+
+    Malformed lines are silently skipped (matches the eager path's
+    `json.JSONDecodeError → rows=[]` behaviour) so a partial-write
+    crash doesn't poison every consumer.
+    """
+    if not run.streaming:
+        yield from run.rows
+        return
+    if not run.stdout_path.is_file():
+        return
+    with run.stdout_path.open("r", errors="ignore") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                yield json.loads(line)
+            except json.JSONDecodeError:
+                continue
 
 
 def _vol_executable() -> str:
@@ -79,13 +133,21 @@ def run_plugin(
     timeout: int = 600,
     offline: bool = False,
     with_output_dir: bool = False,
+    streaming: bool = False,
 ) -> PluginRun:
-    """Run a single vol3 plugin and capture its JSON output + stderr.
+    """Run a single vol3 plugin and capture its output + stderr.
 
     plugin: e.g. 'windows.pslist', 'windows.pstree', 'windows.malfind'
     offline: pass --offline to fail fast when ISF symbol downloads would hang
              (per memory-analysis SKILL: vol3 fetches PDB symbol tables from
              Microsoft on first use; offline runs need this flag).
+    streaming: when True, render via JSON-Lines and stream subprocess
+               stdout directly to disk — `PluginRun.rows` is left
+               empty; consume via `iter_rows(run)`. Required for
+               plugins whose result set is large enough to OOM the
+               wrapper (DC-class netscan / malfind / vadinfo).
+               Eager mode (default) preserves random access and
+               matches every existing caller.
     """
     image = Path(image)
     if not image.exists():
@@ -94,10 +156,11 @@ def run_plugin(
     out_dir.mkdir(parents=True, exist_ok=True)
 
     safe = plugin.replace(".", "_").replace("/", "_")
-    stdout_path = out_dir / f"{safe}.json"
+    suffix = "jsonl" if streaming else "json"
+    stdout_path = out_dir / f"{safe}.{suffix}"
     stderr_path = out_dir / f"{safe}.stderr"
 
-    base = [_vol_executable(), "-q", "-r", "json"]
+    base = [_vol_executable(), "-q", "-r", "jsonl" if streaming else "json"]
     if offline:
         base.append("--offline")
     # If --dump is in extra_args, plugins need -o <dir> to write dumped files to.
@@ -112,33 +175,64 @@ def run_plugin(
         # `--dump` in extra_args is the legacy auto-detect.
         dump_args = ["-o", str(out_dir)]
     cmd = [*base, *dump_args, "-f", str(image), plugin, *(extra_args or [])]
-    try:
-        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
-    except subprocess.TimeoutExpired as e:
-        stderr_path.write_text(f"TIMEOUT after {timeout}s\n{e}")
-        raise Vol3Error(f"timeout running {plugin}") from e
-
-    stderr_path.write_text(proc.stderr or "")
-    raw = proc.stdout or ""
-    stdout_path.write_text(raw)
 
     rows: list[dict] = []
-    if raw.strip():
+    row_count = 0
+
+    if streaming:
+        # Stream subprocess stdout directly to disk — no Python-side
+        # buffering of the full output. Memory peak = subprocess pipe
+        # buffer + os.read() chunk. After the run, count lines for the
+        # provenance fact `row_count`.
         try:
-            parsed = json.loads(raw)
-            rows = parsed if isinstance(parsed, list) else [parsed]
-        except json.JSONDecodeError:
-            rows = []
+            with stdout_path.open("wb") as out_f:
+                proc = subprocess.Popen(
+                    cmd, stdout=out_f,
+                    stderr=subprocess.PIPE, text=False)
+                try:
+                    _, stderr = proc.communicate(timeout=timeout)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                    proc.communicate()
+                    stderr_path.write_text(f"TIMEOUT after {timeout}s\n")
+                    raise Vol3Error(f"timeout running {plugin}")
+            stderr_path.write_bytes(stderr or b"")
+        except FileNotFoundError as e:
+            raise Vol3Error(f"vol executable not found: {e}") from e
+        rc = proc.returncode
+        # Cheap line-count pass — no JSON parsing.
+        if stdout_path.is_file():
+            with stdout_path.open("rb") as f:
+                row_count = sum(1 for line in f if line.strip())
+    else:
+        try:
+            proc = subprocess.run(
+                cmd, capture_output=True, text=True, timeout=timeout)
+        except subprocess.TimeoutExpired as e:
+            stderr_path.write_text(f"TIMEOUT after {timeout}s\n{e}")
+            raise Vol3Error(f"timeout running {plugin}") from e
+        stderr_path.write_text(proc.stderr or "")
+        raw = proc.stdout or ""
+        stdout_path.write_text(raw)
+        rc = proc.returncode
+        if raw.strip():
+            try:
+                parsed = json.loads(raw)
+                rows = parsed if isinstance(parsed, list) else [parsed]
+            except json.JSONDecodeError:
+                rows = []
 
     return PluginRun(
         plugin=plugin,
         image=image,
-        rc=proc.returncode,
+        rc=rc,
         stdout_path=stdout_path,
         stderr_path=stderr_path,
         rows=rows,
         command=cmd,
         version=_vol_version(),
+        streaming=streaming,
+        row_count=row_count if streaming else len(rows),
     )
 
 
