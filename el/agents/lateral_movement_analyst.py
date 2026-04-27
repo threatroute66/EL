@@ -111,6 +111,16 @@ class LateralMovementAnalystAgent(Agent):
             }
             if h.source_ip:
                 facts["source_ip"] = h.source_ip
+            # Surface every source IP (with frequency) so the IOC
+            # extractor + cross-case knowledge store + combined-report
+            # IOC overlap pick them up. Top-of-list lateral pivots
+            # (e.g. SRL-2018 dmz-ftp's `172.16.5.26 → rsydow ×68`)
+            # were previously visible only in claim text.
+            if h.source_ips:
+                facts["source_ips"] = [ip for ip, _ in h.source_ips]
+                facts["source_ips_with_count"] = [
+                    f"{ip}×{n}" for ip, n in h.source_ips
+                ]
             ev = EvidenceItem(
                 tool="el.evtx_triage", version="0.1.0",
                 command=f"evtx_triage.run_all({csv_path.name})",

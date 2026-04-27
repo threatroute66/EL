@@ -257,6 +257,13 @@ def _render_case_once(cd: Path, *, html: bool, quiet: bool = False) -> None:
     from el.skills import ioc_extract
     evidence_paths = [e.output_path for f in rows for e in f.evidence]
     ioc_sets = ioc_extract.extract_from_paths(evidence_paths)
+    # Also surface structured-fact source IPs (lateral_movement_analyst
+    # RDP/WinRM source IPs) that `_filter_ipv4` drops as RFC1918 — for
+    # enterprise APT cases the internal-network pivot IPs are the
+    # cross-host attribution signal, not noise.
+    fact_iocs = ioc_extract.extract_from_finding_facts(rows)
+    for k, v in fact_iocs.items():
+        ioc_sets.setdefault(k, set()).update(v)
     iocs = {k: sorted(v) for k, v in ioc_sets.items() if v}
     (cd / "iocs.json").write_text(_json.dumps(iocs, indent=2))
 

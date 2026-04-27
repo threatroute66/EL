@@ -491,6 +491,13 @@ class Coordinator:
 
         evidence_paths = [e.output_path for f in rows for e in f.evidence]
         ioc_sets = ioc_extract.extract_from_paths(evidence_paths)
+        # Structured-fact pass: pull source IPs from finding facts that
+        # the path-level extractor's RFC1918 filter drops. See
+        # `extract_from_finding_facts` for the rationale (enterprise
+        # APT internal pivots are load-bearing IOCs, not noise).
+        fact_iocs = ioc_extract.extract_from_finding_facts(rows)
+        for k, v in fact_iocs.items():
+            ioc_sets.setdefault(k, set()).update(v)
         iocs = {k: sorted(v) for k, v in ioc_sets.items() if v}
         (ctx.case_dir / "iocs.json").write_text(json.dumps(iocs, indent=2))
 

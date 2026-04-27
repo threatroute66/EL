@@ -514,3 +514,49 @@ def extract_from_paths(paths: Iterable[str | Path]) -> dict[str, set[str]]:
         for k, v in extract(text, source_kind=kind).items():
             merged.setdefault(k, set()).update(v)
     return merged
+
+
+# Structured-fact keys that carry actor-relevant IPs the path-level
+# extractor's _filter_ipv4 would otherwise drop as RFC1918. Set by
+# `lateral_movement_analyst` (RDP / WinRM source IPs) and any future
+# agent that wants to surface internal-network pivots as IOCs in
+# enterprise APT cases — the SRL-2018 dmz-ftp pattern, where
+# `172.16.5.26 → rsydow → dmz-ftp` is the load-bearing pivot.
+_FACT_IP_KEYS = ("source_ip", "source_ips", "src_ip", "src_ips",
+                  "target_host", "remote_host")
+
+
+def extract_from_finding_facts(findings) -> dict[str, set[str]]:
+    """Walk findings' evidence.extracted_facts for IP-shaped values
+    in `_FACT_IP_KEYS`. Returns the same {kind: set} shape as
+    `extract_from_paths` so callers can union the results.
+
+    Bypasses `_filter_ipv4` so RFC1918 lateral-pivot IPs land in the
+    case IOC catalog. Public IPs surfaced this way are a strict
+    superset of what the path scan finds; merging is set-union.
+    """
+    out: dict[str, set[str]] = {"ipv4": set(), "ipv6": set()}
+    ipv4_re = _IPV4
+    ipv6_re = _IPV6
+    for f in findings:
+        for ev in getattr(f, "evidence", []) or []:
+            facts = getattr(ev, "extracted_facts", None) or {}
+            for key in _FACT_IP_KEYS:
+                v = facts.get(key)
+                vals: list[str] = []
+                if isinstance(v, str) and v:
+                    vals = [v]
+                elif isinstance(v, list):
+                    vals = [x for x in v if isinstance(x, str) and x]
+                for s in vals:
+                    if ipv4_re.fullmatch(s):
+                        out["ipv4"].add(s)
+                    elif ipv6_re.fullmatch(s):
+                        out["ipv6"].add(s)
+                    else:
+                        # Some agents pass "ip×count" or "ip (×n)";
+                        # extract the leading address.
+                        m = ipv4_re.search(s)
+                        if m:
+                            out["ipv4"].add(m.group(0))
+    return out

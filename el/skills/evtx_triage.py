@@ -50,6 +50,12 @@ class EvtxEvent:
     map_description: str
     payload: dict                     # PayloadData1..6 concatenated + parsed
     source_file: str = ""             # which .evtx the row came from
+    # `RemoteHost` column from EvtxECmd CSV. TerminalServices 1149
+    # writes the RDP source IP here (NOT in PayloadData), and so do
+    # several Security 4624 / 4625 records on some EvtxECmd versions.
+    # Without this column, RDP / WinRM source-IP extraction silently
+    # missed the value on SRL-2018 (`172.16.5.26 → dmz-ftp` pivot).
+    remote_host: str = ""
 
     @property
     def dt(self) -> datetime | None:
@@ -100,6 +106,7 @@ def stream_events(csv_path: Path):
                 provider=row.get("Provider", "").strip(),
                 computer=row.get("Computer", "").strip(),
                 user_name=row.get("UserName", "").strip(),
+                remote_host=(row.get("RemoteHost") or "").strip(),
                 map_description=row.get("MapDescription", "").strip(),
                 payload=payload,
                 source_file=row.get("SourceFile", "").strip(),
@@ -213,7 +220,15 @@ class LMHit:
     first_seen: str = ""
     last_seen: str = ""
     sample_events: list[EvtxEvent] = field(default_factory=list)
-    source_ip: str = ""               # when extractable (RDP / WinRM)
+    source_ip: str = ""               # most-frequent source IP (RDP / WinRM)
+    # Full set of (ip, count) pairs across this technique's hits, sorted
+    # by frequency descending. Surfaced into the agent's
+    # extracted_facts so RDP / WinRM source IPs propagate to the IOC
+    # catalog + cross-case knowledge store, and show up in the
+    # combined-report cross-host overlap. Was originally only
+    # embedded in `description` text; missed by `ioc_extract` which
+    # walks structured facts, not prose.
+    source_ips: list[tuple[str, int]] = field(default_factory=list)
     source_user: str = ""
     target_host: str = ""
     attack: list[tuple[str, str]] = field(default_factory=list)
@@ -437,16 +452,28 @@ def detect_rdp_destination(
         return out
     hits = ts1149 + rdp_4624
     first, last = _summary(hits)
-    # Source IP mining from 1149 PayloadData
+    # Source IP mining. EvtxECmd writes the RDP source IP into the
+    # `RemoteHost` column on TerminalServices 1149 events (and on
+    # several 4624 schemas). Older / non-EvtxECmd exports embed it
+    # in PayloadData as "Source Network Address: ..." — we still
+    # match that as a fallback.
     src_ips: Counter = Counter()
-    for e in ts1149:
+    import re as _re
+    _re_addr = _re.compile(
+        r"\b(?:Source Network Address|Source IP):?\s*([0-9a-fA-F:.]+)")
+    for e in ts1149 + rdp_4624:
+        # Primary: RemoteHost column (EvtxECmd modern schema).
+        if e.remote_host and e.remote_host.lower() not in ("", "-", "local"):
+            src_ips[e.remote_host] += 1
+            continue
+        # Fallback: regex on payload text.
         for v in e.payload.values():
-            # 1149 PayloadData looks like "User: ... Domain: ... Source Network Address: 1.2.3.4"
-            import re
-            m = re.search(r"\b(?:Source Network Address|Source IP):?\s*([0-9a-fA-F:.]+)", v)
+            m = _re_addr.search(v)
             if m:
                 src_ips[m.group(1)] += 1
+                break
     src_list = ", ".join(f"{ip} (×{n})" for ip, n in src_ips.most_common(5))
+    src_ips_sorted = src_ips.most_common()
     out.append(LMHit(
         technique="rdp",
         subtechnique="inbound_session",
@@ -458,6 +485,7 @@ def detect_rdp_destination(
         event_count=len(hits), first_seen=first, last_seen=last,
         sample_events=(ts1149[:2] + rdp_4624[:2])[:3],
         source_ip=next(iter(src_ips), ""),
+        source_ips=src_ips_sorted,
         attack=[("T1021.001", "Remote Services: Remote Desktop Protocol")],
     ))
     return out
