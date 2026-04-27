@@ -44,6 +44,11 @@ _CSS = """
 html, body { margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont,
     "Segoe UI", system-ui, sans-serif; }
 body { background: #0d1117; color: #c9d1d9; line-height: 1.5; }
+/* Sticky-header offset for in-page anchor jumps (#findings,
+   #timeline, drawer-on-fid clicks). Without this the browser
+   scrolls the target into the area covered by the sticky topbar,
+   making the anchor appear "several lines below" the heading. */
+html { scroll-padding-top: 110px; }
 header.topbar { background: #161b22; border-bottom: 1px solid #30363d;
     padding: 12px 24px; position: sticky; top: 0; z-index: 10; }
 header.topbar h1 { margin: 0; font-size: 18px; font-weight: 600; color: #f0f6fc; }
