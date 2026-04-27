@@ -84,7 +84,9 @@ def iter_rows(run: PluginRun) -> Iterator[dict]:
     `json.JSONDecodeError → rows=[]` behaviour) so a partial-write
     crash doesn't poison every consumer.
     """
-    if not run.streaming:
+    # `getattr` defensive — lets tests that pre-date the streaming
+    # field pass plain row-list mocks without breaking.
+    if not getattr(run, "streaming", False):
         yield from run.rows
         return
     if not run.stdout_path.is_file():

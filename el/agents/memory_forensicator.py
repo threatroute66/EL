@@ -67,6 +67,18 @@ LIN_PLUGINS = [
     "linux.malfind.Malfind",
 ]
 
+# Plugins whose row sets are large enough to OOM the wrapper on
+# DC-class images. Routed via vol3 streaming mode (jsonl, no
+# in-memory buffer, consumers iterate via vol3.iter_rows). The
+# SRL-2018 mail capture (18 GB image into 16 GB host) OOM-killed
+# memory_forensicator at 15 GB anon-RSS — symptom of these
+# plugins each materialising hundreds of MB of JSON.
+STREAMING_PLUGINS = {
+    "windows.netscan.NetScan",
+    "windows.malfind.Malfind",
+    "linux.malfind.Malfind",
+}
+
 
 class MemoryForensicatorAgent(Agent):
     name = "memory_forensicator"
@@ -98,13 +110,17 @@ class MemoryForensicatorAgent(Agent):
         for plugin, extra in plugin_specs:
             try:
                 r = vol3.run_plugin(ctx.input_path, plugin, analysis,
-                                     extra_args=extra, timeout=900)
+                                     extra_args=extra, timeout=900,
+                                     streaming=plugin in STREAMING_PLUGINS)
                 runs[plugin] = r
                 ev = r.as_evidence()
-                if r.rc == 0 and r.rows:
+                # Use `row_count` so this works for both eager (rows
+                # populated) and streaming (rows empty, count from
+                # the on-disk jsonl line scan) modes.
+                if r.rc == 0 and r.row_count > 0:
                     out.append(self.emit(ctx, Finding(
                         case_id=ctx.case_id, agent=self.name,
-                        claim=f"{plugin}: {len(r.rows)} row(s) parsed",
+                        claim=f"{plugin}: {r.row_count} row(s) parsed",
                         confidence="high", evidence=[ev],
                     )))
                 elif r.rc == 0:
@@ -145,7 +161,8 @@ class MemoryForensicatorAgent(Agent):
         if family == "windows" and {"windows.pslist.PsList", "windows.psscan.PsScan"} <= runs.keys():
             out.extend(self._diff_hidden_processes(
                 ctx, runs["windows.pslist.PsList"], runs["windows.psscan.PsScan"]))
-        if "windows.malfind.Malfind" in runs and runs["windows.malfind.Malfind"].rows:
+        if ("windows.malfind.Malfind" in runs
+                and runs["windows.malfind.Malfind"].row_count > 0):
             out.extend(self._flag_malfind(ctx, runs["windows.malfind.Malfind"]))
             out.extend(self._flag_pe_headers(ctx, runs["windows.malfind.Malfind"]))
             out.extend(self._report_dumped_regions(ctx, runs["windows.malfind.Malfind"]))
@@ -512,7 +529,7 @@ class MemoryForensicatorAgent(Agent):
         are reflectively-loaded PE images not backed by a disk file — a
         classic hollowing / injection indicator stronger than raw shellcode."""
         mz_hits: list[dict] = []
-        for row in run.rows:
+        for row in vol3.iter_rows(run):
             if not isinstance(row, dict):
                 continue
             hexdump = (row.get("Hexdump") or "").strip()
@@ -547,8 +564,10 @@ class MemoryForensicatorAgent(Agent):
         # 8 — running dumpfiles per-PID against more than that on a
         # large image starts hitting hours of runtime.
         pids: list[int] = []
-        seen = set()
-        for row in malfind_run.rows or []:
+        seen: set[int] = set()
+        for row in vol3.iter_rows(malfind_run):
+            if not isinstance(row, dict):
+                continue
             pid = row.get("PID") or row.get("pid")
             if pid is None:
                 continue
@@ -767,7 +786,12 @@ class MemoryForensicatorAgent(Agent):
           - Lateral with only CLOSED sockets → medium
         """
         out: list[Finding] = []
-        rows = [r for r in run.rows if isinstance(r, dict)]
+        # Stream from disk in streaming mode; the netscan_triage
+        # detectors take a list of dicts so we still materialise — but
+        # ONLY the rows that look right (drops malformed/garbage),
+        # which on a multi-thousand-row DC-class netscan means a
+        # smaller list than the eager `run.rows` allocation.
+        rows = [r for r in vol3.iter_rows(run) if isinstance(r, dict)]
         if not rows:
             return out
 
@@ -829,12 +853,25 @@ class MemoryForensicatorAgent(Agent):
     def _flag_malfind(self, ctx: AgentContext, run: vol3.PluginRun) -> list[Finding]:
         out: list[Finding] = []
         ev = run.as_evidence()
-        names = sorted({(r.get("Process") or "").lower()
-                        for r in run.rows if isinstance(r, dict)})
+        # Single-pass aggregation so streaming runs (jsonl on disk) only
+        # touch the file once. Was two passes when malfind ran in eager
+        # mode; equivalent for `iter_rows(run.rows)` consumers.
+        names: set[str] = set()
+        cred_hits: dict[str, int] = {}
+        total = 0
+        for row in vol3.iter_rows(run):
+            if not isinstance(row, dict):
+                continue
+            total += 1
+            proc = (row.get("Process") or "").lower()
+            if proc:
+                names.add(proc)
+            if proc in self.CREDENTIAL_ACCESS_TARGETS:
+                cred_hits[proc] = cred_hits.get(proc, 0) + 1
         out.append(self.emit(ctx, Finding(
             case_id=ctx.case_id, agent=self.name,
-            claim=f"malfind flagged {len(run.rows)} region(s) across processes: "
-                  f"{', '.join(filter(None, names))}",
+            claim=f"malfind flagged {total} region(s) across processes: "
+                  f"{', '.join(sorted(names))}",
             confidence="high", evidence=[ev],
             hypotheses_supported=["H_PROCESS_INJECTION", "H_CODE_EXECUTION"],
         )))
@@ -843,14 +880,6 @@ class MemoryForensicatorAgent(Agent):
         # winlogon, services, csrss, wininit, smss) is NOT explainable by JIT
         # runtimes — these processes don't run managed code. A malfind hit
         # here is high-signal for credential theft (mimikatz-class).
-        cred_hits: dict[str, int] = {}
-        for row in run.rows:
-            if not isinstance(row, dict):
-                continue
-            proc = (row.get("Process") or "").lower()
-            if proc in self.CREDENTIAL_ACCESS_TARGETS:
-                cred_hits[proc] = cred_hits.get(proc, 0) + 1
-
         if cred_hits:
             detail = ", ".join(f"{p}×{n}" for p, n in sorted(cred_hits.items()))
             out.append(self.emit(ctx, Finding(
