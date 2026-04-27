@@ -56,9 +56,15 @@ header.topbar h1 .case-id { font-family: "SF Mono", Menlo, Consolas, monospace;
     color: #58a6ff; font-weight: 500; margin-left: 10px; }
 header.topbar .meta { margin-top: 4px; font-size: 12px; color: #8b949e; }
 header.topbar .meta .lead { color: #f85149; font-weight: 600; }
-header.topbar nav { margin-top: 10px; }
-header.topbar nav a { color: #58a6ff; text-decoration: none; margin-right: 18px;
-    font-size: 13px; font-weight: 500; padding: 4px 10px; border-radius: 6px; }
+/* Single-line nav: 14 anchors must fit on one row so the sticky-
+   header height stays predictable and `scroll-padding-top` lands
+   anchor jumps on the right heading. flex + nowrap forces a
+   horizontal overflow on narrow viewports rather than wrapping. */
+header.topbar nav { margin-top: 8px; display: flex; flex-wrap: nowrap;
+    gap: 4px; overflow-x: auto; scrollbar-width: thin; }
+header.topbar nav a { color: #58a6ff; text-decoration: none;
+    font-size: 12px; font-weight: 500; padding: 3px 7px;
+    border-radius: 5px; white-space: nowrap; flex-shrink: 0; }
 header.topbar nav a:hover { background: #21262d; }
 main { padding: 24px; max-width: 1200px; margin: 0 auto; }
 section { margin-bottom: 48px; }
