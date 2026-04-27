@@ -296,7 +296,7 @@ def _render_case_once(cd: Path, *, html: bool, quiet: bool = False) -> None:
 def report_cmd(
     case_dir: str = typer.Argument(..., help="Path to a case directory"),
     html: bool = typer.Option(
-        False, "--html",
+        True, "--html",
         help="Also render a self-contained case.html web view alongside "
              "the Markdown report (Tier 1 of docs/web-view-design.md)."),
     watch: bool = typer.Option(
