@@ -131,6 +131,12 @@ Plus: AGPL-3.0-or-later license + README host-requirements block added.
    on the pre-expansion 3.8 GB VM (OOM-killed on two initial DC runs).
    Could be rewritten as a generator with pre-filtered EID allowlist
    if the tool has to run on smaller hosts again.
+   _**Resolved 2026-04-27 in commit `62fe5cd`** — `iter_events`
+   replaced with `stream_events` generator + `_build_index_streaming`
+   builds the (channel, EventId) index on the fly. Per-row payload
+   filters drop bulk default-AES Kerberos 4769 tickets and non-RDP
+   4624 logons. Validated standalone on the same DC CSV: 5 M+ rows →
+   308 K filtered events, peak RSS 527 MiB._
 
 4. **SharePoint WCF false-positive class.** `base-sp` showed 40×
    ESTABLISHED to `.4.7:808` which is legitimate inter-server SP WCF,
@@ -151,10 +157,63 @@ Plus: AGPL-3.0-or-later license + README host-requirements block added.
 - `172.16.4.7` on port `:22233` (base-sp) remains unexplained — not a
   known port and not traced to a specific service in this writeup.
 
+## 2026-04-27 disk-only re-run — combined-case stitch
+
+Same 7 disk images, fresh ledgers under `srl2018-comb-r1-*`, single
+combined report at `cases/_combined/srl2018-enterprise-r2/`
+(`report.md` + `combined.html`). Driver script ran the 7 disks
+serially; total wall ~50 min for the first pass, +30 min for the DC
+retry once the streaming fix landed.
+
+### Per-host leaders (combined-r2)
+
+| Host | Leader | Score |
+|---|---|---:|
+| `srl2018-comb-r1-dmzftp` | H_APT_ESPIONAGE | **49** |
+| `srl2018-comb-r1-dc-r4` | H_APT_ESPIONAGE | **36** |
+| `srl2018-comb-r1-rd01` | H_APT_ESPIONAGE | 31 |
+| `srl2018-comb-r1-file` | H_APT_ESPIONAGE | 30 |
+| `srl2018-comb-r1-wkstn05` | H_APT_ESPIONAGE | 30 |
+| `srl2018-comb-r1-wkstn01` | H_APT_ESPIONAGE | 27 |
+| `srl2018-comb-r1-rd02` | H_ANTI_FORENSICS | 20 |
+
+Combined-report headline: 622 findings (high=231), 15 ATT&CK
+techniques, 12 cross-host IOC overlaps. The 6/7 hosts leading
+H_APT_ESPIONAGE — including the DC after the streaming fix — match
+the original 2026-04-21 shakedown's per-host disk verdict with
+slightly higher scores under the now-richer detector set
+(MACB_TIMESTOMP_SKEW, kerberoast RC4-only filter, etc.).
+
+### Bugs surfaced in this re-run → fixes landed
+
+| Commit | Gap | Fix |
+|---|---|---|
+| `de3a6fd` | `el/skills/plaso.py` passed `<storage> <source>` as positionals; modern log2timeline (20240308+) rejects with rc=2. Every prior `--timeline` run silently emitted zero events. | `--storage_file` switch + source positional. |
+| `04f3301` | Plaso preset `win10` was renamed/removed in 2024+ Plaso. Wrapper default produced "Unknown parser" → empty 86 KB storage. | Default to `win_gen` (XP / 7 / 8 / 10 / 11). |
+| `62fe5cd` | `evtx_triage.iter_events` materialised 5 M+ rows of DC EVTX into Python; agent OOM-killed at ~4.6 GB anon-RSS in `windows_artifact` mid-run. | `stream_events` generator + per-(channel, EventId) filter at stream time + payload predicates that drop 2.24 M default-AES 4769 Kerberos tickets and 800 K non-RDP 4624 logons. Peak RSS dropped from OOM to 527 MiB. |
+| `90bcbc3` | `lateral_movement_analyst` / `credential_analyst` / `powershell_analyst` emit `first_seen_utc` without `+00:00`; `min(candidates)` mixed naive + aware datetimes and aborted narrative synthesis on every Windows EVTX case with `_(Narrative synthesis skipped: can't compare offset-naive and offset-aware datetimes)_` instead of the executive narrative. | Fold naive datetimes to UTC in `_parse_any_dt`. |
+| `5cac2e9` | `el combined-report` defaulted to Markdown only; `combined.html` is the actually-useful artifact and Snap-confined Chromium can't read `.md` via `file://` regardless. | Flip default to render HTML; `--no-html` opts out. |
+| `340c8cd` | `combined.html` per-host drill-down hrefs used the absolute filesystem path `/opt/EL/cases/<case>/reports/case.html` — 404'd under `el serve` (rooted at `/opt/EL/cases/`, not `/`). | `os.path.relpath` produces `../../<case>/reports/case.html`, resolves under both `file://` and `el serve`. |
+| `ab87372` | Cross-Host Signal Matrix header skewed: first cell ("Signal") rendered with `class='case'` (vertical text) while data first cell used `class='signame'` (horizontal). Column 0 split into a narrow vertical-header strip + a wider horizontal-data strip. | First header cell now uses `class='signame'`; only host-name columns keep the rotated rendering. |
+| `12b3063` | Anchor jumps in `case.html` and `combined.html` landed several lines below the heading because the sticky topbar covered the target. | `html { scroll-padding-top: 110px; }` in both renderers. |
+| `f675197` | `case.html` nav (14 anchors) wrapped to two lines on narrower viewports, breaking the 110 px scroll-padding offset. | Tighter nav (12 px font, 3×7 padding, gap-4) + `display: flex; flex-wrap: nowrap; overflow-x: auto`. Single line at standard widths; horizontal scroll on narrow ones. |
+
+### Outstanding from the original shakedown — still open
+
+- Memory captures **not** included in this re-run (disk-only).
+  21 hosts × memory analysis would require unzipping 22 .7z files
+  (~60 GB uncompressed) and the host had to land a streaming-fix
+  PR before disk could complete; left for a follow-on.
+- Beacon-on-server-class-host calibration (#1) and
+  execution-corroborator volume-driven small lifts (#2) untouched.
+- SharePoint `:808` WCF false-positive class (#4) untouched.
+
 ## Artifacts
 
 - Per-case outputs under `/opt/EL/cases/srl-*/` (sealed tar.gz in
   `/opt/EL/cases/_archives/`).
+- 2026-04-27 re-run combined output:
+  `/opt/EL/cases/_combined/srl2018-enterprise-r2/{report.md,combined.html}`.
 - 395k IOCs in `~/.el/knowledge.sqlite` with `case_id` provenance.
 - Commits on `origin/main`: PR-B through PR-G, AGPL, README, shakedown
   writeup (this file) — all between `3fa18a6` (session start) and the
