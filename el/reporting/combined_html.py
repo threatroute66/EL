@@ -613,15 +613,26 @@ def _signal_matrix_html(cases: list[CaseSlice]) -> str:
     if len(matrix) <= 1:
         return "<p style='color:#8b949e'>No signal-matrix rows fired.</p>"
     header = matrix[0]
-    hdr_cells = "".join(
-        f"<th class='case'>{html.escape(h)}</th>" for h in header)
+    # First header cell ("Signal") gets `class='signame'` — same as
+    # the data-row first cell — so column 0 has horizontal text top
+    # and bottom and the column widths align. The remaining headers
+    # are host names rendered vertically (`class='case'` invokes
+    # writing-mode: vertical-rl). Without this, the rotated "Signal"
+    # cell collapsed to a narrow column while the wide signal-name
+    # data cells expanded a separate column, skewing the matrix.
+    hdr_cells = [
+        f"<th class='signame'>{html.escape(header[0])}</th>"
+    ]
+    for h in header[1:]:
+        hdr_cells.append(f"<th class='case'>{html.escape(h)}</th>")
     rows_html = []
     for row in matrix[1:]:
         cells = [f"<td class='signame'>{html.escape(row[0])}</td>"]
         for cell in row[1:]:
             cells.append(f"<td class='dot'>{'•' if cell else ''}</td>")
         rows_html.append("<tr>" + "".join(cells) + "</tr>")
-    return (f"<div class='sig-matrix'><table><thead><tr>{hdr_cells}</tr>"
+    return (f"<div class='sig-matrix'><table><thead><tr>"
+            f"{''.join(hdr_cells)}</tr>"
             f"</thead><tbody>{''.join(rows_html)}</tbody></table></div>")
 
 
