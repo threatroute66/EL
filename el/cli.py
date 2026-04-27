@@ -363,12 +363,13 @@ def combined_report_cmd(
         help="Combined case name. Defaults to longest common case_id prefix "
              "(e.g. 'srl2015') or 'combined-case'."),
     render_html: bool = typer.Option(
-        False, "--html",
-        help="Also render a combined.html multi-host dashboard alongside "
-             "the markdown. Includes joint ACH matrix (heatmap), unified "
-             "swim-lane timeline, merged cross-host graph, and per-case "
-             "narrative blocks. Links into each host's case.html for "
-             "drill-down."),
+        True, "--html/--no-html",
+        help="Render the combined.html multi-host dashboard alongside "
+             "the markdown (default: on). Includes joint ACH matrix "
+             "(heatmap), unified swim-lane timeline, merged cross-host "
+             "graph, and per-case narrative blocks; links into each "
+             "host's case.html for drill-down. Pass `--no-html` to "
+             "skip the HTML render (Markdown-only output)."),
 ) -> None:
     """Stitch N per-case ledgers into a single multi-host report.
 
