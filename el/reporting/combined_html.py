@@ -700,13 +700,24 @@ def _ioc_overlap_html(cases: list[CaseSlice]) -> str:
             f"<th>Seen in</th></tr></thead><tbody>{''.join(rows)}</tbody></table>")
 
 
-def _per_case_links_html(cases: list[CaseSlice]) -> str:
+def _per_case_links_html(cases: list[CaseSlice], out_path: Path) -> str:
+    """Render the Hosts & Drill-down table. Hrefs are relative to
+    `out_path` (the combined.html on disk) so the link resolves
+    correctly under both `file://` and `el serve` (which roots its
+    URL space at `/opt/EL/cases`, not `/`). Absolute filesystem paths
+    fail under the served path because the server does not expose
+    `/opt/EL/cases/...` — it serves `/<case>/reports/case.html`."""
+    import os as _os
     rows = []
     for c in cases:
         case_html = c.case_dir / "reports" / "case.html"
-        link_html = (f"<a href='{case_html}' target='_blank'>open case.html</a>"
-                     if case_html.exists() else
-                     "<span style='color:#8b949e'>case.html not rendered yet</span>")
+        if case_html.exists():
+            href = _os.path.relpath(case_html, out_path.parent)
+            link_html = (f"<a href='{html.escape(href)}' "
+                         f"target='_blank'>open case.html</a>")
+        else:
+            link_html = ("<span style='color:#8b949e'>case.html "
+                         "not rendered yet</span>")
         hid, score = c.leading
         rows.append(
             f"<tr><td><code>{html.escape(c.case_id)}</code></td>"
@@ -1174,7 +1185,7 @@ def render_combined_html(
     sig_html = _signal_matrix_html(cases)
     attack_html = _attack_heatmap_html(techniques)
     ioc_html = _ioc_overlap_html(cases)
-    hosts_html = _per_case_links_html(cases)
+    hosts_html = _per_case_links_html(cases, out_path)
 
     # Narrative — intro + per-case blocks
     from el.reporting.narrative import evidence_time as _nar_time
