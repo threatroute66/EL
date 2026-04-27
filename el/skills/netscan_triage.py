@@ -138,6 +138,24 @@ _BENIGN_FOREIGN = {
 }
 
 
+# Calibration item from docs/SRL-2018-shakedown.md #1 + #4: when the
+# destination is RFC1918 (or RFC4193 ULA), these ports are legitimate
+# internal directory / collaboration services. Servers chatter to these
+# constantly (Exchange ↔ DC LDAP/GC, SharePoint inter-server WCF) and
+# the chatter trips the repeat-endpoint threshold. Suppress when
+# (RFC1918 destination AND port in this set). Still flagged for
+# external destinations — APT C2 on :389 to a public IP is a real
+# signal.
+_INTERNAL_DIRECTORY_PORTS = {
+    88,    # Kerberos
+    389,   # LDAP
+    636,   # LDAPS
+    3268,  # Global Catalog (LDAP)
+    3269,  # Global Catalog (LDAPS)
+    808,   # SharePoint inter-server WCF (legacy net.tcp default)
+}
+
+
 def _is_listen_or_bogon(addr: str) -> bool:
     if not addr:
         return True
@@ -147,6 +165,29 @@ def _is_listen_or_bogon(addr: str) -> bool:
     if addr.startswith(("127.", "169.254.", "224.", "239.", "255.",
                         "ff00:", "fe80:")):
         return True
+    return False
+
+
+def _is_rfc1918(addr: str) -> bool:
+    """RFC1918 IPv4 + RFC4193 IPv6 ULA. Matches by string prefix to
+    avoid pulling in `ipaddress`-module overhead per row on multi-
+    thousand-row netscans."""
+    if not addr:
+        return False
+    a = addr.strip()
+    if a.startswith("10."):
+        return True
+    if a.startswith("192.168."):
+        return True
+    if a.startswith("172."):
+        # 172.16.0.0/12 — second octet 16-31
+        try:
+            second = int(a.split(".", 2)[1])
+            return 16 <= second <= 31
+        except (ValueError, IndexError):
+            return False
+    if a.startswith(("fd", "fc")) and ":" in a:
+        return True   # ULA
     return False
 
 
@@ -191,6 +232,13 @@ def detect_repeat_endpoint_beacon(rows: list[dict],
         except (TypeError, ValueError):
             continue
         if port in LATERAL_ADMIN_PORTS:
+            continue
+        # Internal directory/collaboration chatter — Exchange ↔ DC
+        # LDAP/GC, inter-server SharePoint WCF — trips repeat-endpoint
+        # trivially on server-class hosts. Only suppress when the
+        # destination is RFC1918; APT C2 on :389 to a public IP is
+        # still a strong signal.
+        if port in _INTERNAL_DIRECTORY_PORTS and _is_rfc1918(fa):
             continue
         groups.setdefault((fa, port), []).append(r)
 

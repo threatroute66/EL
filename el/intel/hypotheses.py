@@ -220,6 +220,16 @@ def _h_supply_chain(f: Finding) -> int:
 
 
 def _h_bec(f: Finding) -> int:
+    # Calibration item from docs/SRL-2018-shakedown.md #2:
+    # `execution_corroborator` claims name binaries ("Outlook.exe ran
+    # from C:\Program Files\..."); the substring `outlook` would lift
+    # H_BEC trivially on every host that has Office installed (12-point
+    # leak observed on wkstn-01 r4). The corroborator's job is "this
+    # binary ran"; email/cloud hypothesis scoring belongs to
+    # `email_forensicator` / `cloud_forensicator` whose claims carry
+    # the contextual signals that aren't just a binary name.
+    if (f.agent or "") == "execution_corroborator":
+        return 0
     s = 0
     if _claim_contains("o365", "azuread", "graph.microsoft.com", "outlook",
                        "ews", "mailbox", "mailitemsaccessed")(f):
