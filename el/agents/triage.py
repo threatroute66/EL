@@ -180,6 +180,35 @@ class TriageAgent(Agent):
 
     def _maybe_run_vol3(self, ctx: AgentContext, analysis):
         out: list[Finding] = []
+        # Pre-flight host-RAM check: vol3 plugins page-fault through
+        # the memory image and Python wrappers retain large per-plugin
+        # state. On the SRL-2018 mail capture (18 GB image into 16 GB
+        # host) memory_forensicator OOM-killed mid-run with no graceful
+        # surface. Emit an insufficient finding now so the operator
+        # sees the constraint instead of a silent kill.
+        try:
+            img_size = ctx.input_path.stat().st_size
+        except OSError:
+            img_size = 0
+        try:
+            import os as _os
+            page_size = _os.sysconf("SC_PAGE_SIZE")
+            phys_pages = _os.sysconf("SC_PHYS_PAGES")
+            host_ram_bytes = page_size * phys_pages
+        except (ValueError, OSError, AttributeError):
+            host_ram_bytes = 0
+        if img_size and host_ram_bytes and img_size > host_ram_bytes:
+            out.append(self.emit(ctx, Finding(
+                case_id=ctx.case_id, agent=self.name,
+                confidence="insufficient",
+                claim=(f"Memory image size ({img_size // (1024**3)} GiB) "
+                       f"exceeds host physical RAM "
+                       f"({host_ram_bytes // (1024**3)} GiB) — vol3 "
+                       f"is likely to OOM-kill mid-run on plugins that "
+                       f"materialise per-process state. Run on a host "
+                       f"with ≥ {(img_size * 12 // 10) // (1024**3)} "
+                       f"GiB RAM, or pre-trim the image."),
+            )))
         try:
             family, run = vol3.detect_os(ctx.input_path, analysis / "vol3-banners")
             ev = run.as_evidence()
