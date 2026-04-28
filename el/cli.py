@@ -237,7 +237,8 @@ def provision_snapshot_cmd(
     console.print(f"[green]✓[/green] snapshot manifest: {p}")
 
 
-def _render_case_once(cd: Path, *, html: bool, quiet: bool = False) -> None:
+def _render_case_once(cd: Path, *, html: bool, executive: bool = False,
+                       quiet: bool = False) -> None:
     """Single-pass re-render: reads the ledger, recomputes ACH, IOC
     catalog, ATT&CK map, and writes report.md + findings.json +
     stix-bundle.json (+ case.html when html=True). Shared by `el
@@ -291,6 +292,12 @@ def _render_case_once(cd: Path, *, html: bool, quiet: bool = False) -> None:
                                 techniques=techniques)
         if not quiet:
             console.print(f"[bold]html[/bold]: {html_path}")
+    if executive:
+        from el.reporting.executive import render_executive_html
+        exec_path = render_executive_html(cd, case_id=case_id,
+                                            manifest=manifest)
+        if not quiet:
+            console.print(f"[bold]executive[/bold]: {exec_path}")
 
 
 @app.command("report")
@@ -301,6 +308,11 @@ def report_cmd(
         help="Also render a self-contained case.html web view alongside "
              "the Markdown report (Tier 1 of docs/web-view-design.md). "
              "Default on; pass --no-html to skip."),
+    executive: bool = typer.Option(
+        False, "--executive/--no-executive",
+        help="Also render reports/executive.html — a non-expert "
+             "executive view (plain language, glossary, recommendations) "
+             "alongside the analyst report. Default off."),
     watch: bool = typer.Option(
         False, "--watch",
         help="Re-render whenever findings.sqlite changes; run until "
@@ -321,7 +333,7 @@ def report_cmd(
         console.print(f"[red]not a case directory: missing manifest.json[/red]")
         raise typer.Exit(2)
 
-    _render_case_once(cd, html=html)
+    _render_case_once(cd, html=html, executive=executive)
 
     if not watch:
         return
@@ -347,7 +359,8 @@ def report_cmd(
                 continue
             last_mtime = mtime
             try:
-                _render_case_once(cd, html=html, quiet=True)
+                _render_case_once(cd, html=html, executive=executive,
+                                    quiet=True)
                 ts = datetime.now(timezone.utc).strftime("%H:%M:%S")
                 console.print(
                     f"[dim]{ts} UTC[/dim] · re-rendered on "

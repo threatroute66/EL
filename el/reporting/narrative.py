@@ -745,8 +745,270 @@ def render_markdown(nr: NarrativeReport) -> str:
     return "\n".join(lines)
 
 
+# ---------------------------------------------------------------------------
+# Executive (non-expert) digest
+# ---------------------------------------------------------------------------
+# Produces an 8–12 sentence prose summary suitable for stakeholders who
+# can't read ATT&CK T-IDs, ACH hypothesis tags, or detector pattern codes.
+# Operates over an already-built NarrativeReport so the analyst tier
+# (synthesize + render_markdown) and the exec tier never disagree about
+# the same case — both are deterministic projections of the same ledger.
+#
+# The exec tier intentionally drops:
+#   * finding-id citations (the analyst report keeps them)
+#   * agent names ("memory_forensicator" means nothing to a stakeholder)
+#   * tool internals ("YARA hits", "iLEAPP modules") unless glossary-translated
+#   * ACH gap arithmetic (replaced by qualitative confidence phrases)
+# ---------------------------------------------------------------------------
+
+from el.reporting import glossary as _glossary
+
+# Strip [ULID] citations like [01KQ9HN2CBB9BYB3FKFF1TJKQH]
+_FID_RE = re.compile(r"\s*\[[0-9A-Z]{20,30}\]")
+
+# Patterns that show up inside analyst claims and look like noise to a
+# stakeholder. Each is best-effort — the Right Fix™ is for agents to
+# populate EvidenceItem.human_summary, which the digest prefers when
+# set. These regexes only cleanse the fallback path.
+_NOISE_RES = (
+    re.compile(r"\bslot\d+-off\d+\b"),                     # disk slot offsets
+    re.compile(r"\bEID \d+\b"),                            # event IDs
+    re.compile(r"\b(?:first|last)=[\d :.\-+]+T?[\d :.]+"), # raw "first=..." stamps
+    re.compile(r"\bSamples?:.*$"),                         # Sample-of: trailers
+    re.compile(r"\b\d+ match\(es\)\.?"),                   # "8 match(es)."
+    re.compile(r"\b\d+ row\(s\)\b"),                       # "12 row(s)"
+    re.compile(r"\bsha256=[0-9a-f]{6,}…?"),                # truncated hashes
+)
+
+
+@dataclass
+class ExecutiveDigest:
+    """Non-expert digest of a NarrativeReport.
+
+    `summary_sentences` is the load-bearing field — 8 to 12 short
+    sentences that, read in order, tell a stakeholder what the
+    investigation found without using DFIR jargon. The other fields
+    surface specific details (affected hosts, activity window, open
+    questions) that a renderer may choose to break out into their own
+    sections of the executive HTML/PDF, instead of inlining."""
+
+    headline: str
+    confidence_phrase: str
+    summary_sentences: list[str] = field(default_factory=list)
+    affected_assets: list[str] = field(default_factory=list)
+    open_questions: list[str] = field(default_factory=list)
+    time_range_phrase: str | None = None
+
+    def as_paragraph(self) -> str:
+        return " ".join(self.summary_sentences)
+
+
+def _confidence_phrase(score: int, gap: int) -> str:
+    """Map ACH score + gap to qualitative confidence language. The
+    thresholds mirror what an analyst would call out informally — a
+    leader with score=0 is admitting the evidence is inconclusive, a
+    leader with both high score AND a wide gap from the runner-up is
+    the cleanest 'strong' case."""
+    if score <= 0:
+        return "the evidence currently available is too thin to support a single conclusion"
+    if score >= 10 and gap >= 5:
+        return "the evidence strongly supports this explanation"
+    if score >= 3 and gap >= 2:
+        return "the evidence moderately supports this explanation"
+    return "the evidence is preliminary and other explanations remain plausible"
+
+
+def _strip_jargon(text: str) -> str:
+    """Apply the glossary to a claim, replacing recognised tokens with
+    plain-English equivalents. Also strips finding-id citations,
+    common analyst-noise patterns (slot offsets, event IDs, raw
+    timestamps), and collapses multiple spaces. Best-effort — unknown
+    tokens fall through unchanged because the glossary refuses to
+    invent translations.
+
+    Agents that want clean exec-tier prose should populate
+    EvidenceItem.human_summary; the executive digest prefers that
+    over running this fallback over the analyst claim."""
+    text = _FID_RE.sub("", text or "")
+    # Replace each glossary-known token with its plain-English form.
+    # Use the same regex the glossary uses to spot terms, so the swap
+    # is consistent with what entries_used() reports.
+    def _swap(match: re.Match) -> str:
+        tok = match.group(0)
+        return _glossary.translate(tok)
+    out = _glossary._TOKEN_RE.sub(_swap, text)
+    for nr in _NOISE_RES:
+        out = nr.sub("", out)
+    # After noise removal, sweep up orphan prepositions/colons left
+    # behind (e.g. "in :" once a slot offset is gone, ":" floating
+    # before a removed Sample list).
+    out = re.sub(r"\bin\s*[:.](?:\s|$)", "", out)
+    out = re.sub(r":\s*(?=[.,;]|$)", "", out)
+    out = re.sub(r"\s+", " ", out).strip(" .,;:—-")
+    return out
+
+
+def _beat_lay_sentence(bb: "BeatBlock") -> str | None:
+    """Build one plain-English sentence describing a beat's evidence,
+    or None when the beat has no findings. Strips finding IDs and
+    glossary-translates jargon. Used for the body of the digest."""
+    if bb.finding_count == 0:
+        return None
+    # Take the highest-priority finding's claim, strip jargon, anchor
+    # to a beat-specific lead-in. We don't quote analyst prose verbatim
+    # because it carries internal token names like "T1003.001".
+    if not bb.top_findings:
+        return None
+    rep = bb.top_findings[0]
+    # Prefer an agent-supplied human_summary over the raw claim when
+    # any evidence item carries one — that's the opt-in path for
+    # exec-tier-quality prose (Phase 0.3). Falls back to glossary-
+    # stripped claim otherwise.
+    summary = next(
+        (ev.human_summary for ev in (rep.evidence or [])
+         if ev.human_summary), None,
+    )
+    claim_lay = summary or _strip_jargon(rep.claim or "")
+    lead = {
+        "trigger":   "Initial entry point: ",
+        "execution": "Code that ran on the host included ",
+        "persistence": "Persistence mechanism observed: ",
+        "discovery":   "Reconnaissance and credential-access activity: ",
+        "lateral":     "Movement to other hosts: ",
+        "collection":  "Data collected on the host: ",
+        "command_control": "Outbound control communication: ",
+        "impact":      "Impact: ",
+        "aftermath":   "Anti-forensic activity: ",
+    }.get(bb.beat, "")
+    sentence = f"{lead}{claim_lay}".rstrip(".") + "."
+    # Cap sentence length so the digest stays scannable. Long claims
+    # get truncated with an ellipsis rather than splitting prose mid-clause.
+    if len(sentence) > 180:
+        sentence = sentence[:177].rstrip(",;:— ") + "…"
+    return sentence
+
+
+def synthesize_executive(nr: NarrativeReport) -> ExecutiveDigest:
+    """Build an executive (non-expert) digest from a NarrativeReport.
+
+    Deterministic; no LLM. The analyst NarrativeReport is the input,
+    the digest is a plain-English projection of the same data.
+    """
+    headline = (
+        _glossary.translate(nr.leading_hypothesis)
+        if nr.leading_hypothesis
+        else "No primary explanation determined"
+    )
+    # If the glossary has no entry the translator returns the raw
+    # hypothesis tag (H_FOO_BAR) — sand it down to "the leading theory"
+    # rather than show internal codes.
+    if headline.startswith("H_"):
+        headline = "the leading theory cannot be summarised in plain language"
+
+    confidence = _confidence_phrase(nr.leading_score, nr.leading_gap)
+
+    sentences: list[str] = []
+
+    # 1 — Headline + confidence
+    sentences.append(
+        f"This investigation's leading theory is **{headline}**, and "
+        f"{confidence}."
+    )
+
+    # 2 — Optional runner-up call-out when ACH gap is small (forensic
+    # rigor: we never advocate a single theory when the evidence is
+    # genuinely close).
+    if nr.leading_gap < 3 and nr.runner_up_hypothesis:
+        runner_up_plain = _glossary.translate(nr.runner_up_hypothesis)
+        if not runner_up_plain.startswith("H_"):
+            sentences.append(
+                f"A second explanation — {runner_up_plain} — is also "
+                f"consistent with the evidence and cannot be ruled out."
+            )
+
+    # 3 — Time-range framing
+    earliest, latest = nr.evidence_time_range
+    if earliest and latest and earliest != latest:
+        sentences.append(
+            f"Evidence on the system spans {earliest[:10]} to {latest[:10]}."
+        )
+        time_phrase: str | None = f"{earliest[:10]} → {latest[:10]}"
+    elif earliest:
+        sentences.append(f"The earliest evidence is dated {earliest[:10]}.")
+        time_phrase = earliest[:10]
+    else:
+        time_phrase = None
+
+    # 4-6 — Body: lay description of up-to-three significant beats.
+    # Pick the beats that actually hit findings, in narrative order.
+    body_beats = [bb for bb in nr.beats
+                   if bb.finding_count > 0
+                   and bb.beat not in ("prologue",)]
+    body_beats.sort(key=lambda bb: BEATS.index(bb.beat))
+    for bb in body_beats[:4]:
+        s = _beat_lay_sentence(bb)
+        if s:
+            sentences.append(s)
+
+    # 7 — Affected assets (evidence file names — proxies for devices
+    # the executive recognises by handle).
+    affected: list[str] = []
+    if nr.prologue_facts.get("evidence"):
+        affected.append(str(nr.prologue_facts["evidence"]))
+
+    # 8 — Open questions (translated insufficient findings).
+    open_qs: list[str] = []
+    for f in nr.insufficient_findings[:3]:
+        clean = _strip_jargon(f.claim or "")
+        if clean and clean not in open_qs:
+            open_qs.append(clean.rstrip(".") + ".")
+    if open_qs:
+        sentences.append(
+            f"{len(open_qs)} question(s) remain open because the data "
+            f"needed to answer them was not in the collected evidence."
+        )
+
+    # 9 — Forensic-rigor disclaimer when score=0.
+    if nr.leading_score <= 0:
+        sentences.append(
+            "Because no theory crossed a meaningful evidence threshold, "
+            "this report does not advocate a single conclusion."
+        )
+
+    # Pad up to 5 sentences BEFORE the handoff so that handoff stays
+    # last. The fillers are factual ("the analyst report preserves
+    # full detail", confidence histogram callout) — never invented.
+    _filler = [
+        "Full technical detail is preserved in the analyst report "
+        "(case.html / report.md) for forensic review.",
+        f"Of {sum(1 for _ in nr.insufficient_findings) + nr.unresolved_count + 0} "
+        "investigative threads, those without sufficient grounding are "
+        "documented as open rather than guessed at.",
+    ]
+    fi = 0
+    while len(sentences) < 5 and fi < len(_filler):
+        sentences.append(_filler[fi])
+        fi += 1
+
+    # 10 — Hand-off (always last)
+    sentences.append(
+        "See the Findings section for the underlying evidence and the "
+        "Recommendations section for next steps."
+    )
+
+    return ExecutiveDigest(
+        headline=headline,
+        confidence_phrase=confidence,
+        summary_sentences=sentences,
+        affected_assets=affected,
+        open_questions=open_qs,
+        time_range_phrase=time_phrase,
+    )
+
+
 __all__ = [
     "BeatBlock", "NarrativeReport", "BEATS",
     "synthesize", "render_markdown",
     "evidence_time",
+    "ExecutiveDigest", "synthesize_executive",
 ]
