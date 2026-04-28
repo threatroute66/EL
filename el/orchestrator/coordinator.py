@@ -542,6 +542,33 @@ class Coordinator:
             if self.audit:
                 self.audit.warn("case_html_render_failed", err=str(e))
 
+        # Executive (non-expert) tier: HTML + PDF, both projections of
+        # the same ledger as the analyst report. Failure on either
+        # path is non-fatal — the analyst report is the source of
+        # truth; the executive deliverables are derived.
+        try:
+            from el.reporting.executive import render_executive_html
+            exec_html = render_executive_html(
+                ctx.case_dir, case_id=ctx.case_id,
+                manifest=manifest.__dict__,
+            )
+        except Exception as e:
+            exec_html = None
+            if self.audit:
+                self.audit.warn("executive_html_render_failed", err=str(e))
+        if exec_html is not None:
+            try:
+                from el.reporting.executive_pdf import (
+                    render_executive_pdf, WeasyPrintNotAvailable,
+                )
+                render_executive_pdf(exec_html)
+            except WeasyPrintNotAvailable as e:
+                if self.audit:
+                    self.audit.info("executive_pdf_skipped", err=str(e))
+            except Exception as e:
+                if self.audit:
+                    self.audit.warn("executive_pdf_render_failed", err=str(e))
+
         (ctx.case_dir / "transitions.json").write_text(
             json.dumps([(a.value, b.value) for a, b in self.transitions], indent=2)
         )

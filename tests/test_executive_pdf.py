@@ -153,10 +153,10 @@ def test_cli_pdf_flag_emits_pdf(tmp_path, monkeypatch):
     assert pdf.read_bytes()[:5] == b"%PDF-"
 
 
-def test_cli_pdf_without_executive_does_not_emit(tmp_path, monkeypatch):
-    """`--pdf` alone (without `--executive`) is a no-op for the PDF
-    side — there's no exec HTML to render from. Verifies the flag
-    wiring respects the dependency ordering."""
+def test_cli_no_executive_skips_pdf(tmp_path, monkeypatch):
+    """`--no-executive --pdf` is a no-op for the PDF side — there's
+    no exec HTML to render from. Verifies the flag wiring respects
+    the dependency ordering (exec→pdf)."""
     from typer.testing import CliRunner
     from el.cli import app
     from el.evidence import intake as intake_mod
@@ -170,8 +170,32 @@ def test_cli_pdf_without_executive_does_not_emit(tmp_path, monkeypatch):
         pass
     runner = CliRunner()
     result = runner.invoke(
-        app, ["report", str(m.case_dir), "--pdf", "--no-html"],
+        app, ["report", str(m.case_dir), "--no-executive", "--pdf",
+               "--no-html"],
     )
     assert result.exit_code == 0, result.output
     pdf = Path(m.case_dir) / "reports" / "executive.pdf"
     assert not pdf.exists()
+
+
+def test_cli_default_emits_pdf_when_weasyprint_present(tmp_path, monkeypatch):
+    """Default `el report` produces executive.pdf — the executive tier
+    (HTML + PDF) is on by default in Phase 5."""
+    pytest.importorskip("weasyprint")
+    from typer.testing import CliRunner
+    from el.cli import app
+    from el.evidence import intake as intake_mod
+    from el.evidence.ledger import open_ledger
+
+    monkeypatch.setattr(intake_mod, "CASE_ROOT", tmp_path / "cases")
+    src = tmp_path / "dummy.bin"
+    src.write_bytes(b"hi\n")
+    m = intake_mod.intake(src, case_id="cli-default-pdf")
+    with open_ledger(m.case_dir):
+        pass
+    runner = CliRunner()
+    result = runner.invoke(app, ["report", str(m.case_dir), "--no-html"])
+    assert result.exit_code == 0, result.output
+    pdf = Path(m.case_dir) / "reports" / "executive.pdf"
+    assert pdf.exists()
+    assert pdf.read_bytes()[:5] == b"%PDF-"

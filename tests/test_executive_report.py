@@ -220,10 +220,27 @@ def test_cli_executive_flag_emits_executive_html(tmp_path, monkeypatch):
     assert (Path(m.case_dir) / "reports" / "executive.html").exists()
 
 
-def test_cli_default_omits_executive_html(tmp_path, monkeypatch):
-    """Default `el report` (no --executive) does NOT emit the exec
-    report — analyst flow stays unchanged for users who don't ask
-    for the new tier."""
+def test_cli_default_emits_executive_html(tmp_path, monkeypatch):
+    """Default `el report` produces the executive HTML alongside
+    case.html — the executive tier is always derived from the same
+    ledger, so it should always exist for any rendered case."""
+    from typer.testing import CliRunner
+    from el.cli import app
+
+    monkeypatch.setattr(intake_mod, "CASE_ROOT", tmp_path / "cases")
+    src = tmp_path / "dummy.bin"
+    src.write_bytes(b"hi\n")
+    m = intake_mod.intake(src, case_id="cli-default-exec")
+    with open_ledger(m.case_dir):
+        pass
+    runner = CliRunner()
+    result = runner.invoke(app, ["report", str(m.case_dir), "--no-html"])
+    assert result.exit_code == 0, result.output
+    assert (Path(m.case_dir) / "reports" / "executive.html").exists()
+
+
+def test_cli_no_executive_flag_suppresses_executive(tmp_path, monkeypatch):
+    """Opt-out path: `--no-executive` suppresses the executive HTML."""
     from typer.testing import CliRunner
     from el.cli import app
 
@@ -234,6 +251,7 @@ def test_cli_default_omits_executive_html(tmp_path, monkeypatch):
     with open_ledger(m.case_dir):
         pass
     runner = CliRunner()
-    result = runner.invoke(app, ["report", str(m.case_dir), "--no-html"])
+    result = runner.invoke(app, ["report", str(m.case_dir),
+                                  "--no-executive", "--no-html"])
     assert result.exit_code == 0, result.output
     assert not (Path(m.case_dir) / "reports" / "executive.html").exists()

@@ -66,6 +66,13 @@ header.topbar nav a { color: #58a6ff; text-decoration: none;
     font-size: 12px; font-weight: 500; padding: 3px 7px;
     border-radius: 5px; white-space: nowrap; flex-shrink: 0; }
 header.topbar nav a:hover { background: #21262d; }
+header.topbar nav a.pdf-download {
+    margin-left: auto; background: #1f6feb22;
+    color: #79c0ff; border: 1px solid #1f6feb55;
+    display: inline-flex; align-items: center; gap: 4px; }
+header.topbar nav a.pdf-download:hover {
+    background: #1f6feb44; color: #ffffff; }
+header.topbar nav a.pdf-download svg { display: block; }
 main { padding: 24px; max-width: 1200px; margin: 0 auto; }
 section { margin-bottom: 48px; }
 section h2 { color: #f0f6fc; border-bottom: 1px solid #30363d; padding-bottom: 8px;
@@ -1486,6 +1493,13 @@ def render_html(
     <a href="#attack">ATT&amp;CK</a>
     <a href="#heatmap">Heatmap</a>
     <a href="#diamond">Diamond</a>
+    <a href="executive.pdf" download class="pdf-download"
+       title="Download the executive (non-expert) report as PDF"
+       aria-label="Download executive PDF"
+       ><svg width="13" height="13" viewBox="0 0 16 16" fill="none"
+        stroke="currentColor" stroke-width="1.6" stroke-linecap="round"
+        stroke-linejoin="round" aria-hidden="true"
+        ><path d="M8 1v10M4 7.5l4 4 4-4M2 14.5h12"/></svg> PDF</a>
   </nav>
 </header>
 <main>

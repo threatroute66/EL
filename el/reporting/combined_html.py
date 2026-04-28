@@ -62,6 +62,15 @@ section h2 { color: #f0f6fc; font-size: 20px; font-weight: 600;
 section h3 { color: #f0f6fc; font-size: 16px; margin: 20px 0 8px; }
 a { color: #58a6ff; text-decoration: none; }
 a:hover { text-decoration: underline; }
+a.pdf-download {
+    display: inline-flex; align-items: center; gap: 4px;
+    margin-left: 10px; padding: 2px 8px; border-radius: 5px;
+    background: #1f6feb22; color: #79c0ff;
+    border: 1px solid #1f6feb55; font-size: 11px; font-weight: 500;
+    text-decoration: none; }
+a.pdf-download:hover {
+    background: #1f6feb44; color: #ffffff; text-decoration: none; }
+a.pdf-download svg { display: block; }
 code, pre, .mono { font-family: "SF Mono", Menlo, Consolas, monospace;
     font-size: 12px; color: #8b949e; }
 .grid { display: grid; gap: 16px; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); }
@@ -724,16 +733,40 @@ def _per_case_links_html(cases: list[CaseSlice], out_path: Path) -> str:
     fail under the served path because the server does not expose
     `/opt/EL/cases/...` — it serves `/<case>/reports/case.html`."""
     import os as _os
+    # Inline SVG download icon — same one used in case.html so the
+    # affordance is consistent across single + combined report views.
+    _PDF_SVG = (
+        "<svg width='12' height='12' viewBox='0 0 16 16' fill='none' "
+        "stroke='currentColor' stroke-width='1.6' stroke-linecap='round' "
+        "stroke-linejoin='round' aria-hidden='true'>"
+        "<path d='M8 1v10M4 7.5l4 4 4-4M2 14.5h12'/></svg>"
+    )
     rows = []
     for c in cases:
         case_html = c.case_dir / "reports" / "case.html"
+        exec_pdf = c.case_dir / "reports" / "executive.pdf"
+        link_parts: list[str] = []
         if case_html.exists():
             href = _os.path.relpath(case_html, out_path.parent)
-            link_html = (f"<a href='{html.escape(href)}' "
-                         f"target='_blank'>open case.html</a>")
+            link_parts.append(
+                f"<a href='{html.escape(href)}' "
+                f"target='_blank'>open case.html</a>"
+            )
         else:
-            link_html = ("<span style='color:#8b949e'>case.html "
-                         "not rendered yet</span>")
+            link_parts.append(
+                "<span style='color:#8b949e'>case.html "
+                "not rendered yet</span>"
+            )
+        if exec_pdf.exists():
+            pdf_href = _os.path.relpath(exec_pdf, out_path.parent)
+            link_parts.append(
+                f"<a href='{html.escape(pdf_href)}' "
+                f"download class='pdf-download' "
+                f"title='Download executive PDF for {html.escape(c.case_id)}' "
+                f"aria-label='Download executive PDF'>"
+                f"{_PDF_SVG} PDF</a>"
+            )
+        link_html = "".join(link_parts)
         hid, score = c.leading
         rows.append(
             f"<tr><td><code>{html.escape(c.case_id)}</code></td>"

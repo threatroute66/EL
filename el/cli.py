@@ -323,16 +323,17 @@ def report_cmd(
              "the Markdown report (Tier 1 of docs/web-view-design.md). "
              "Default on; pass --no-html to skip."),
     executive: bool = typer.Option(
-        False, "--executive/--no-executive",
+        True, "--executive/--no-executive",
         help="Also render reports/executive.html — a non-expert "
              "executive view (plain language, glossary, recommendations) "
-             "alongside the analyst report. Default off."),
+             "alongside the analyst report. Default on; pass "
+             "--no-executive to skip."),
     pdf: bool = typer.Option(
-        False, "--pdf/--no-pdf",
-        help="Also render reports/executive.pdf via WeasyPrint. Only "
-             "meaningful with --executive (the PDF is the printable "
-             "form of the executive report). Skipped with a warning "
-             "if WeasyPrint is not installed."),
+        True, "--pdf/--no-pdf",
+        help="Also render reports/executive.pdf via WeasyPrint. The "
+             "PDF is the printable form of the executive report. "
+             "Default on (skipped automatically with a warning if "
+             "WeasyPrint is not installed). Pass --no-pdf to skip."),
     watch: bool = typer.Option(
         False, "--watch",
         help="Re-render whenever findings.sqlite changes; run until "
@@ -898,6 +899,17 @@ def investigate_bundle_cmd(
     console.print(f"[bold]synthesising[/bold] {len(bundle.devices)} "
                   f"device(s) into the bundle ledger…")
     bundle = synthesize_bundle(bundle_dir)
+
+    # Auto-render the bundle's reports — analyst case.html + executive
+    # HTML/PDF — so the bundle command is self-contained. Falls back
+    # to a yellow note on failure rather than raising; the per-device
+    # reports inside devices/<name>/reports/ still render via the
+    # coordinator regardless.
+    try:
+        _render_case_once(bundle_dir, html=True, executive=True, pdf=True)
+    except Exception as e:
+        console.print(
+            f"[yellow]bundle report render failed: {e}[/yellow]")
 
     console.print(f"[bold]bundle[/bold]: {bundle_dir}")
     console.print(f"[bold]devices[/bold]: "
