@@ -129,7 +129,24 @@ def survey() -> list[ToolStatus]:
         probe_ezt("RECmd.dll", "RECmd"),
         probe_ezt("PECmd.dll"),
         probe_ezt("AmcacheParser.dll"),
+        probe_weasyprint(),
     ]
+
+
+def probe_weasyprint() -> ToolStatus:
+    """WeasyPrint is a Python library, not a CLI — probe via import.
+    Marked optional: PDF generation is feature-gated on its presence,
+    so a missing install yields 'insufficient evidence' on that path
+    rather than a hard failure of the whole report run."""
+    try:
+        import weasyprint as _wp
+        return ToolStatus("weasyprint", None, _wp.__version__, True,
+                          note="executive PDF rendering")
+    except (ImportError, OSError) as e:
+        return ToolStatus(
+            "weasyprint", None, None, False,
+            note=f"executive PDF will be skipped ({type(e).__name__})",
+        )
 
 
 def _probe_path(path: str, name: str, version_args: list[str] | None = None) -> ToolStatus:

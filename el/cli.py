@@ -238,7 +238,7 @@ def provision_snapshot_cmd(
 
 
 def _render_case_once(cd: Path, *, html: bool, executive: bool = False,
-                       quiet: bool = False) -> None:
+                       pdf: bool = False, quiet: bool = False) -> None:
     """Single-pass re-render: reads the ledger, recomputes ACH, IOC
     catalog, ATT&CK map, and writes report.md + findings.json +
     stix-bundle.json (+ case.html when html=True). Shared by `el
@@ -298,6 +298,19 @@ def _render_case_once(cd: Path, *, html: bool, executive: bool = False,
                                             manifest=manifest)
         if not quiet:
             console.print(f"[bold]executive[/bold]: {exec_path}")
+        if pdf:
+            from el.reporting.executive_pdf import (
+                render_executive_pdf, WeasyPrintNotAvailable,
+            )
+            try:
+                pdf_path = render_executive_pdf(exec_path)
+                if not quiet:
+                    console.print(f"[bold]executive_pdf[/bold]: {pdf_path}")
+            except WeasyPrintNotAvailable as e:
+                # Don't crash the report run — surface the gap.
+                if not quiet:
+                    console.print(
+                        f"[yellow]executive PDF skipped: {e}[/yellow]")
 
 
 @app.command("report")
@@ -313,6 +326,12 @@ def report_cmd(
         help="Also render reports/executive.html — a non-expert "
              "executive view (plain language, glossary, recommendations) "
              "alongside the analyst report. Default off."),
+    pdf: bool = typer.Option(
+        False, "--pdf/--no-pdf",
+        help="Also render reports/executive.pdf via WeasyPrint. Only "
+             "meaningful with --executive (the PDF is the printable "
+             "form of the executive report). Skipped with a warning "
+             "if WeasyPrint is not installed."),
     watch: bool = typer.Option(
         False, "--watch",
         help="Re-render whenever findings.sqlite changes; run until "
@@ -333,7 +352,7 @@ def report_cmd(
         console.print(f"[red]not a case directory: missing manifest.json[/red]")
         raise typer.Exit(2)
 
-    _render_case_once(cd, html=html, executive=executive)
+    _render_case_once(cd, html=html, executive=executive, pdf=pdf)
 
     if not watch:
         return
@@ -360,7 +379,7 @@ def report_cmd(
             last_mtime = mtime
             try:
                 _render_case_once(cd, html=html, executive=executive,
-                                    quiet=True)
+                                    pdf=pdf, quiet=True)
                 ts = datetime.now(timezone.utc).strftime("%H:%M:%S")
                 console.print(
                     f"[dim]{ts} UTC[/dim] · re-rendered on "

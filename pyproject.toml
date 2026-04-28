@@ -35,6 +35,10 @@ dependencies = [
     # Office document deobfuscation — VBA macros (olevba) + RTF
     # embedded objects (rtfobj). BSD-2-Clause.
     "oletools>=0.60",
+    # PDF rendering for the executive (non-expert) report tier.
+    # Renders an HTML+CSS document to a paginated PDF so a stakeholder
+    # can print, email, or attach the report. BSD-3-Clause.
+    "weasyprint>=62",
 ]
 
 [project.optional-dependencies]
