@@ -119,13 +119,21 @@ def _evidence_is_protected(path: Path) -> bool:
     )
 
 
-def intake(input_path: str | Path, case_id: str | None = None) -> CaseManifest:
+def intake(input_path: str | Path, case_id: str | None = None,
+            case_dir: str | Path | None = None) -> CaseManifest:
+    """Hash the input + create a case workspace.
+
+    Default: case dir at CASE_ROOT / case_id. Pass `case_dir` to
+    override the default placement — the bundle pipeline uses this
+    to put each device under cases/<bundle-id>/devices/<name>/
+    instead of CASE_ROOT/<device-name>/.
+    """
     src = Path(input_path)
     if not src.exists():
         raise FileNotFoundError(f"input does not exist: {src}")
 
     cid = case_id or f"case-{ULID()}"
-    cdir = CASE_ROOT / cid
+    cdir = Path(case_dir) if case_dir is not None else (CASE_ROOT / cid)
     for sub in ("analysis", "exports", "reports", "raw"):
         (cdir / sub).mkdir(parents=True, exist_ok=True)
 

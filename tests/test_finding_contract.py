@@ -65,3 +65,43 @@ def test_evidence_human_summary_rejects_overlong():
     too_long = "x" * (HUMAN_SUMMARY_MAX_CHARS + 1)
     with pytest.raises(ValidationError):
         _evidence(human_summary=too_long)
+
+
+# --- Phase 3.1: device tag on Finding --------------------------------------
+# The device field is the bundle-case multi-host marker. None for single-host
+# cases (existing behaviour); set to the device label when a bundle's
+# synthesis pass copies findings into the bundle ledger.
+
+def test_finding_device_defaults_none():
+    f = Finding(case_id="c1", agent="a", claim="x",
+                confidence="insufficient")
+    assert f.device is None
+
+
+def test_finding_device_accepts_string():
+    f = Finding(case_id="c1", agent="a", claim="x",
+                confidence="insufficient", device="laptop")
+    assert f.device == "laptop"
+
+
+def test_finding_device_round_trips_through_json():
+    """Bundles persist findings via Pydantic JSON; the device tag
+    must round-trip cleanly so the synthesis pass + executive
+    renderer see the same value."""
+    f = Finding(case_id="c1", agent="a", claim="x",
+                confidence="insufficient", device="phone")
+    blob = f.model_dump_json()
+    restored = Finding.model_validate_json(blob)
+    assert restored.device == "phone"
+
+
+def test_finding_old_json_without_device_still_loads():
+    """Backwards-compat: a payload from before the device field
+    existed must still validate (defaults to None)."""
+    legacy = (
+        '{"finding_id":"01TEST","case_id":"c1","agent":"a",'
+        '"claim":"x","confidence":"insufficient",'
+        '"created_utc":"2024-01-01T00:00:00+00:00"}'
+    )
+    f = Finding.model_validate_json(legacy)
+    assert f.device is None

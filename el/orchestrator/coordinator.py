@@ -315,16 +315,25 @@ class Coordinator:
             return MemoryForensicatorAgent()
         return MemoryForensicatorAgent()
 
-    def investigate(self, input_path: str | Path, case_id: str | None = None) -> RunResult:
+    def investigate(self, input_path: str | Path, case_id: str | None = None,
+                     case_dir: str | Path | None = None) -> RunResult:
+        """Run the coordinator end-to-end on `input_path`.
+
+        `case_dir` overrides the default cases/<case_id>/ placement —
+        used by the bundle pipeline to put each device's sub-case
+        under cases/<bundle>/devices/<name>/.
+        """
         self._install_signal_handlers()
         try:
-            return self._investigate_main(input_path, case_id=case_id)
+            return self._investigate_main(input_path, case_id=case_id,
+                                           case_dir=case_dir)
         finally:
             self._uninstall_signal_handlers()
 
     def _investigate_main(self, input_path: str | Path,
-                          case_id: str | None = None) -> RunResult:
-        manifest = run_intake(input_path, case_id=case_id)
+                          case_id: str | None = None,
+                          case_dir: str | Path | None = None) -> RunResult:
+        manifest = run_intake(input_path, case_id=case_id, case_dir=case_dir)
         init_graph(manifest.case_dir)
         with open_ledger(manifest.case_dir):
             pass

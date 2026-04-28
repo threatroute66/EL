@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+from datetime import datetime, timezone
 from pathlib import Path
 
 import typer
@@ -774,6 +775,134 @@ def investigate(
     if result.final_state == State.BLOCKED:
         console.print("[yellow]final state is BLOCKED — adversarial review left findings unresolved; "
                       "see report for the disconfirming-evidence checklist.[/yellow]")
+
+
+def _parse_device_spec(spec: str) -> tuple[str, str]:
+    """Parse a `name:path` device flag value. Returns (name, path).
+    Names allowed: alphanumeric + dash + underscore (so the device
+    becomes a valid filesystem path under cases/<bundle>/devices/)."""
+    if ":" not in spec:
+        raise typer.BadParameter(
+            f"--device must be NAME:PATH, got {spec!r}")
+    name, _, path = spec.partition(":")
+    name = name.strip()
+    path = path.strip()
+    if not name or not path:
+        raise typer.BadParameter(
+            f"--device NAME and PATH must both be non-empty: {spec!r}")
+    import re as _re
+    if not _re.fullmatch(r"[A-Za-z0-9_\-]+", name):
+        raise typer.BadParameter(
+            f"--device NAME must be alphanumeric / dash / underscore: "
+            f"{name!r}")
+    return name, path
+
+
+@app.command("investigate-bundle")
+def investigate_bundle_cmd(
+    bundle_id: str = typer.Argument(..., help="Case ID for the whole bundle"),
+    device: list[str] = typer.Option(
+        ..., "--device", "-d",
+        help="Repeatable: NAME:PATH for each device in the bundle "
+             "(e.g. --device laptop:/path/to/disk.E01 "
+             "--device phone:/path/to/ios-fs/)"),
+    timeline: bool = typer.Option(
+        False, "--timeline/--no-timeline",
+        help="Run Plaso super-timeline on each device (slow)."),
+    investigator: str = typer.Option(None, "--investigator"),
+    objective: str = typer.Option(None, "--objective"),
+    case_number: str = typer.Option(None, "--case-number"),
+    incident_date: str = typer.Option(None, "--incident-date"),
+) -> None:
+    """Investigate a multi-device case as a single bundle.
+
+    Each --device runs through the existing single-host coordinator
+    pipeline into cases/<bundle-id>/devices/<name>/. After all
+    devices finish, a synthesis pass merges every finding into the
+    bundle's top-level findings.sqlite, recomputes ACH on the union
+    (so cross-device evidence sums into the same hypothesis), and
+    writes bundle.json.
+    """
+    from el.bundle import (
+        BundleManifest, DeviceEntry, create_bundle_layout,
+        create_device_layout, make_device_case_id, save as save_bundle,
+    )
+    from el.bundle_synth import synthesize_bundle
+    from el.evidence.intake import CASE_ROOT
+
+    if not device:
+        console.print("[red]at least one --device is required[/red]")
+        raise typer.Exit(2)
+
+    parsed: list[tuple[str, str]] = [_parse_device_spec(s) for s in device]
+    seen_names: set[str] = set()
+    for name, _ in parsed:
+        if name in seen_names:
+            console.print(f"[red]duplicate device name: {name!r}[/red]")
+            raise typer.Exit(2)
+        seen_names.add(name)
+
+    bundle_dir = create_bundle_layout(CASE_ROOT, bundle_id)
+    bundle = BundleManifest(bundle_id=bundle_id)
+    coordinator = Coordinator(run_timeline=timeline)
+
+    for dev_name, dev_path in parsed:
+        dev_dir = create_device_layout(bundle_dir, dev_name)
+        dev_case_id = make_device_case_id(bundle_id, dev_name)
+        console.print(
+            f"[bold]device[/bold] {dev_name}: investigating "
+            f"{dev_path} → {dev_dir}")
+        try:
+            result = coordinator.investigate(
+                dev_path, case_id=dev_case_id, case_dir=dev_dir)
+        except Exception as e:
+            console.print(
+                f"[red]device {dev_name} failed: {e}[/red] — continuing "
+                f"with remaining devices so the bundle can still synthesise.")
+            continue
+        # Build the device manifest entry
+        import json as _json
+        dev_manifest = _json.loads((dev_dir / "manifest.json").read_text())
+        bundle.devices.append(DeviceEntry(
+            name=dev_name, case_id=dev_case_id,
+            input_path=dev_manifest["input_path"],
+            input_size_bytes=dev_manifest["input_size_bytes"],
+            input_sha256=dev_manifest["input_sha256"],
+            case_dir=str(dev_dir),
+            investigated_utc=datetime.now(timezone.utc),
+            leading_hypothesis=result.leading_hypothesis,
+            leading_score=result.leading_hypothesis_score or 0,
+        ))
+
+    save_bundle(bundle_dir, bundle)
+
+    if investigator or objective or case_number or incident_date:
+        from datetime import date as _date
+        meta = CaseMetadata(
+            case_number=case_number,
+            incident_date=_date.fromisoformat(incident_date) if incident_date else None,
+            investigator_name=investigator,
+            objective_statement=objective,
+        )
+        save_case_metadata(bundle_dir, meta)
+
+    if not bundle.devices:
+        console.print(
+            "[red]bundle has zero successful devices — skipping synthesis.[/red]")
+        raise typer.Exit(2)
+
+    console.print(f"[bold]synthesising[/bold] {len(bundle.devices)} "
+                  f"device(s) into the bundle ledger…")
+    bundle = synthesize_bundle(bundle_dir)
+
+    console.print(f"[bold]bundle[/bold]: {bundle_dir}")
+    console.print(f"[bold]devices[/bold]: "
+                  f"{', '.join(d.name for d in bundle.devices)}")
+    console.print(f"[bold]total_findings[/bold]: {bundle.total_findings}")
+    if bundle.leading_hypothesis:
+        console.print(
+            f"[bold]bundle_leading_hypothesis[/bold]: "
+            f"{bundle.leading_hypothesis} (score={bundle.leading_score})")
 
 
 if __name__ == "__main__":

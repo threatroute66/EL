@@ -84,6 +84,12 @@ class Finding(BaseModel):
     ach_score_delta: dict[str, int] = Field(default_factory=dict)
     red_review: RedReview = Field(default_factory=RedReview)
     created_utc: datetime = Field(default_factory=_now_utc)
+    # Device tag for multi-host bundle cases. None = single-host case
+    # (the default; existing behaviour). When a bundle's synthesis
+    # pass copies a device's findings into the bundle ledger, it
+    # stamps each one with the device label so the executive report
+    # can group findings by device. Optional + backwards-compatible.
+    device: str | None = None
 
     @field_validator("agent", "claim", "case_id")
     @classmethod
