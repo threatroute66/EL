@@ -13,6 +13,7 @@
 #
 # What this script installs ON TOP:
 #   - Listed apt packages from provisioning/apt-packages.txt (currently: yara)
+#   - Missing EZ Tools that EL expects (downloads from ericzimmermanstools.com)
 #   - A Python venv at .venv with all deps from pyproject.toml
 #
 # Captures pre/post snapshots in provisioning/snapshots/ so a later
@@ -109,6 +110,73 @@ if [[ ${skip_apt} -eq 0 ]] && command -v gcc >/dev/null 2>&1; then
     else
         log "yaffs2utils already at ${Y2U_DIR} — skipping build"
     fi
+fi
+
+# --- EZ Tools phase ---------------------------------------------------------
+# Check for and install EZ Tools that EL expects but may be missing from
+# SIFT's default installation. Downloads from Eric Zimmerman's official site.
+install_missing_eztools() {
+    local eztools_dir="/opt/zimmermantools"
+    local missing_tools=()
+
+    # Create base directory if it doesn't exist
+    if [[ ! -d "$eztools_dir" ]]; then
+        log "creating $eztools_dir directory"
+        sudo mkdir -p "$eztools_dir"
+    fi
+
+    # Check for EZ Tools that EL expects (based on el/tooling.py probes)
+    [[ ! -f "$eztools_dir/EvtxeCmd/EvtxECmd.dll" ]] && missing_tools+=("EvtxeCmd")
+    [[ ! -f "$eztools_dir/MFTECmd.dll" ]] && missing_tools+=("MFTECmd")
+    [[ ! -f "$eztools_dir/RECmd/RECmd.dll" ]] && missing_tools+=("RECmd")
+    [[ ! -f "$eztools_dir/PECmd.dll" ]] && missing_tools+=("PECmd")
+    [[ ! -f "$eztools_dir/AmcacheParser.dll" ]] && missing_tools+=("AmcacheParser")
+
+    if [[ ${#missing_tools[@]} -gt 0 ]]; then
+        log "downloading missing EZ Tools: ${missing_tools[*]}"
+        for tool in "${missing_tools[@]}"; do
+            log "downloading $tool..."
+            local zip_path="/tmp/${tool}.zip"
+            local download_url="https://download.ericzimmermanstools.com/net9/${tool}.zip"
+
+            # Download the tool
+            if curl -L -o "$zip_path" "$download_url" >/dev/null 2>&1; then
+                if [[ -f "$zip_path" ]] && file "$zip_path" | grep -q "Zip archive"; then
+                    # Extract to temp directory first
+                    local temp_dir="/tmp/${tool}_extract"
+                    mkdir -p "$temp_dir"
+                    if unzip -q "$zip_path" -d "$temp_dir" 2>/dev/null; then
+                        # Copy files to appropriate location
+                        if [[ "$tool" == "EvtxeCmd" || "$tool" == "RECmd" ]]; then
+                            # These tools have subdirectories
+                            sudo mkdir -p "$eztools_dir/$tool"
+                            sudo cp -r "$temp_dir"/* "$eztools_dir/$tool/"
+                        else
+                            # These tools go in the root
+                            sudo cp "$temp_dir"/* "$eztools_dir/"
+                        fi
+                        log "$tool installed successfully"
+                    else
+                        log "WARN: failed to extract $tool.zip"
+                    fi
+                    rm -rf "$temp_dir"
+                else
+                    log "WARN: downloaded $tool.zip appears invalid"
+                fi
+                rm -f "$zip_path"
+            else
+                log "WARN: failed to download $tool from $download_url"
+            fi
+        done
+    else
+        log "all required EZ Tools already present"
+    fi
+}
+
+if [[ ${skip_apt} -eq 0 ]]; then
+    install_missing_eztools
+else
+    log "skipping EZ Tools check (--no-apt specified)"
 fi
 
 # --- venv phase -------------------------------------------------------------
