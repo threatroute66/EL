@@ -9,6 +9,7 @@ from rich.console import Console
 from rich.markup import escape
 from rich.table import Table
 
+from el.case_metadata import CaseMetadata, save as save_case_metadata
 from el.evidence.intake import intake as run_intake
 from el.evidence.graph import init_graph
 from el.evidence.ledger import list_findings, open_ledger
@@ -296,9 +297,10 @@ def _render_case_once(cd: Path, *, html: bool, quiet: bool = False) -> None:
 def report_cmd(
     case_dir: str = typer.Argument(..., help="Path to a case directory"),
     html: bool = typer.Option(
-        True, "--html",
+        True, "--html/--no-html",
         help="Also render a self-contained case.html web view alongside "
-             "the Markdown report (Tier 1 of docs/web-view-design.md)."),
+             "the Markdown report (Tier 1 of docs/web-view-design.md). "
+             "Default on; pass --no-html to skip."),
     watch: bool = typer.Option(
         False, "--watch",
         help="Re-render whenever findings.sqlite changes; run until "
@@ -701,10 +703,31 @@ def investigate(
                                  help="Path to a baseline for Memory Baseliner — either a "
                                       "known-good memory image (.img/.raw/.mem) for direct "
                                       "diff, or a pre-built baseline JSON"),
+    investigator: str = typer.Option(None, "--investigator",
+                                      help="Analyst/investigator name (recorded in case_metadata.json "
+                                           "and surfaced in the executive report's Case Details section)"),
+    objective: str = typer.Option(None, "--objective",
+                                   help="One-sentence statement of what this investigation is meant to "
+                                        "answer. Recorded in case_metadata.json."),
+    case_number: str = typer.Option(None, "--case-number",
+                                     help="External case/ticket number distinct from --case-id "
+                                          "(which is EL's internal handle)."),
+    incident_date: str = typer.Option(None, "--incident-date",
+                                       help="ISO date (YYYY-MM-DD) when the incident is believed to "
+                                            "have occurred, if known."),
 ) -> None:
     """Run the EL coordinator end-to-end on an evidence file."""
     result = Coordinator(run_timeline=timeline,
                          memory_baseline=baseline).investigate(input_path, case_id=case_id)
+    if any([investigator, objective, case_number, incident_date]):
+        from datetime import date as _date
+        meta = CaseMetadata(
+            case_number=case_number,
+            incident_date=_date.fromisoformat(incident_date) if incident_date else None,
+            investigator_name=investigator,
+            objective_statement=objective,
+        )
+        save_case_metadata(result.case_dir, meta)
     console.print(f"[bold]case[/bold]: {result.case_id}")
     console.print(f"[bold]case_dir[/bold]: {result.case_dir}")
     console.print(f"[bold]investigator[/bold]: {result.investigator}")

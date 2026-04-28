@@ -471,9 +471,29 @@ def test_cli_report_watch_reacts_to_mtime_change(tmp_path, monkeypatch):
     assert "second" in html_text
 
 
-def test_cli_report_no_html_without_flag(tmp_path, monkeypatch):
-    """Default `el report` does NOT emit case.html — keeps Markdown-only
-    as the default surface."""
+def test_cli_report_emits_html_by_default(tmp_path, monkeypatch):
+    """Default `el report` emits case.html alongside the Markdown — HTML
+    is the primary surface (commit b6eae10). Use --no-html to suppress."""
+    from typer.testing import CliRunner
+    from el.cli import app
+    from el.evidence import intake as intake_mod
+    from el.evidence.ledger import open_ledger
+
+    monkeypatch.setattr(intake_mod, "CASE_ROOT", tmp_path / "cases")
+    src = tmp_path / "dummy.bin"
+    src.write_bytes(b"hi\n")
+    m = intake_mod.intake(src, case_id="cli-default-html")
+    with open_ledger(m.case_dir):
+        pass
+    runner = CliRunner()
+    result = runner.invoke(app, ["report", str(m.case_dir)])
+    assert result.exit_code == 0, result.output
+    assert (Path(m.case_dir) / "reports" / "case.html").exists()
+
+
+def test_cli_report_no_html_flag_suppresses_html(tmp_path, monkeypatch):
+    """`el report --no-html` opts out of HTML rendering, leaving only
+    Markdown. Verifies the opt-out path still exists."""
     from typer.testing import CliRunner
     from el.cli import app
     from el.evidence import intake as intake_mod
@@ -486,6 +506,6 @@ def test_cli_report_no_html_without_flag(tmp_path, monkeypatch):
     with open_ledger(m.case_dir):
         pass
     runner = CliRunner()
-    result = runner.invoke(app, ["report", str(m.case_dir)])
+    result = runner.invoke(app, ["report", str(m.case_dir), "--no-html"])
     assert result.exit_code == 0, result.output
     assert not (Path(m.case_dir) / "reports" / "case.html").exists()

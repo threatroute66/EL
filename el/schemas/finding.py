@@ -6,6 +6,11 @@ from typing import Literal
 from pydantic import BaseModel, Field, field_validator, model_validator
 from ulid import ULID
 
+# Cap on EvidenceItem.human_summary so it stays scannable in the
+# executive (non-expert) report tier; longer prose belongs in the
+# analyst track (claim + extracted_facts).
+HUMAN_SUMMARY_MAX_CHARS = 200
+
 Confidence = Literal["high", "medium", "low", "insufficient"]
 RedReviewStatus = Literal["pending", "passed", "challenged", "unresolved"]
 # NATO Admiralty-code source reliability (A-F) + info credibility (1-6).
@@ -35,12 +40,29 @@ class EvidenceItem(BaseModel):
     # carries the canonical tool-tier mapping for migrating callers.
     source_reliability: SourceReliability = "X"
     info_credibility: InfoCredibility = "X"
+    # Plain-English restatement of what this evidence shows, for the
+    # non-expert (executive) report tier. None = renderer falls back
+    # to a glossary-translated version of the parent Finding.claim.
+    # Capped to keep exec-tier output scannable.
+    human_summary: str | None = None
 
     @property
     def admiralty(self) -> str:
         """Two-character Admiralty rating like ``A1`` for compact
         rendering in reports."""
         return f"{self.source_reliability}{self.info_credibility}"
+
+    @field_validator("human_summary")
+    @classmethod
+    def _summary_length(cls, v: str | None) -> str | None:
+        if v is None:
+            return v
+        if len(v) > HUMAN_SUMMARY_MAX_CHARS:
+            raise ValueError(
+                f"human_summary must be ≤ {HUMAN_SUMMARY_MAX_CHARS} chars "
+                f"(got {len(v)}); long prose belongs in the analyst tier."
+            )
+        return v
 
 
 class RedReview(BaseModel):
