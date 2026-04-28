@@ -27,6 +27,7 @@ import json
 from datetime import datetime, timezone
 from pathlib import Path
 
+from el.bundle import BundleManifest, is_bundle, load as load_bundle
 from el.case_metadata import CaseMetadata, load as load_case_metadata
 from el.evidence.ledger import list_findings
 from el.intel.ach import score_findings
@@ -98,6 +99,19 @@ table.kv td.k { width: 30%; color: #555; font-weight: 600; }
   color: #666; font-size: 9.5pt; font-family: "Courier New", monospace;
 }
 .finding-row .text { margin-top: 2pt; }
+.finding-row .device-chip {
+  display: inline-block;
+  margin-right: 6pt;
+  padding: 0pt 6pt;
+  font-size: 8.5pt;
+  font-weight: 600;
+  font-family: "Helvetica Neue", Arial, sans-serif;
+  background: #14213d;
+  color: #fff;
+  border-radius: 2pt;
+  letter-spacing: 0.4pt;
+  vertical-align: middle;
+}
 .recommendation {
   margin: 10pt 0; padding: 10pt 12pt;
   border-left: 3px solid #14213d; background: #fafbfc;
@@ -172,7 +186,23 @@ def _format_time(ts: str | None) -> str:
 # Section renderers
 # ---------------------------------------------------------------------------
 
-def _render_case_details(case_id: str, manifest: dict, meta: CaseMetadata) -> str:
+def _format_size(sz_bytes: int | str | None) -> str:
+    if not sz_bytes:
+        return "—"
+    sz = int(sz_bytes)
+    return (f"{sz/1024/1024/1024:.2f} GiB" if sz > 1024**3
+            else f"{sz/1024/1024:.1f} MiB")
+
+
+def _render_case_details(case_id: str, manifest: dict, meta: CaseMetadata,
+                          bundle: BundleManifest | None = None) -> str:
+    """Case Details + Evidence section.
+
+    Single-host: standard kv table with one evidence file.
+    Bundle: kv table covers case-level metadata, then a per-device
+    evidence table with one row per device. Same heading either way
+    so the executive report's section count stays stable.
+    """
     rows: list[tuple[str, str]] = []
     if meta.case_number:
         rows.append(("Case number", meta.case_number))
@@ -183,20 +213,50 @@ def _render_case_details(case_id: str, manifest: dict, meta: CaseMetadata) -> st
         rows.append(("Investigator", meta.investigator_name))
     rows.append(("Report generated",
                  datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")))
-    rows.append(("Evidence", manifest.get("input_path", "—").split("/")[-1]))
-    sz = manifest.get("input_size_bytes")
-    if sz:
-        sz = int(sz)
-        rows.append(("Evidence size",
-                     f"{sz/1024/1024/1024:.2f} GiB" if sz > 1024**3
-                     else f"{sz/1024/1024:.1f} MiB"))
-    sha = manifest.get("input_sha256")
-    if sha:
-        rows.append(("Evidence SHA-256", f"{sha[:16]}…{sha[-8:]}"))
-    parts = [f"<tr><td class='k'>{_e(k)}</td><td>{_e(v)}</td></tr>"
-              for k, v in rows]
+
+    if bundle is None:
+        # Single-host — inline evidence in the kv table as before.
+        rows.append(("Evidence", manifest.get("input_path", "—").split("/")[-1]))
+        sz = manifest.get("input_size_bytes")
+        if sz:
+            rows.append(("Evidence size", _format_size(sz)))
+        sha = manifest.get("input_sha256")
+        if sha:
+            rows.append(("Evidence SHA-256", f"{sha[:16]}…{sha[-8:]}"))
+        parts = [f"<tr><td class='k'>{_e(k)}</td><td>{_e(v)}</td></tr>"
+                  for k, v in rows]
+        return ("<h2>Case Details &amp; Evidence</h2>"
+                f"<table class='kv'>{''.join(parts)}</table>")
+
+    # Bundle — case-level metadata first, then per-device table.
+    rows.append(("Bundle device count", str(len(bundle.devices))))
+    rows.append(("Total evidence size",
+                  _format_size(sum(d.input_size_bytes for d in bundle.devices))))
+    kv_html = "".join(
+        f"<tr><td class='k'>{_e(k)}</td><td>{_e(v)}</td></tr>"
+        for k, v in rows
+    )
+    dev_rows = []
+    for d in bundle.devices:
+        sha_short = f"{d.input_sha256[:16]}…{d.input_sha256[-8:]}" if d.input_sha256 else "—"
+        evidence_basename = d.input_path.split("/")[-1] if d.input_path else "—"
+        dev_rows.append(
+            f"<tr><td><strong>{_e(d.name)}</strong></td>"
+            f"<td>{_e(evidence_basename)}</td>"
+            f"<td>{_e(_format_size(d.input_size_bytes))}</td>"
+            f"<td><code style='font-size:9pt'>{_e(sha_short)}</code></td></tr>"
+        )
+    devices_html = (
+        "<h3>Devices in this bundle</h3>"
+        "<table class='kv'>"
+        "<tr><td class='k'>Device</td><td class='k'>Evidence</td>"
+        "<td class='k'>Size</td><td class='k'>SHA-256</td></tr>"
+        f"{''.join(dev_rows)}"
+        "</table>"
+    )
     return ("<h2>Case Details &amp; Evidence</h2>"
-            f"<table class='kv'>{''.join(parts)}</table>")
+            f"<table class='kv'>{kv_html}</table>"
+            f"{devices_html}")
 
 
 def _render_objective(meta: CaseMetadata) -> str:
@@ -227,11 +287,17 @@ def _render_executive_summary(digest: ExecutiveDigest, score: int, gap: int) -> 
     )
 
 
-def _render_findings_chronological(findings: list[Finding], cap: int = 25) -> str:
+def _render_findings_chronological(findings: list[Finding], cap: int = 25,
+                                     show_device_tags: bool = False) -> str:
     """Chronological list of findings ordered by artifact-time (when
     the event happened on the host), not EL ingest time. Drops
     insufficient findings (which by contract have no evidence) and
-    knowledge_lookup chatter (Layer-3 cross-case context)."""
+    knowledge_lookup chatter (Layer-3 cross-case context).
+
+    `show_device_tags=True` (bundle mode) prefixes each row with a
+    coloured device chip so a stakeholder can see which device
+    contributed which signal.
+    """
     keep: list[tuple[datetime, Finding]] = []
     for f in findings:
         if f.confidence == "insufficient":
@@ -258,10 +324,13 @@ def _render_findings_chronological(findings: list[Finding], cap: int = 25) -> st
         if not summary:
             from el.reporting.narrative import _strip_jargon
             summary = _strip_jargon(f.claim or "") or (f.claim or "")
+        chip = ""
+        if show_device_tags and f.device:
+            chip = f"<span class='device-chip'>{_e(f.device)}</span>"
         rows.append(
             "<div class='finding-row'>"
             f"<div class='ts'>{_e(_format_time(ts.isoformat()))}</div>"
-            f"<div class='text'>{_e(summary)}</div>"
+            f"<div class='text'>{chip}{_e(summary)}</div>"
             "</div>"
         )
     head_extra = ""
@@ -272,7 +341,105 @@ def _render_findings_chronological(findings: list[Finding], cap: int = 25) -> st
     return f"<h2>Findings (chronological)</h2>{head_extra}{''.join(rows)}"
 
 
-def _render_conclusion(digest: ExecutiveDigest, leading_hyp: str | None) -> str:
+# Plain-English labels for IOC type keys used in iocs.json. Renders
+# as the section header in the cross-device correlation table.
+_IOC_TYPE_LABELS = {
+    "ipv4": "IP addresses",
+    "ipv6": "IPv6 addresses",
+    "domain": "Domains",
+    "url": "URLs",
+    "email": "Email addresses",
+    "hash_md5": "MD5 hashes",
+    "hash_sha1": "SHA-1 hashes",
+    "hash_sha256": "SHA-256 hashes",
+}
+
+
+def _render_cross_device_iocs(case_dir: Path, bundle: BundleManifest) -> str:
+    """Cross-device IOC pivot.
+
+    Reads each device's iocs.json and surfaces every indicator that
+    appears on 2+ devices. This is the strongest cross-host signal
+    in a bundle case — when the same IP / domain / hash shows up on
+    both the laptop and the phone, that's correlation evidence the
+    stakeholder needs to see called out, not buried in a per-device
+    IOC list.
+
+    Renders an empty string when no IOCs cross device boundaries —
+    section disappears rather than emitting an empty placeholder.
+    """
+    by_value: dict[tuple[str, str], set[str]] = {}
+    for d in bundle.devices:
+        ioc_path = Path(d.case_dir) / "iocs.json"
+        if not ioc_path.exists():
+            continue
+        try:
+            data = json.loads(ioc_path.read_text())
+        except (json.JSONDecodeError, OSError):
+            continue
+        for ioc_type, values in (data or {}).items():
+            if not isinstance(values, list):
+                continue
+            for v in values:
+                if not isinstance(v, str) or not v:
+                    continue
+                key = (ioc_type, v)
+                by_value.setdefault(key, set()).add(d.name)
+    # Keep only IOCs that crossed devices.
+    shared = {k: devs for k, devs in by_value.items() if len(devs) >= 2}
+    if not shared:
+        return ""
+
+    # Group by IOC type for presentation.
+    by_type: dict[str, list[tuple[str, list[str]]]] = {}
+    for (ioc_type, value), devs in shared.items():
+        by_type.setdefault(ioc_type, []).append(
+            (value, sorted(devs))
+        )
+    # Stable order: known types first (per _IOC_TYPE_LABELS), then any
+    # extras alphabetically.
+    type_order = list(_IOC_TYPE_LABELS.keys())
+    type_order += sorted(t for t in by_type if t not in type_order)
+
+    sections = []
+    for t in type_order:
+        if t not in by_type:
+            continue
+        label = _IOC_TYPE_LABELS.get(t, t)
+        rows = []
+        # Limit per-type to 25 — long IOC lists belong in the analyst
+        # iocs.json catalog, not the executive report.
+        items = sorted(by_type[t])[:25]
+        for value, devs in items:
+            rows.append(
+                f"<tr><td><code style='font-size:9.5pt'>{_e(value)}</code></td>"
+                f"<td>{_e(', '.join(devs))}</td></tr>"
+            )
+        more = ""
+        if len(by_type[t]) > 25:
+            more = (f"<p class='section-lead'>"
+                    f"{len(by_type[t]) - 25} more in the analyst IOC catalog.</p>")
+        sections.append(
+            f"<h3>{_e(label)}</h3>"
+            "<table class='kv'>"
+            "<tr><td class='k'>Indicator</td>"
+            "<td class='k'>Devices</td></tr>"
+            f"{''.join(rows)}"
+            "</table>"
+            f"{more}"
+        )
+
+    return (
+        "<h2>Cross-device correlation</h2>"
+        "<p class='section-lead'>The following indicators appeared on "
+        "more than one device. Cross-device matches are the strongest "
+        "evidence that the devices are part of the same incident.</p>"
+        f"{''.join(sections)}"
+    )
+
+
+def _render_conclusion(digest: ExecutiveDigest, leading_hyp: str | None,
+                        bundle: BundleManifest | None = None) -> str:
     pieces = [f"<p>The leading theory is <strong>{_e(digest.headline)}</strong>; "
               f"{_e(digest.confidence_phrase)}.</p>"]
     if digest.time_range_phrase:
@@ -286,6 +453,31 @@ def _render_conclusion(digest: ExecutiveDigest, leading_hyp: str | None) -> str:
         ol = "".join(f"<li>{_e(q)}</li>" for q in digest.open_questions)
         pieces.append(
             f"<p>Open questions ({len(digest.open_questions)}):</p><ol>{ol}</ol>"
+        )
+    # Bundle-only: per-device leading-hypothesis breakdown so a
+    # stakeholder sees which device contributed which signal even
+    # when the bundle-level theory dominates.
+    if bundle is not None and bundle.devices:
+        rows = []
+        for d in bundle.devices:
+            hyp_plain = (glossary.translate(d.leading_hypothesis)
+                          if d.leading_hypothesis else "—")
+            # Hide raw H_FOO if no glossary entry exists.
+            if hyp_plain.startswith("H_"):
+                hyp_plain = "—"
+            rows.append(
+                f"<tr><td><strong>{_e(d.name)}</strong></td>"
+                f"<td>{_e(hyp_plain)}</td>"
+                f"<td>{_e(str(d.leading_score) if d.leading_score else '—')}</td></tr>"
+            )
+        pieces.append(
+            "<h3>Per-device summary</h3>"
+            "<table class='kv'>"
+            "<tr><td class='k'>Device</td>"
+            "<td class='k'>Leading theory</td>"
+            "<td class='k'>Score</td></tr>"
+            f"{''.join(rows)}"
+            "</table>"
         )
     return f"<h2>Conclusion</h2>{''.join(pieces)}"
 
@@ -412,6 +604,7 @@ def render_executive_html(
         case_id = manifest.get("case_id", case_dir.name)
 
     meta = load_case_metadata(case_dir)
+    bundle = load_bundle(case_dir) if is_bundle(case_dir) else None
     findings = list_findings(case_dir, case_id=case_id)
     ranking, _diag = score_findings(findings)
     nr = synthesize(case_id, findings, ach_ranking=ranking, manifest=manifest)
@@ -419,13 +612,19 @@ def render_executive_html(
     recs = build_recommendations(nr, findings)
 
     body_sections: list[str] = []
-    body_sections.append(_render_case_details(case_id, manifest, meta))
+    body_sections.append(_render_case_details(case_id, manifest, meta, bundle))
     body_sections.append(_render_objective(meta))
     body_sections.append(
         _render_executive_summary(digest, nr.leading_score, nr.leading_gap)
     )
-    body_sections.append(_render_findings_chronological(findings))
-    body_sections.append(_render_conclusion(digest, nr.leading_hypothesis))
+    body_sections.append(_render_findings_chronological(
+        findings, show_device_tags=bundle is not None))
+    if bundle is not None:
+        cross = _render_cross_device_iocs(case_dir, bundle)
+        if cross:
+            body_sections.append(cross)
+    body_sections.append(_render_conclusion(digest, nr.leading_hypothesis,
+                                              bundle=bundle))
     body_sections.append(_render_recommendations(recs))
 
     # Glossary scans the raw analyst data — claims + hypothesis tags —
