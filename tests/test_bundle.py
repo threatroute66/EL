@@ -16,6 +16,7 @@ knowledge_lookup behaviour.
 """
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -338,6 +339,15 @@ def test_cli_investigate_bundle_two_devices(tmp_path, monkeypatch):
     # Both devices have their sub-case dirs populated
     assert (bundle_dir / "devices" / "a" / "manifest.json").exists()
     assert (bundle_dir / "devices" / "b" / "manifest.json").exists()
+    # Both devices completed the coordinator pipeline — bundle.json
+    # records both. Catches a class of bug where the second device
+    # silently fails (e.g. coordinator state-machine reuse across
+    # devices) but the test would still pass because manifest.json
+    # is written by intake before the coordinator runs.
+    bundle_data = json.loads((bundle_dir / BUNDLE_FILENAME).read_text())
+    device_names = {d["name"] for d in bundle_data["devices"]}
+    assert device_names == {"a", "b"}, (
+        f"both devices must finish; got {device_names}")
     # Synthesis produced the bundle's top-level findings.sqlite +
     # aggregated manifest.
     assert (bundle_dir / "findings.sqlite").exists()

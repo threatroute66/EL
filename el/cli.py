@@ -844,7 +844,6 @@ def investigate_bundle_cmd(
 
     bundle_dir = create_bundle_layout(CASE_ROOT, bundle_id)
     bundle = BundleManifest(bundle_id=bundle_id)
-    coordinator = Coordinator(run_timeline=timeline)
 
     for dev_name, dev_path in parsed:
         dev_dir = create_device_layout(bundle_dir, dev_name)
@@ -853,6 +852,11 @@ def investigate_bundle_cmd(
             f"[bold]device[/bold] {dev_name}: investigating "
             f"{dev_path} → {dev_dir}")
         try:
+            # Fresh Coordinator per device — the state machine
+            # (self.state) starts at INTAKE and ends at DONE; reusing
+            # one instance across devices would attempt an illegal
+            # DONE->TRIAGE transition on the second device.
+            coordinator = Coordinator(run_timeline=timeline)
             result = coordinator.investigate(
                 dev_path, case_id=dev_case_id, case_dir=dev_dir)
         except Exception as e:
