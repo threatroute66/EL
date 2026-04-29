@@ -293,6 +293,160 @@ exit.
 
 ---
 
+## Self-correction sequences during real-case work
+
+Find Evil rule: _"Show the agent working against real evidence,
+including at least one self-correction sequence."_
+
+EL's self-correction loop is two-tier. **At runtime**, an agent's
+honest `insufficient` findings + the recommendation engine's
+"what would unblock this" pivots act as the system's report of
+its own gaps. **Across runs**, those reports drive code-and-test
+fixes that lock the gap shut. The pattern is concrete and
+repeatable; here are the three most recent end-to-end sequences,
+all on real third-party evidence corpora, all committed and
+test-locked.
+
+### Sequence 1 — M57-pcaps: directory routing → streaming OOM (April 2026)
+
+Real evidence: `/mnt/hgfs/hackathon/M57-net/` — the M57 case's 50
+pcap files spanning Nov 13–17 2009, 4.6 GiB total, sibling to
+the disk image we'd already processed as `M57-Jean-v2`.
+
+**Failure 1.** `el investigate <pcap-dir>` produced a single
+triage Finding (`Directory input does not match any known shape
+(files=50); routing to default agent`) and zero downstream
+network signal. EL's triage shape-detection had `windows-
+artifacts-dir`, `velociraptor-collection`, `ios-fs-dir`,
+`android-fs-dir`, `qnap-nas-dir`, `bulk-extractor-output` — but
+not "directory of pcaps", a perfectly normal investigation
+deliverable.
+
+**Self-correction 1.** Added a `pcap-collection` triage
+detector — when ≥2 `.pcap`/`.pcapng`/`.cap` files are present,
+triage merges them with `mergecap` into
+`<case>/raw/merged.pcap`, sets `evidence_kind="pcap-collection"`,
+and rewrites `ctx.input_path` so `NetworkAnalystAgent` (which
+already handled single-pcap input) receives a single normal
+file. `KIND_TO_AGENT["pcap-collection"] = NetworkAnalystAgent`.
+8 regression tests in `tests/test_triage_pcap_collection.py`
+including detection-fires-at-2, single-pcap-no-fire,
+input-path-rewrite, mergecap-failure-fallback, mergecap-missing-
+fallback. Commit `a509970`.
+
+**Failure 2.** Re-run produced the high-confidence "multi-pcap
+capture series detected" finding, but the audit log showed
+`network_analyst` started and never logged `agent_done`. Process
+exited with no Python traceback. Cause: `scapy.all.rdpcap()`
+(used by `el/skills/scapy_pcap.py:summarize`) loads the entire
+pcap into memory before iterating; the 4.7 GiB merged pcap
+balloons to ~30 GiB of Python objects and Linux's OOM killer
+SIGKILLs python silently.
+
+**Self-correction 2.** Switched to `scapy.all.PcapReader`
+(streaming, packet-by-packet) with a `max_packets=50_000_000`
+cap whose truncation is recorded in the JSON summary so the
+analyst sees it explicitly. Same `PcapSummary` shape returned;
+no caller changes. Existing 47 pcap/scapy/network tests stayed
+green; the change is locked in as a streaming primitive that
+all future pcap-handling code inherits. Commit `42d66e4`.
+
+The pattern is the failure mode (silent OOM kill of a
+subprocess) was invisible to the agent — but the agent's audit
+log + the missing `agent_done` event made it observable. The
+fix landed at the skill level, not the agent, so every future
+pcap-consuming code path benefits without each agent needing a
+private size-guard.
+
+### Sequence 2 — M57-Jean recovery: case-sensitive regex + walker cap (April 2026)
+
+Real evidence: `/mnt/hgfs/hackathon/M57/nps-2008-jean.E01` (XP-
+era Windows disk image, 3 GiB compressed E01).
+
+**Failure.** Phase 6 recovery was supposed to fire on
+DiskForensicator's `SYSTEM_BINARY_ZERO_*` findings, run
+`tsk_recover` per partition, and emit a "Recovery corroborates
+anti-forensic activity" finding when a recovered file's
+basename matched a wiped binary's name. M57 produced 31,419
+recovered files including `auditusr.exe`, `pdh.dll`,
+`ciadmin.dll` — exactly the wiped binaries the trigger findings
+called out. **Zero corroboration findings emitted.**
+
+**Self-correction.** Two bugs in one path:
+
+1. The basename-extraction regex was `r"/Windows/System32/
+   ([\w.\-]+)"` — case-sensitive on the `/Windows/System32/`
+   prefix. M57 (XP-era) paths use `/WINDOWS/system32/`. Three-
+   letter case difference, zero matches. Fixed with
+   `re.IGNORECASE` on the prefix; basename casing still
+   normalised to lower for set membership.
+2. The recovered-tree walker was capped at 5,000 files for cost
+   reasons. M57's recovery dir had 31k files and the wiped
+   binaries sat alphabetically past the cap. Replaced with a
+   name-targeted walk that takes the trigger's small basename
+   set as input and returns the subset that exist — bounded by
+   target-set size, not tree size, so no cap needed.
+
+After fix: M57-Jean's three triggers extracted three basenames
+(`auditusr.exe`, `pdh.dll`, `ciadmin.dll`); all three found in
+the recovery dir; medium-confidence corroboration finding fired
+linking them back to the original anti-forensic findings. The
+exec-report recommendation auto-flipped from _"consider running
+tsk_recover/bulk_extractor"_ → _"Review the anti-forensic
+corroboration findings — carving recovered artifacts whose
+names match the wiped/zeroed system binaries"_. 4 new tests in
+`tests/test_recovery.py` — XP-style and modern-style path
+parsing + targeted-walk regression case planting targets past
+where the old cap cut. Commit `34139a2`.
+
+### Sequence 3 — BelkaCTF6 bundle: coordinator state reuse (April 2026)
+
+Real evidence: BelkaCTF 6 (laptop E01 + iOS filesystem dump as
+one investigation).
+
+**Failure.** First bundle run completed with one device
+(`phone`) but the laptop logged `illegal transition State.DONE
+-> State.TRIAGE` and was dropped from the bundle. Bundle
+synthesised with a single device. The `el investigate-bundle`
+end-of-run summary made the drop visible (`devices: phone` —
+single name where two were specified) but the coordinator's
+exception path swallowed the per-device exit code, so exit
+status was 0.
+
+**Self-correction.** Root cause: the `Coordinator` instance was
+constructed once before the device loop and reused. `self.state`
+ended at `DONE` after device 1; transitioning back to `TRIAGE`
+on device 2 violated the state-machine table. Fix:
+instantiate a fresh `Coordinator` per device inside the
+per-device try block.
+
+Surfacing the bug also exposed a test gap — the existing
+`test_cli_investigate_bundle_two_devices` only checked that
+both `manifest.json` files existed (which they did, intake runs
+before the state machine). Strengthened the assertion to verify
+`bundle.json` records BOTH devices, which is the smallest
+condition that catches a silent second-device failure. Commit
+`c14e3a7`.
+
+---
+
+What these three sequences share:
+- Triggered by **real third-party evidence** (M57 / BelkaCTF),
+  not synthetic test fixtures.
+- The first symptom was always **observable in the agent's own
+  outputs** — a triage finding admitting "no shape match",
+  an audit log with `agent_start` but no `agent_done`, a
+  bundle summary listing fewer devices than requested.
+- The fix landed with **regression tests that explicitly
+  reproduce the failure** before fixing it, so the same class
+  of bug can't reappear silently.
+
+The accuracy posture isn't "we never made a mistake"; it's
+"the architecture surfaces our mistakes and tests pin them
+shut once we find them."
+
+---
+
 ## Hallucination posture — why EL cannot invent a claim
 
 EL uses an LLM **only** in two narrow places, both architecturally
