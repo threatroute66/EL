@@ -61,6 +61,10 @@ KIND_TO_AGENT: dict[str, type[Agent]] = {
     "pcap (libpcap)": NetworkAnalystAgent,
     "pcap (libpcap, big-endian)": NetworkAnalystAgent,
     "pcapng": NetworkAnalystAgent,
+    # Multi-pcap capture series (directory of .pcap/.pcapng files).
+    # Triage merges them with mergecap and rewrites ctx.input_path
+    # so NetworkAnalystAgent sees a single normal pcap.
+    "pcap-collection": NetworkAnalystAgent,
     "EWF (E01)": DiskForensicatorAgent,
     # VM disk wrappers — DiskForensicator converts to raw via qemu-img
     # then runs the normal mmls + fls pipeline.

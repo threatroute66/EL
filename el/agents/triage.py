@@ -445,6 +445,10 @@ class TriageAgent(Agent):
                              "SRUDB.dat")))
         evtx_count = sum(1 for n in names if n.endswith(".evtx"))
         prefetch_dir = (d / "Prefetch").exists() or (d / "prefetch").exists()
+        pcap_count = sum(
+            1 for n in names
+            if n.lower().endswith((".pcap", ".pcapng", ".cap"))
+        )
 
         listing_path = analysis / "directory-listing.txt"
         listing_path.write_text("\n".join(sorted(names))[:200_000])
@@ -457,7 +461,8 @@ class TriageAgent(Agent):
                              "velociraptor_hits": velo_hits,
                              "artifact_hits": artifact_hits,
                              "evtx_count": evtx_count,
-                             "prefetch_dir": prefetch_dir},
+                             "prefetch_dir": prefetch_dir,
+                             "pcap_count": pcap_count},
         )
 
         if is_android:
@@ -541,6 +546,63 @@ class TriageAgent(Agent):
                       f"(MFT/registry hits={artifact_hits}, evtx={evtx_count}, "
                       f"prefetch_dir={prefetch_dir})",
                 evidence=[ev], hypotheses_supported=["H_DISK_ARTIFACTS"],
+            )))
+        elif pcap_count >= 2:
+            # Directory of pcaps — typically a multi-day capture series
+            # (e.g. M57's 50 pcaps spanning Nov 13-17 2009). Pre-merge
+            # them into one file so NetworkAnalystAgent (which expects a
+            # single pcap input) can process the whole series in one
+            # pass. Sort by name for determinism — most capture series
+            # are ISO-timestamped so name-order ≈ chronological order.
+            import subprocess as _sp
+            merged_dir = ctx.case_dir / "raw"
+            merged_dir.mkdir(parents=True, exist_ok=True)
+            merged_path = merged_dir / "merged.pcap"
+            pcap_files = sorted(
+                str(d / n) for n in names
+                if n.lower().endswith((".pcap", ".pcapng", ".cap"))
+            )
+            mergecap_cmd = ["mergecap", "-w", str(merged_path), *pcap_files]
+            try:
+                rc = _sp.run(
+                    mergecap_cmd, capture_output=True, text=True,
+                    timeout=900,
+                )
+                if rc.returncode != 0 or not merged_path.exists():
+                    out.append(self.emit(ctx, Finding(
+                        case_id=ctx.case_id, agent=self.name,
+                        confidence="insufficient",
+                        claim=(f"mergecap failed for {pcap_count} pcap "
+                                f"file(s) (rc={rc.returncode}): "
+                                f"{rc.stderr[:200]}"),
+                        evidence=[ev],
+                    )))
+                    ctx.shared["evidence_kind"] = "directory-unclassified"
+                    return out
+            except (FileNotFoundError, _sp.TimeoutExpired) as e:
+                out.append(self.emit(ctx, Finding(
+                    case_id=ctx.case_id, agent=self.name,
+                    confidence="insufficient",
+                    claim=f"mergecap unavailable or timed out: {e}",
+                    evidence=[ev],
+                )))
+                ctx.shared["evidence_kind"] = "directory-unclassified"
+                return out
+            ctx.shared["evidence_kind"] = "pcap-collection"
+            ctx.shared["merged_pcap_path"] = str(merged_path)
+            ctx.shared["pcap_source_files"] = pcap_files
+            # Rewrite input_path so NetworkAnalystAgent + downstream
+            # network skills see a single normal pcap instead of a dir.
+            ctx.input_path = merged_path
+            merged_size = merged_path.stat().st_size
+            out.append(self.emit(ctx, Finding(
+                case_id=ctx.case_id, agent=self.name, confidence="high",
+                claim=(f"Input directory looks like a multi-pcap capture "
+                        f"series ({pcap_count} pcap file(s) merged via "
+                        f"mergecap into {merged_path.name}, "
+                        f"{merged_size/1024/1024:.1f} MiB total). "
+                        f"Routing to network analyst."),
+                evidence=[ev], hypotheses_supported=["H_NETWORK_TRAFFIC"],
             )))
         else:
             ctx.shared["evidence_kind"] = "directory-unclassified"
