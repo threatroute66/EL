@@ -447,18 +447,70 @@ before the state machine). Strengthened the assertion to verify
 condition that catches a silent second-device failure. Commit
 `c14e3a7`.
 
+### Sequence 4 — M57-pcaps DGA detector: googleusercontent CDN false positive (April 2026)
+
+Real evidence: same M57-pcaps-v3 run that exposed Sequences 1's
+two failures. After the streaming fix landed, the network
+pipeline produced 5.7 M packets / 175 K flows of real signal
+including a medium-confidence `DNS_DGA_ENTROPY` finding citing
+34 high-entropy DNS labels.
+
+**Failure.** Different shape from Sequences 1–3. The agent
+didn't crash. It didn't produce an `insufficient` finding. It
+produced a **medium-confidence DGA finding whose own sample list
+was the failure mode** — every cited example was a
+`googleusercontent.com` subdomain like
+`93p5d9vvnd1p3kr0o895omkj85bluj7m-a-sites-opensocial.googleusercontent.com`
+(H=4.58 bits). The label is legitimately high-entropy; it's
+Google's user-content CDN bucket addressing, not a domain-
+generation algorithm. The 3.8-bit entropy threshold was
+correctly tripped, but the suffix tells you the label's
+high-entropy by design. The finding's own claim text — by
+naming the samples — made the false-positive observable to
+the analyst before any code review.
+
+**Self-correction.** Added a CDN-suffix allowlist to
+`detect_dns_dga_entropy`: queries whose FQDN ends in any of
+`googleusercontent.com`, `1e100.net`, `cloudfront.net`,
+`akamaihd.net`, `akamaiedge.net`, `azureedge.net`, `azurefd.net`,
+`s3.amazonaws.com`, `appspot.com`, or `cdn.cloudflare.net` are
+filtered before the entropy test runs. Conservative list — real
+DGA attackers register their own domains for control over
+resolution, so they won't use these suffixes anyway, and
+suppressing CDN noise is safer than the volume of false
+positives it generates.
+
+Suppression is suffix-scoped, not detector-disabling: a real
+DGA on a third-party domain still fires when CDN noise is
+present in the same row set. Locked in by
+`test_dga_still_fires_alongside_cdn_noise` in
+`tests/test_network_anomaly_depth.py` (3 assertions total —
+googleusercontent regression with the actual M57 sample names,
+other-CDN-suffix coverage, mixed-rowset detector-still-fires).
+The FP class is now formally tracked under "Known false-positive
+classes" earlier in this doc. Commit `6a6e1ff`.
+
 ---
 
-What these three sequences share:
+What these four sequences share:
 - Triggered by **real third-party evidence** (M57 / BelkaCTF),
   not synthetic test fixtures.
 - The first symptom was always **observable in the agent's own
   outputs** — a triage finding admitting "no shape match",
   an audit log with `agent_start` but no `agent_done`, a
-  bundle summary listing fewer devices than requested.
+  bundle summary listing fewer devices than requested, or a
+  finding whose own sample list exposes its noise.
 - The fix landed with **regression tests that explicitly
   reproduce the failure** before fixing it, so the same class
   of bug can't reappear silently.
+
+Sequences 1–3 caught silent crashes (no output where output was
+expected). Sequence 4 caught the inverse — output that was
+emitted but contained a known-noise class. The architecture
+handles both because Findings carry the data needed to
+self-incriminate: a missing `agent_done` event, a sample list
+that points at a CDN, a `claim` text the analyst can sanity-
+check against the ground truth they brought to the engagement.
 
 The accuracy posture isn't "we never made a mistake"; it's
 "the architecture surfaces our mistakes and tests pin them
