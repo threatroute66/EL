@@ -20,7 +20,9 @@ from types import SimpleNamespace
 import pytest
 
 from el.agents.base import AgentContext
-from el.agents.recovery import RecoveryAgent, _triggers_present
+from el.agents.recovery import (
+    RecoveryAgent, _find_recovered_basenames, _triggers_present,
+)
 from el.evidence.ledger import insert as ledger_insert, list_findings
 from el.schemas.finding import EvidenceItem, Finding
 
@@ -204,6 +206,76 @@ def test_successful_recovery_emits_low_confidence_findings(case, monkeypatch):
         and "bulk_extractor surfaced" in (f.claim or "")
         for f in out
     )
+
+
+def test_zeroed_basenames_case_insensitive_path():
+    """XP-era Windows images (M57-Jean) carry paths like
+    /WINDOWS/system32/foo.dll — different casing from modern
+    /Windows/System32/. The basename extractor must accept both,
+    or the corroboration finding silently fails to fire on real
+    legacy cases. This test reproduces the v1 bug."""
+    from el.agents.recovery import _zeroed_or_wiped_basenames
+    triggers = [
+        Finding(case_id="c", agent="disk_forensicator", confidence="high",
+                claim=(
+                    "Disk anomaly [SYSTEM_BINARY_ZERO_SIZE] in slot000:000-off63: "
+                    "Windows system binary / DLL / driver with size=0. 15 match(es). "
+                    "Samples: /WINDOWS/system32/auditusr.exe (deleted); "
+                    "/WINDOWS/system32/pdh.dll (deleted); "
+                    "/WINDOWS/system32/ciadmin.dll (deleted)"),
+                evidence=[_ev()]),
+    ]
+    names = _zeroed_or_wiped_basenames(triggers)
+    assert "auditusr.exe" in names
+    assert "pdh.dll" in names
+    assert "ciadmin.dll" in names
+
+
+def test_find_recovered_basenames_locates_targets_in_deep_tree(tmp_path):
+    """Targeted scan must find specific filenames even when the
+    recovery tree contains many unrelated files (regression check
+    against the v1 walk-everything-cap-at-5000 bug that hid M57's
+    wiped binaries because they sat past the cap in /WINDOWS/system32/)."""
+    root = tmp_path / "recovery"
+    # Plant 50 unrelated files under various subdirs so the walk
+    # naturally has to descend before reaching the targets.
+    for sub in ("a", "b", "c"):
+        d = root / sub / "deep" / "tree"
+        d.mkdir(parents=True)
+        for i in range(15):
+            (d / f"file_{i}.txt").write_text("x")
+    # Drop the targets in a deeper, alphabetically-later dir.
+    target_dir = root / "z" / "WINDOWS" / "system32"
+    target_dir.mkdir(parents=True)
+    (target_dir / "auditusr.exe").write_text("recovered")
+    (target_dir / "pdh.dll").write_text("recovered")
+    found = _find_recovered_basenames(
+        root, {"auditusr.exe", "pdh.dll", "ciadmin.dll"},
+    )
+    assert found == {"auditusr.exe", "pdh.dll"}
+
+
+def test_find_recovered_basenames_empty_targets_short_circuits(tmp_path):
+    root = tmp_path / "recovery"
+    root.mkdir()
+    (root / "anything.txt").write_text("x")
+    assert _find_recovered_basenames(root, set()) == set()
+
+
+def test_zeroed_basenames_modern_windows_path():
+    """Modern /Windows/System32/ casing also works (regression check
+    against the fix that made the regex case-insensitive)."""
+    from el.agents.recovery import _zeroed_or_wiped_basenames
+    triggers = [
+        Finding(case_id="c", agent="disk_forensicator", confidence="high",
+                claim=("Disk anomaly [SYSTEM_BINARY_ZERO_SIZE] Samples: "
+                        "/Windows/System32/comres.dll (deleted); "
+                        "/Windows/System32/dxgwdi.dll (deleted)"),
+                evidence=[_ev()]),
+    ]
+    names = _zeroed_or_wiped_basenames(triggers)
+    assert "comres.dll" in names
+    assert "dxgwdi.dll" in names
 
 
 def test_recovery_corroboration_finding_when_wiped_binary_recovered(case, monkeypatch):

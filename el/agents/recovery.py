@@ -66,11 +66,6 @@ _BE_SCANNERS_DISABLE = (
 _TSK_RECOVER_TIMEOUT = 600
 _BULK_EXTRACTOR_TIMEOUT = 600
 
-# Per-tsk_recover output cap so a runaway carve doesn't blow disk.
-# Counted at the directory level — once the per-partition recovery
-# dir exceeds this, we stop reporting further file-name-matches.
-_RECOVERY_DIR_INSPECT_CAP = 5000
-
 
 def _triggers_present(findings: list[Finding]) -> list[Finding]:
     """Return the subset of `findings` whose claim contains any of
@@ -91,31 +86,49 @@ def _zeroed_or_wiped_basenames(triggers: list[Finding]) -> set[str]:
     """Pull basenames out of the SYSTEM_BINARY_ZERO_* trigger claims.
     Used downstream to cross-reference recovered files against the
     binaries that were wiped, surfacing corroboration when carve
-    pulls one of them back from unallocated space."""
+    pulls one of them back from unallocated space.
+
+    Case-insensitive on the prefix because Windows path casing
+    varies by version: modern installs use "/Windows/System32/"
+    while XP-era images (M57-Jean) use "/WINDOWS/system32/".
+    The basename casing is preserved (lowered) so cross-reference
+    against recovered file basenames stays consistent."""
     import re
     names: set[str] = set()
+    pattern = re.compile(r"/windows/system32/([\w.\-]+)", re.IGNORECASE)
     for f in triggers:
         # Detector claims look like:
         #   "Disk anomaly [SYSTEM_BINARY_ZERO_SIZE] ... Samples:
         #    /Windows/System32/comres.dll (deleted); ..."
-        for m in re.finditer(r"/Windows/System32/([\w.\-]+)", f.claim or ""):
+        for m in pattern.finditer(f.claim or ""):
             names.add(m.group(1).lower())
     return names
 
 
-def _walk_recovered_basenames(root: Path, cap: int) -> set[str]:
-    """Walk a tsk_recover output dir and collect lowercased basenames.
-    Capped at `cap` files to keep the cross-reference cheap."""
-    seen: set[str] = set()
-    count = 0
-    for p in root.rglob("*"):
-        if not p.is_file():
-            continue
-        seen.add(p.name.lower())
-        count += 1
-        if count >= cap:
-            break
-    return seen
+def _find_recovered_basenames(root: Path, target_names: set[str]) -> set[str]:
+    """Targeted scan: for the specific small set of `target_names`
+    (binary basenames extracted from anti-forensic trigger claims),
+    walk the recovery tree once and return the subset that exist.
+
+    Stops early once every target has been matched. The earlier
+    "walk everything, intersect" approach was capped at 5000 files
+    to bound runtime, but real recovery dirs (M57-Jean: 31,419
+    files) overshoot the cap before reaching the wiped binaries
+    in /WINDOWS/system32/, so the corroboration finding silently
+    failed to fire. A name-targeted walk has no such pathology."""
+    import os as _os
+    found: set[str] = set()
+    targets_lower = {n.lower() for n in target_names}
+    if not targets_lower:
+        return found
+    for dirpath, _dirnames, filenames in _os.walk(root):
+        for fn in filenames:
+            low = fn.lower()
+            if low in targets_lower:
+                found.add(low)
+                if found >= targets_lower:
+                    return found
+    return found
 
 
 class RecoveryAgent(Agent):
@@ -216,12 +229,14 @@ class RecoveryAgent(Agent):
                     )))
                     continue
                 # Cross-reference recovered basenames against the wiped
-                # system-binary names from triggers.
+                # system-binary names from triggers. Targeted scan —
+                # only looks for the specific names we care about, no
+                # full-tree walk required.
                 if wiped_names:
-                    recovered_names = _walk_recovered_basenames(
-                        part_dir, cap=_RECOVERY_DIR_INSPECT_CAP,
+                    recovered_matches = _find_recovered_basenames(
+                        part_dir, wiped_names,
                     )
-                    for n in (wiped_names & recovered_names):
+                    for n in recovered_matches:
                         corroborated.append((n, slot))
                 recovery_summaries.append(
                     f"slot{slot} ({desc}): {file_count} files"
