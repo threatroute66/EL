@@ -52,9 +52,20 @@ class PcapSummary:
 SUSPICIOUS_PORTS = {4444, 4445, 1337, 6666, 6667, 8888, 9001, 31337, 5555}
 
 
-def summarize(pcap_path: Path, out_dir: Path) -> PcapSummary:
+def summarize(pcap_path: Path, out_dir: Path,
+               max_packets: int = 50_000_000) -> PcapSummary:
+    """Summarise a pcap into flows + DNS + HTTP + TLS-SNI metadata.
+
+    Streams via scapy's PcapReader (one packet at a time) instead of
+    rdpcap (which loads the entire file). M57's 4.7 GiB merged pcap
+    OOM'd a 16 GiB host with rdpcap; PcapReader keeps memory flat.
+
+    `max_packets` caps runtime on extreme captures (>50M packets).
+    Set higher if needed; the cap is recorded in the summary so the
+    analyst sees that the parse was truncated.
+    """
     out_dir.mkdir(parents=True, exist_ok=True)
-    from scapy.all import rdpcap
+    from scapy.all import PcapReader
     from scapy.layers.dns import DNS, DNSQR
     from scapy.layers.inet import IP, TCP, UDP
     from scapy.layers.inet6 import IPv6
@@ -65,62 +76,67 @@ def summarize(pcap_path: Path, out_dir: Path) -> PcapSummary:
     except Exception:
         TLS_OK = False
 
-    pkts = rdpcap(str(pcap_path))
     summary = PcapSummary(pcap_path=pcap_path,
                           summary_path=out_dir / "pcap_summary.json",
-                          packet_count=len(pkts))
+                          packet_count=0)
 
     flows: dict[tuple[str, str, int, int, str], int] = defaultdict(int)
-    for p in pkts:
-        l3 = p.getlayer(IP) or p.getlayer(IPv6)
-        if not l3:
-            continue
-        proto = "tcp" if p.haslayer(TCP) else "udp" if p.haslayer(UDP) else "other"
-        l4 = p.getlayer(TCP) or p.getlayer(UDP)
-        if not l4:
-            continue
-        flows[(l3.src, l3.dst, int(l4.sport), int(l4.dport), proto)] += 1
-        if proto in ("tcp", "udp") and int(l4.dport) in SUSPICIOUS_PORTS:
-            summary.suspicious_dports[int(l4.dport)] += 1
-        if p.haslayer(DNS) and p.haslayer(DNSQR):
-            try:
-                q = p[DNSQR].qname.decode("utf-8", errors="ignore").rstrip(".")
-                summary.dns_queries.append(q)
-            except Exception:
-                pass
-        if proto == "tcp" and (int(l4.dport) == 80 or int(l4.sport) == 80):
-            payload = bytes(l4.payload)
-            if payload[:4] in (b"GET ", b"POST", b"HEAD", b"PUT ", b"DELE"):
-                # First line: "<METHOD> <URI> HTTP/x.x"
-                first_eol = payload.find(b"\r\n")
-                if first_eol > 0:
-                    request_line = payload[:first_eol].decode(errors="ignore")
-                    parts = request_line.split(" ", 2)
-                    if len(parts) >= 2:
-                        summary.http_uris.append(parts[1])
-                for line in payload.split(b"\r\n"):
-                    low = line.lower()
-                    if low.startswith(b"host:"):
-                        summary.http_hosts.append(line.split(b":", 1)[1].strip().decode(errors="ignore"))
-                    elif low.startswith(b"user-agent:"):
-                        summary.http_user_agents.append(
-                            line.split(b":", 1)[1].strip().decode(errors="ignore"))
-        if TLS_OK:
-            try:
-                from scapy.layers.tls.handshake import TLSClientHello as _CH
-                from scapy.layers.tls.extensions import TLS_Ext_ServerName as _SNI
-                if p.haslayer(_CH):
-                    for ext in p[_CH].ext or []:
-                        if isinstance(ext, _SNI):
-                            for sn in ext.servernames or []:
-                                summary.tls_sni.append(sn.servername.decode(errors="ignore"))
-            except Exception:
-                pass
+    truncated = False
+    with PcapReader(str(pcap_path)) as pcap:
+        for p in pcap:
+            if summary.packet_count >= max_packets:
+                truncated = True
+                break
+            summary.packet_count += 1
+            l3 = p.getlayer(IP) or p.getlayer(IPv6)
+            if not l3:
+                continue
+            proto = "tcp" if p.haslayer(TCP) else "udp" if p.haslayer(UDP) else "other"
+            l4 = p.getlayer(TCP) or p.getlayer(UDP)
+            if not l4:
+                continue
+            flows[(l3.src, l3.dst, int(l4.sport), int(l4.dport), proto)] += 1
+            if proto in ("tcp", "udp") and int(l4.dport) in SUSPICIOUS_PORTS:
+                summary.suspicious_dports[int(l4.dport)] += 1
+            if p.haslayer(DNS) and p.haslayer(DNSQR):
+                try:
+                    q = p[DNSQR].qname.decode("utf-8", errors="ignore").rstrip(".")
+                    summary.dns_queries.append(q)
+                except Exception:
+                    pass
+            if proto == "tcp" and (int(l4.dport) == 80 or int(l4.sport) == 80):
+                payload = bytes(l4.payload)
+                if payload[:4] in (b"GET ", b"POST", b"HEAD", b"PUT ", b"DELE"):
+                    first_eol = payload.find(b"\r\n")
+                    if first_eol > 0:
+                        request_line = payload[:first_eol].decode(errors="ignore")
+                        parts = request_line.split(" ", 2)
+                        if len(parts) >= 2:
+                            summary.http_uris.append(parts[1])
+                    for line in payload.split(b"\r\n"):
+                        low = line.lower()
+                        if low.startswith(b"host:"):
+                            summary.http_hosts.append(line.split(b":", 1)[1].strip().decode(errors="ignore"))
+                        elif low.startswith(b"user-agent:"):
+                            summary.http_user_agents.append(
+                                line.split(b":", 1)[1].strip().decode(errors="ignore"))
+            if TLS_OK:
+                try:
+                    from scapy.layers.tls.handshake import TLSClientHello as _CH
+                    from scapy.layers.tls.extensions import TLS_Ext_ServerName as _SNI
+                    if p.haslayer(_CH):
+                        for ext in p[_CH].ext or []:
+                            if isinstance(ext, _SNI):
+                                for sn in ext.servernames or []:
+                                    summary.tls_sni.append(sn.servername.decode(errors="ignore"))
+                except Exception:
+                    pass
 
     summary.flows = dict(flows)
     serialised = {
         "pcap_path": str(pcap_path),
         "packet_count": summary.packet_count,
+        "truncated_at_max_packets": truncated,
         "flow_count": len(summary.flows),
         "flows": [{"src": k[0], "dst": k[1], "sport": k[2], "dport": k[3], "proto": k[4], "packets": v}
                   for k, v in sorted(summary.flows.items(), key=lambda x: -x[1])[:200]],
