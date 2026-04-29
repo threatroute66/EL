@@ -333,15 +333,51 @@ def _label_entropy(label: str) -> float:
 _DGA_MIN_ENTROPY = 3.8        # threshold observed on DGA research datasets
 _DGA_MIN_LABEL_LEN = 10       # below this length entropy gets noisy
 
+# CDN / hyperscaler domains that publish high-entropy bucket-style
+# subdomains as a matter of routine infrastructure design — every
+# query under these suffixes will trip the entropy threshold without
+# representing actual DGA. Suppressing these here is safer than the
+# alternative (noisy detections), because a real DGA attacker won't
+# be using these suffixes anyway: the malware needs to register its
+# own domains for the attacker to control resolution.
+#
+# Surfaced when M57's pcap analysis (M57-pcaps-v3) flagged 34 queries
+# under googleusercontent.com — patterns like
+# "93p5d9vvnd1p3kr0o895omkj85bluj7m-a-sites-opensocial.googleusercontent.com"
+# (Google user-content CDN bucket addressing). The label legitimately
+# scores >4.5 bits Shannon entropy by design.
+_DGA_BENIGN_SUFFIXES: tuple[str, ...] = (
+    "googleusercontent.com",
+    "1e100.net",                # Google internal
+    "cloudfront.net",           # AWS CloudFront
+    "akamaihd.net",             # Akamai
+    "akamaiedge.net",
+    "azureedge.net",            # Azure CDN
+    "azurefd.net",              # Azure Front Door
+    "s3.amazonaws.com",
+    "appspot.com",              # Google App Engine
+    "cdn.cloudflare.net",
+)
+
+
+def _is_benign_cdn(fqdn: str) -> bool:
+    """True when fqdn ends in a CDN suffix whose high-entropy
+    subdomain naming is normal infrastructure, not DGA."""
+    return any(fqdn.endswith("." + s) or fqdn == s
+               for s in _DGA_BENIGN_SUFFIXES)
+
 
 def detect_dns_dga_entropy(dns_rows: list[dict]) -> list[AnomalyHit]:
     """Flag DNS queries whose leftmost label scores suspiciously high
     on Shannon entropy AND is long enough that the entropy isn't just
-    a short-string artefact."""
+    a short-string artefact. Suppresses well-known CDN suffixes whose
+    bucket-style subdomain naming is benign by design."""
     flagged: list[tuple[str, float]] = []
     for r in dns_rows:
         q = (r.get("query") or "").strip().lower()
         if not q or "." not in q:
+            continue
+        if _is_benign_cdn(q):
             continue
         label = q.split(".", 1)[0]
         if len(label) < _DGA_MIN_LABEL_LEN:

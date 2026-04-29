@@ -237,6 +237,25 @@ naïve regex. Fix: skip IOC extraction from the first few
 columns of CSV/TSV files + from known tool-output header
 patterns.
 
+### DGA-entropy CDN suffix noise
+
+`tests/test_network_anomaly_depth.py` — **3 assertions** (added
+April 2026).
+
+Surfaced by the M57-pcaps-v3 run, which flagged 34 DNS queries
+under `googleusercontent.com` (Google user-content CDN) as DGA
+candidates. The labels are legitimately high-entropy
+(`93p5d9vvnd1p3kr0o895omkj85bluj7m-a-sites-opensocial...`,
+H=4.58 bits) but represent routine bucket-style infrastructure
+naming, not domain-generation algorithms. Fix: suppress queries
+whose FQDN ends in known-benign CDN suffixes
+(`googleusercontent.com`, `cloudfront.net`, `akamaihd.net`,
+`1e100.net`, `azureedge.net`, `azurefd.net`, `appspot.com`,
+`s3.amazonaws.com`, `cdn.cloudflare.net`). Real DGA on a
+third-party domain still fires alongside CDN-suppressed queries
+in the same row set — the suppression is suffix-scoped, not
+detector-disabling.
+
 ---
 
 ## Display-layer accuracy bugs — fixed in 2026-04 timeline sweep

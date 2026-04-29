@@ -49,6 +49,62 @@ def test_dga_requires_at_least_three_hits():
     assert na.detect_dns_dga_entropy(rows) == []
 
 
+def test_dga_silent_on_googleusercontent_cdn():
+    """Regression — surfaced by M57-pcaps-v3 (April 2026): Google's
+    user-content CDN publishes high-entropy hash-style subdomains as
+    a routine infrastructure pattern. The actual M57 sample was
+    93p5d9vvnd1p3kr0o895omkj85bluj7m-a-sites-opensocial.googleusercontent.com
+    scoring H=4.58 — well above the 3.8 threshold but a known FP class.
+    The detector now suppresses queries under known-benign CDN
+    suffixes."""
+    rows = [
+        {"query": "93p5d9vvnd1p3kr0o895omkj85bluj7m-a-sites-opensocial.googleusercontent.com"},
+        {"query": "j3m3c7ljnekqepe0o6tpujav69pvnn8d-a-sites-opensocial.googleusercontent.com"},
+        {"query": "xkvqzjnlrwtmbdfg-something-else.googleusercontent.com"},
+        {"query": "zgcpyvhbnkqrsf12345.googleusercontent.com"},
+        {"query": "wvjxmpzrkbqcgh67890.googleusercontent.com"},
+    ]
+    assert na.detect_dns_dga_entropy(rows) == []
+
+
+def test_dga_silent_on_other_known_cdn_suffixes():
+    """Same FP class for the other CDN/hyperscaler suffixes whose
+    bucket-style naming is benign by design."""
+    rows = [
+        # AWS CloudFront
+        {"query": "abcdef0123456789.cloudfront.net"},
+        # Google internal
+        {"query": "qrstuvwxyzabcdef.1e100.net"},
+        # Akamai
+        {"query": "xkvqzjnlrwtmbdfg.akamaihd.net"},
+        # Azure CDN
+        {"query": "zgcpyvhbnkqrsfgh.azureedge.net"},
+        # Google App Engine
+        {"query": "wvjxmpzrkbqcghef.appspot.com"},
+    ]
+    assert na.detect_dns_dga_entropy(rows) == []
+
+
+def test_dga_still_fires_alongside_cdn_noise():
+    """Real DGA findings must not be drowned by CDN-suppression
+    when both are in the same row set — only the CDN entries are
+    skipped, the genuine DGA labels still trip the detector."""
+    rows = [
+        # Real DGA candidates on a third-party domain
+        {"query": "xkvqzjnlrwtmbd.evil.example"},
+        {"query": "zgcpyvhbnkqrsf.evil.example"},
+        {"query": "wvjxmpzrkbqcgh.evil.example"},
+        # CDN noise mixed in
+        {"query": "abcdef0123456789.cloudfront.net"},
+        {"query": "93p5d9vvnd1p3kr0o895omkj85bluj7m-a.googleusercontent.com"},
+    ]
+    hits = na.detect_dns_dga_entropy(rows)
+    assert hits
+    # The detector reports the count of flagged labels; it should
+    # equal the 3 evil.example queries only.
+    assert hits[0].facts["flagged_count"] == 3
+
+
 def test_label_entropy_matches_expected():
     """Sanity: 'aaaaaaaaaa' has 0 entropy, uniform random = near log2(alphabet)."""
     assert na._label_entropy("aaaaaaaaaa") == pytest.approx(0.0, abs=0.01)
