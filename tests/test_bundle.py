@@ -367,6 +367,53 @@ def test_cli_investigate_bundle_rejects_bad_device_spec(tmp_path, monkeypatch):
     assert result.exit_code != 0
 
 
+def test_bundle_subcase_skips_per_device_sealing(tmp_path, monkeypatch):
+    """Phase 9.1: per-device subcases (case_id like
+    "<bundle>:<device>") must NOT seal individually — that produces
+    a redundant 14 GiB tar.gz per device that pushed Lone Wolf's
+    memory subcase off disk in April 2026. Bundle-level seal at
+    the end of investigate-bundle covers everything.
+
+    Verified by spying on case_seal.seal_case during a real bundle
+    run with two trivial device files."""
+    from typer.testing import CliRunner
+    from el.cli import app
+    from el.evidence import intake as intake_mod
+    from el import seal as case_seal
+
+    monkeypatch.setattr(intake_mod, "CASE_ROOT", tmp_path / "cases")
+    a = tmp_path / "evA.bin"
+    b = tmp_path / "evB.bin"
+    a.write_bytes(b"alpha\n")
+    b.write_bytes(b"beta\n")
+
+    seal_calls: list[str] = []
+    real_seal = case_seal.seal_case
+
+    def spy_seal(case_dir, case_id, *args, **kwargs):
+        seal_calls.append(case_id)
+        return real_seal(case_dir, case_id, *args, **kwargs)
+
+    monkeypatch.setattr(case_seal, "seal_case", spy_seal)
+
+    runner = CliRunner()
+    result = runner.invoke(app, [
+        "investigate-bundle", "BUNDLE-NOSEAL",
+        "--device", f"a:{a}",
+        "--device", f"b:{b}",
+    ])
+    assert result.exit_code == 0, result.output
+
+    # Per-device subcases (case_id "BUNDLE-NOSEAL:a", ":b") must NOT
+    # have been sealed. Only the bundle-level seal call should fire.
+    bundle_seals = [c for c in seal_calls if c == "BUNDLE-NOSEAL"]
+    device_seals = [c for c in seal_calls if ":" in c]
+    assert len(bundle_seals) == 1, (
+        f"expected 1 bundle-level seal, got {seal_calls}")
+    assert device_seals == [], (
+        f"per-device subcases must skip sealing; got {device_seals}")
+
+
 def test_cli_investigate_bundle_rejects_duplicate_device_names(tmp_path, monkeypatch):
     from typer.testing import CliRunner
     from el.cli import app

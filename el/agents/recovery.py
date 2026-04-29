@@ -63,8 +63,29 @@ _BE_SCANNERS_DISABLE = (
 )
 
 # Hard wall-time caps (seconds). Keep recovery bounded.
+# tsk_recover is per-partition; 600s is enough on partitions up
+# to a few hundred GiB.
 _TSK_RECOVER_TIMEOUT = 600
-_BULK_EXTRACTOR_TIMEOUT = 600
+
+
+def _bulk_extractor_timeout_for(image_size_bytes: int) -> int:
+    """Adaptive bulk_extractor timeout. The flat 600s default times
+    out on very large disks (Lone Wolf: 476 GiB, April 2026 run hit
+    the cap). bulk_extractor's runtime is roughly O(disk size)
+    because it scans every byte; scale the cap accordingly.
+
+    Tiers (chosen against measured throughput on SIFT, ~80 MB/s on
+    SSD-backed loop mounts):
+      ≤ 50 GiB    → 600s   (10 min)
+      50-200 GiB  → 1800s  (30 min)
+      > 200 GiB   → 3600s  (60 min)
+    """
+    gib = image_size_bytes / (1024 ** 3)
+    if gib <= 50:
+        return 600
+    if gib <= 200:
+        return 1800
+    return 3600
 
 
 def _triggers_present(findings: list[Finding]) -> list[Finding]:
@@ -285,12 +306,20 @@ class RecoveryAgent(Agent):
 
             # 6. bulk_extractor on the whole raw stream. One run for
             #    the entire image — features merge across partitions.
+            #    Timeout scales with image size so 400+ GiB disks
+            #    (Lone Wolf class) get 60 min instead of timing out
+            #    at the 10-min default.
             from el.skills import bulk_extractor as be
+            try:
+                be_size = raw_image.stat().st_size if raw_image.exists() else 0
+            except OSError:
+                be_size = 0
+            be_timeout = _bulk_extractor_timeout_for(be_size)
             try:
                 be_run = be.scan(
                     raw_image, be_root,
                     disable_scanners=list(_BE_SCANNERS_DISABLE),
-                    timeout=_BULK_EXTRACTOR_TIMEOUT,
+                    timeout=be_timeout,
                 )
             except be.BulkExtractorError as e:
                 out.append(self.emit(ctx, Finding(

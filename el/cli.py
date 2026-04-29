@@ -911,6 +911,22 @@ def investigate_bundle_cmd(
         console.print(
             f"[yellow]bundle report render failed: {e}[/yellow]")
 
+    # Bundle-level seal — covers everything under cases/<bundle>/,
+    # including per-device subcases (which skipped their own seal
+    # under Phase 9 to avoid redundant archives). One merkle root
+    # for the whole investigation.
+    try:
+        from el import seal as case_seal
+        seal_manifest = case_seal.seal_case(
+            bundle_dir, bundle_id, archive=True,
+        )
+        console.print(
+            f"[bold]bundle_seal[/bold]: merkle="
+            f"{seal_manifest['merkle_root'][:16]}… "
+            f"archive={seal_manifest.get('archive_path', '—')}")
+    except Exception as e:
+        console.print(f"[yellow]bundle seal failed: {e}[/yellow]")
+
     console.print(f"[bold]bundle[/bold]: {bundle_dir}")
     console.print(f"[bold]devices[/bold]: "
                   f"{', '.join(d.name for d in bundle.devices)}")

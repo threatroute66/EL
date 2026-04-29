@@ -262,6 +262,25 @@ def test_find_recovered_basenames_empty_targets_short_circuits(tmp_path):
     assert _find_recovered_basenames(root, set()) == set()
 
 
+def test_bulk_extractor_timeout_scales_with_disk_size():
+    """Phase 9.2: 600s default times out on very large disks
+    (Lone Wolf 476 GiB). Cap scales with image size so larger
+    images get more wall time."""
+    from el.agents.recovery import _bulk_extractor_timeout_for
+    # ≤ 50 GiB: stays at the original 10-min cap
+    assert _bulk_extractor_timeout_for(0) == 600
+    assert _bulk_extractor_timeout_for(10 * 1024**3) == 600
+    assert _bulk_extractor_timeout_for(50 * 1024**3) == 600
+    # 50-200 GiB: 30 min
+    assert _bulk_extractor_timeout_for(51 * 1024**3) == 1800
+    assert _bulk_extractor_timeout_for(150 * 1024**3) == 1800
+    assert _bulk_extractor_timeout_for(200 * 1024**3) == 1800
+    # > 200 GiB: 60 min (Lone Wolf 476 GiB falls here)
+    assert _bulk_extractor_timeout_for(201 * 1024**3) == 3600
+    assert _bulk_extractor_timeout_for(476 * 1024**3) == 3600
+    assert _bulk_extractor_timeout_for(2 * 1024**4) == 3600   # 2 TiB
+
+
 def test_zeroed_basenames_modern_windows_path():
     """Modern /Windows/System32/ casing also works (regression check
     against the fix that made the regex case-insensitive)."""

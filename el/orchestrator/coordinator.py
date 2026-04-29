@@ -605,8 +605,19 @@ class Coordinator:
                 self.audit.error("case_claude_md_render_failed", err=str(e))
         # Seal the case at terminal state (Layer 2: chain-of-custody bundle).
         # Marks knowledge-store rows for this case as sealed.
+        #
+        # Bundle subcases (case_id like "<bundle>:<device>") skip per-
+        # device sealing because the bundle command seals the entire
+        # bundle dir at the end of investigate-bundle. Sealing per-
+        # device produces a redundant tar.gz archive of every per-
+        # device subcase — on a 476 GiB Lone Wolf disk that's a
+        # 14 GiB archive that pushes the next device's subcase off
+        # the disk. Surfaced when the LoneWolf-Bundle's memory
+        # subcase died at triage (April 2026).
+        from el.bundle import parse_device_case_id
+        is_bundle_subcase = parse_device_case_id(ctx.case_id) is not None
         seal_manifest = None
-        if self.state == State.DONE:
+        if self.state == State.DONE and not is_bundle_subcase:
             try:
                 seal_manifest = case_seal.seal_case(ctx.case_dir, ctx.case_id, archive=True)
                 kb.mark_case_sealed(ctx.case_id)
@@ -617,6 +628,11 @@ class Coordinator:
             except Exception as e:
                 if self.audit:
                     self.audit.error("case_seal_failed", err=str(e))
+        elif self.state == State.DONE and is_bundle_subcase and self.audit:
+            self.audit.info(
+                "case_seal_skipped",
+                reason="bundle subcase — bundle-level seal covers it",
+            )
 
         if self.audit:
             self.audit.info("case_complete", final_state=self.state.value,
