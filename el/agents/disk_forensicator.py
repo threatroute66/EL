@@ -135,6 +135,11 @@ class DiskForensicatorAgent(Agent):
             ev = mmls_run.as_evidence({"phase": "partition_table"})
             if mmls_run.rc == 0:
                 partitions = sk.parse_mmls(mmls_run.stdout_path.read_text(errors="ignore"))
+                # Stash in shared state so the recovery pass (which
+                # remounts the EWF after disk_forensicator unmounts)
+                # can run tsk_recover per partition without re-running mmls.
+                ctx.shared["partitions"] = partitions
+                ctx.shared["raw_input_path"] = str(ctx.input_path)
                 out.append(self.emit(ctx, Finding(
                     case_id=ctx.case_id, agent=self.name, confidence="high",
                     claim=f"Partition table parsed: {len(partitions)} usable partition(s)",

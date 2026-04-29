@@ -449,6 +449,17 @@ class Coordinator:
                 psort_timeout=self.timeline_psort_timeout,
             ), ctx)
 
+        # Recovery pass: when DiskForensicator surfaced anti-forensic
+        # signals (timestomp / wiped binaries / cleared logs / VSS
+        # deletion), automatically run tsk_recover + bulk_extractor
+        # on the same image. Self-gating — the agent returns silently
+        # when no triggers fire, so this is a no-op for clean cases.
+        # Only meaningful when partitions metadata exists (set by
+        # DiskForensicator after a successful mmls).
+        if ctx.shared.get("partitions"):
+            from el.agents.recovery import RecoveryAgent
+            self._run_agent(RecoveryAgent(), ctx)
+
         self._go(State.CORRELATE)
         self._run_agent(CorrelatorAgent(), ctx)
 

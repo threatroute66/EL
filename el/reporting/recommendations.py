@@ -164,6 +164,56 @@ def _rule_anti_forensics_recover(nr, findings) -> Recommendation | None:
     )
     if not fs:
         return None
+    # If RecoveryAgent already ran (Phase 6), the recommendation
+    # changes shape: instead of telling the operator to run carving,
+    # we point them at the recovery output and at any corroboration
+    # findings RecoveryAgent emitted.
+    recovery_findings = [f for f in findings
+                          if (f.agent or "") == "recovery"
+                          and f.confidence != "insufficient"]
+    corroboration_findings = [
+        f for f in recovery_findings
+        if "corroborates anti-forensic" in (f.claim or "").lower()
+    ]
+    if recovery_findings:
+        anchor_ids = _ids(corroboration_findings or recovery_findings)
+        if corroboration_findings:
+            action = (
+                "Review the anti-forensic corroboration findings — "
+                "carving recovered artifacts whose names match the "
+                "wiped/zeroed system binaries, confirming the tampering "
+                "and pulling pre-tampering bytes back into evidence. "
+                "Cross-check the recovered files in "
+                "`exports/recovery/tsk_recover/` against the analyst "
+                "report's anti-forensic findings."
+            )
+            rationale = (
+                "Automated recovery confirmed the original anti-forensic "
+                "signal; the recovered artifacts are the strongest available "
+                "evidence of what the actor tried to destroy."
+            )
+        else:
+            action = (
+                "Review the artifacts recovered from unallocated space + "
+                "Volume Shadow Copies in `exports/recovery/`. tsk_recover "
+                "and bulk_extractor have already run; the recovered files "
+                "and feature catalogs may contain the originals of the "
+                "tampered artifacts."
+            )
+            rationale = (
+                "Automated recovery has run and produced findings, but "
+                "no recovered file name directly matched a tampered/wiped "
+                "binary. The recovery output is still the place to look "
+                "for pre-tampering evidence."
+            )
+        return Recommendation(
+            category="investigation",
+            action=action,
+            rationale=rationale,
+            triggered_by=anchor_ids,
+        )
+    # Recovery did NOT run (e.g. raw image without an EWF mount path,
+    # or the coordinator skipped it). Surface the manual fallback.
     return Recommendation(
         category="investigation",
         action="Attempt to recover the tampered or deleted artifacts from "
