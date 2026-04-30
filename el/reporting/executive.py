@@ -83,6 +83,17 @@ table.kv td.k { width: 30%; color: #555; font-weight: 600; }
   background: #f4f6fa; border-left: 4px solid #14213d;
   padding: 12pt 14pt; margin: 8pt 0 14pt 0;
 }
+.ai-disclaimer {
+  background: #fff8e1; border: 1px dashed #d4a017;
+  padding: 8pt 12pt; margin: 8pt 0 4pt 0;
+  font-size: 9.5pt; color: #5b4400;
+}
+.ai-disclaimer strong { color: #5b4400; }
+.ai-meta {
+  font-size: 8.5pt; color: #888; margin-top: 8pt;
+  font-family: "Helvetica Neue", Arial, sans-serif;
+}
+.ai-meta code { font-family: "Courier New", monospace; color: #555; }
 .confidence-tag {
   display: inline-block; padding: 1pt 8pt;
   font-size: 9pt; font-weight: 600; border-radius: 3pt;
@@ -266,12 +277,49 @@ def _render_objective(meta: CaseMetadata) -> str:
             f"<p>{_e(meta.objective_statement)}</p>")
 
 
-def _render_executive_summary(digest: ExecutiveDigest, score: int, gap: int) -> str:
+def _render_executive_summary(digest: ExecutiveDigest, score: int, gap: int,
+                                ai_summary: str | None = None,
+                                ai_metadata: dict | None = None) -> str:
+    """Render the Executive Summary section.
+
+    When `ai_summary` is supplied (Phase 10), the AI prose replaces
+    the deterministic digest in the visible body and the section
+    carries a non-removable disclaimer (DISCLAIMER_LABEL from
+    el.reporting.executive_ai). The deterministic digest still feeds
+    the confidence tag so the colour-coded badge stays grounded in
+    the ACH score, not LLM judgement.
+
+    When `ai_summary` is None (no API key, API call failed, or
+    operator disabled it), the deterministic digest renders as
+    before and a small note explains the AI-summary is unavailable —
+    no silent feature loss.
+    """
     tag = _confidence_tag(score, gap)
     tag_label = {"strong": "Strong evidence",
                  "moderate": "Moderate evidence",
                  "preliminary": "Preliminary",
                  "thin": "Inconclusive"}[tag]
+    if ai_summary:
+        from el.reporting.executive_ai import DISCLAIMER_LABEL
+        cache_status = (ai_metadata or {}).get("cache", "")
+        model = (ai_metadata or {}).get("model", "")
+        meta_line = ""
+        if model:
+            meta_line = (f"<div class='ai-meta'>Model: "
+                         f"<code>{_e(model)}</code> · "
+                         f"cache: {_e(cache_status)}</div>")
+        return (
+            "<h2>Executive Summary</h2>"
+            f"<div class='ai-disclaimer' role='note'>"
+            f"<strong>{_e(DISCLAIMER_LABEL)}</strong>"
+            f"</div>"
+            f"<div class='summary-box'>"
+            f"<span class='confidence-tag {tag}'>{tag_label}</span>"
+            f"<p style='margin-top:8pt'>{_e(ai_summary)}</p>"
+            f"{meta_line}"
+            f"</div>"
+        )
+
     paragraph = " ".join(_e(s) for s in digest.summary_sentences)
     # restore bold for the headline form (embedded as **headline**)
     paragraph = paragraph.replace(
@@ -587,6 +635,8 @@ def render_executive_html(
     case_dir: str | Path,
     case_id: str | None = None,
     manifest: dict | None = None,
+    *,
+    regenerate_ai_summary: bool = False,
 ) -> Path:
     """Render the executive HTML report for a case.
 
@@ -614,8 +664,33 @@ def render_executive_html(
     body_sections: list[str] = []
     body_sections.append(_render_case_details(case_id, manifest, meta, bundle))
     body_sections.append(_render_objective(meta))
+
+    # Phase 10: AI-generated executive summary (gated on
+    # ANTHROPIC_API_KEY). Falls back silently to the deterministic
+    # digest when the API key is absent, the SDK can't import, or
+    # the API call fails. The deterministic ExecutiveDigest still
+    # feeds the confidence tag (the colour-coded pill stays grounded
+    # in ACH score, not LLM judgement).
+    ai_summary: str | None = None
+    ai_meta: dict | None = None
+    try:
+        from el.reporting.executive_ai import synthesize_executive_ai
+        result = synthesize_executive_ai(
+            nr, findings, Path(case_dir),
+            case_metadata=meta,
+            regenerate=regenerate_ai_summary,
+        )
+        if result is not None:
+            ai_summary, ai_meta = result
+    except Exception:
+        ai_summary = None
+        ai_meta = None
+
     body_sections.append(
-        _render_executive_summary(digest, nr.leading_score, nr.leading_gap)
+        _render_executive_summary(
+            digest, nr.leading_score, nr.leading_gap,
+            ai_summary=ai_summary, ai_metadata=ai_meta,
+        )
     )
     body_sections.append(_render_findings_chronological(
         findings, show_device_tags=bundle is not None))

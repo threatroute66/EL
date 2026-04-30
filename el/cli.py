@@ -239,7 +239,9 @@ def provision_snapshot_cmd(
 
 
 def _render_case_once(cd: Path, *, html: bool, executive: bool = False,
-                       pdf: bool = False, quiet: bool = False) -> None:
+                       pdf: bool = False,
+                       regenerate_ai_summary: bool = False,
+                       quiet: bool = False) -> None:
     """Single-pass re-render: reads the ledger, recomputes ACH, IOC
     catalog, ATT&CK map, and writes report.md + findings.json +
     stix-bundle.json (+ case.html when html=True). Shared by `el
@@ -295,8 +297,10 @@ def _render_case_once(cd: Path, *, html: bool, executive: bool = False,
             console.print(f"[bold]html[/bold]: {html_path}")
     if executive:
         from el.reporting.executive import render_executive_html
-        exec_path = render_executive_html(cd, case_id=case_id,
-                                            manifest=manifest)
+        exec_path = render_executive_html(
+            cd, case_id=case_id, manifest=manifest,
+            regenerate_ai_summary=regenerate_ai_summary,
+        )
         if not quiet:
             console.print(f"[bold]executive[/bold]: {exec_path}")
         if pdf:
@@ -334,6 +338,12 @@ def report_cmd(
              "PDF is the printable form of the executive report. "
              "Default on (skipped automatically with a warning if "
              "WeasyPrint is not installed). Pass --no-pdf to skip."),
+    regenerate_ai_summary: bool = typer.Option(
+        False, "--regenerate-ai-summary",
+        help="Force regeneration of the AI-generated executive "
+             "summary (gated on ANTHROPIC_API_KEY). Default uses the "
+             "cached summary at reports/executive_ai_summary.md when "
+             "the underlying findings haven't changed."),
     watch: bool = typer.Option(
         False, "--watch",
         help="Re-render whenever findings.sqlite changes; run until "
@@ -354,7 +364,8 @@ def report_cmd(
         console.print(f"[red]not a case directory: missing manifest.json[/red]")
         raise typer.Exit(2)
 
-    _render_case_once(cd, html=html, executive=executive, pdf=pdf)
+    _render_case_once(cd, html=html, executive=executive, pdf=pdf,
+                       regenerate_ai_summary=regenerate_ai_summary)
 
     if not watch:
         return
@@ -381,7 +392,9 @@ def report_cmd(
             last_mtime = mtime
             try:
                 _render_case_once(cd, html=html, executive=executive,
-                                    pdf=pdf, quiet=True)
+                                    pdf=pdf,
+                                    regenerate_ai_summary=regenerate_ai_summary,
+                                    quiet=True)
                 ts = datetime.now(timezone.utc).strftime("%H:%M:%S")
                 console.print(
                     f"[dim]{ts} UTC[/dim] · re-rendered on "
