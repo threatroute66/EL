@@ -40,7 +40,7 @@ class LinuxForensicatorAgent(Agent):
     name = "linux_forensicator"
 
     def run(self, ctx: AgentContext) -> list[Finding]:
-        # Three input modes:
+        # Four input modes:
         # (1) Chained from DiskForensicator with extracted artifacts
         #     under <case_dir>/exports/linux-artifacts/ — the original
         #     wiring; ctx.shared["linux_artifacts_dir"] points there.
@@ -48,8 +48,15 @@ class LinuxForensicatorAgent(Agent):
         #     — ctx.input_path is the mounted filesystem root itself,
         #     so we point the detectors directly at it. Validated on
         #     QNAP case 21APR_245 (mounted DataVol1).
-        # (3) Default fallback: <case_dir>/exports/linux-artifacts/.
+        # (3) UAC collection artifacts from LiveResponseCollector
+        #     — ctx.shared["uac_collection"] contains UAC output structure
+        # (4) Default fallback: <case_dir>/exports/linux-artifacts/.
         kind = ctx.shared.get("evidence_kind") or ""
+
+        # Check for UAC collection mode first
+        if kind == "uac-collection" or ctx.shared.get("uac_collection"):
+            return self._run_uac_analysis(ctx)
+
         exports = ctx.shared.get("linux_artifacts_dir")
         if not exports and kind in ("linux-fs-dir", "qnap-nas-dir"):
             exports = ctx.input_path
@@ -175,6 +182,80 @@ class LinuxForensicatorAgent(Agent):
         # Father rootkit detection (LD_PRELOAD hijacking, magic GID, backdoor ports)
         out.extend(_safe("father-rootkit",
                           self._analyze_father_rootkit, ctx, exports))
+        return out
+
+    def _run_uac_analysis(self, ctx: AgentContext) -> list[Finding]:
+        """
+        Run Linux forensic analysis on UAC collection artifacts.
+
+        Uses UAC live response data instead of traditional disk extraction,
+        analyzing process snapshots, network connections, system files,
+        and bodyfile timeline data collected by UAC.
+        """
+        out: list[Finding] = []
+        uac_collection = ctx.shared.get("uac_collection")
+
+        if not uac_collection:
+            return [self.emit(ctx, Finding(
+                case_id=ctx.case_id, agent=self.name,
+                confidence="insufficient",
+                claim="LinuxForensicator UAC mode: no UAC collection data available",
+            ))]
+
+        # Extract UAC collection directory as analysis target
+        uac_dir = Path(uac_collection.output_dir)
+
+        # Run Father rootkit detection on full UAC structure
+        # (includes chkrootkit/, live_response/, etc.)
+        try:
+            father_result = detect_father_rootkit(uac_dir.parent)
+            if any([father_result.preload_path, father_result.config_gid,
+                   father_result.source_port, father_result.silly_txt_present]):
+
+                confidence = "high"
+                claim_parts = []
+
+                if father_result.preload_path:
+                    claim_parts.append(f"LD_PRELOAD configuration at {father_result.preload_path}")
+                if father_result.config_gid:
+                    claim_parts.append(f"magic GID {father_result.config_gid}")
+                if father_result.source_port:
+                    claim_parts.append(f"SSH backdoor port {father_result.source_port}")
+                if father_result.silly_txt_present:
+                    claim_parts.append("credential harvest log present")
+
+                evidence = father_result.as_evidence({
+                    "uac_source": True,
+                    "detection_method": "enhanced_multi_directory_search",
+                })
+
+                out.append(self.emit(ctx, Finding(
+                    case_id=ctx.case_id, agent=self.name,
+                    confidence=confidence,
+                    claim=f"Father rootkit detected: {'; '.join(claim_parts)}",
+                    evidence=[evidence],
+                    hypotheses_supported=["H_APT_ESPIONAGE", "H_PROCESS_INJECTION"],
+                    hypotheses_refuted=["H_BENIGN_NO_INCIDENT"]
+                )))
+
+        except Exception as e:
+            out.append(self.emit(ctx, Finding(
+                case_id=ctx.case_id, agent=self.name,
+                confidence="insufficient",
+                claim=f"Father rootkit detection failed on UAC data: {e}",
+            )))
+
+        # Analyze UAC live response artifacts if available
+        if uac_collection.live_response_dir:
+            out.extend(self._analyze_uac_live_response(ctx, uac_collection))
+
+        # Analyze UAC bodyfile if available
+        if uac_collection.bodyfile_path:
+            out.extend(self._analyze_uac_bodyfile(ctx, uac_collection))
+
+        # Run malicious pattern detection on UAC text files
+        out.extend(self._analyze_uac_pattern_detection(ctx, uac_collection))
+
         return out
 
     def _analyze_utmp_family(self, ctx: AgentContext,
@@ -981,6 +1062,226 @@ class LinuxForensicatorAgent(Agent):
                 case_id=ctx.case_id, agent=self.name,
                 confidence="insufficient",
                 claim=f"Father rootkit detection failed: {e}"
+            )))
+
+        return out
+
+    def _analyze_uac_live_response(self, ctx: AgentContext, uac_collection) -> list[Finding]:
+        """Analyze UAC live response artifacts for suspicious activity."""
+        out: list[Finding] = []
+        live_response_dir = Path(uac_collection.live_response_dir)
+
+        if not live_response_dir.exists():
+            return out
+
+        # Analyze process snapshots for suspicious activity
+        process_dir = live_response_dir / "process"
+        if process_dir.exists():
+            suspicious_processes = []
+
+            for ps_file in process_dir.glob("ps_*.txt"):
+                try:
+                    content = ps_file.read_text(encoding='utf-8', errors='ignore')
+
+                    # Look for suspicious process patterns
+                    lines = content.splitlines()
+                    for line in lines:
+                        # Father rootkit indicators
+                        if "7823" in line:  # Magic GID
+                            suspicious_processes.append(f"Process with magic GID 7823: {line.strip()}")
+
+                        # Suspicious process names/paths
+                        if any(pattern in line.lower() for pattern in [
+                            "/tmp/", "/dev/shm/", "/.hidden", "/var/tmp/"
+                        ]):
+                            if not any(benign in line.lower() for benign in [
+                                "systemd", "dbus", "getty", "cron"
+                            ]):
+                                suspicious_processes.append(f"Suspicious path process: {line.strip()}")
+
+                except Exception:
+                    continue
+
+            if suspicious_processes:
+                evidence = {
+                    "tool": "uac_live_response",
+                    "description": f"Suspicious processes in {process_dir}",
+                    "path": str(process_dir),
+                    "suspicious_count": len(suspicious_processes),
+                    "sample_processes": suspicious_processes[:5]
+                }
+
+                out.append(self.emit(ctx, Finding(
+                    case_id=ctx.case_id, agent=self.name,
+                    confidence="medium",
+                    claim=f"UAC Live Response: {len(suspicious_processes)} suspicious process(es) detected",
+                    evidence=[evidence],
+                    hypotheses_supported=["H_APT_ESPIONAGE"],
+                )))
+
+        # Analyze network connections for backdoor patterns
+        network_dir = live_response_dir / "network"
+        if network_dir.exists():
+            backdoor_connections = []
+
+            for net_file in network_dir.glob("*.txt"):
+                try:
+                    content = net_file.read_text(encoding='utf-8', errors='ignore')
+
+                    # Look for Father rootkit backdoor port
+                    if "48411" in content:  # Father default backdoor port
+                        backdoor_connections.append("Father rootkit backdoor port 48411 detected")
+
+                    # Look for other suspicious ports
+                    for line in content.splitlines():
+                        if any(port in line for port in [":3333", ":4444", ":5555", ":8080"]):
+                            if "LISTEN" in line or "ESTABLISHED" in line:
+                                backdoor_connections.append(f"Suspicious network connection: {line.strip()}")
+
+                except Exception:
+                    continue
+
+            if backdoor_connections:
+                evidence = {
+                    "tool": "uac_live_response",
+                    "description": f"Suspicious network connections in {network_dir}",
+                    "path": str(network_dir),
+                    "connection_count": len(backdoor_connections),
+                    "sample_connections": backdoor_connections[:5]
+                }
+
+                out.append(self.emit(ctx, Finding(
+                    case_id=ctx.case_id, agent=self.name,
+                    confidence="high",
+                    claim=f"UAC Live Response: {len(backdoor_connections)} suspicious network connection(s) detected",
+                    evidence=[evidence],
+                    hypotheses_supported=["H_APT_ESPIONAGE", "H_C2_BEACONING"],
+                )))
+
+        return out
+
+    def _analyze_uac_bodyfile(self, ctx: AgentContext, uac_collection) -> list[Finding]:
+        """Analyze UAC bodyfile for timeline anomalies."""
+        out: list[Finding] = []
+        bodyfile_path = Path(uac_collection.bodyfile_path)
+
+        if not bodyfile_path.exists():
+            return out
+
+        try:
+            # Basic bodyfile statistics
+            file_size = bodyfile_path.stat().st_size
+            line_count = 0
+            recent_activity = []
+
+            with open(bodyfile_path, 'r', encoding='utf-8', errors='ignore') as f:
+                for line in f:
+                    line_count += 1
+
+                    # Look for recent file activity in suspicious locations
+                    if any(path in line for path in ["/tmp/", "/dev/shm/", "/var/tmp/"]):
+                        recent_activity.append(line.strip())
+
+                    # Limit sample collection for performance
+                    if len(recent_activity) >= 20:
+                        break
+
+            evidence = {
+                "tool": "uac_bodyfile",
+                "description": f"Filesystem timeline from {bodyfile_path}",
+                "path": str(bodyfile_path),
+                "size_bytes": file_size,
+                "entry_count": line_count,
+                "suspicious_activity_count": len(recent_activity),
+                "sample_activity": recent_activity[:10]
+            }
+
+            confidence = "medium" if recent_activity else "low"
+            claim = f"UAC Bodyfile: {line_count:,} filesystem entries analyzed"
+            if recent_activity:
+                claim += f", {len(recent_activity)} suspicious file activities in temporary directories"
+
+            out.append(self.emit(ctx, Finding(
+                case_id=ctx.case_id, agent=self.name,
+                confidence=confidence,
+                claim=claim,
+                evidence=[evidence],
+                hypotheses_supported=["H_APT_ESPIONAGE"] if recent_activity else [],
+            )))
+
+        except Exception as e:
+            out.append(self.emit(ctx, Finding(
+                case_id=ctx.case_id, agent=self.name,
+                confidence="insufficient",
+                claim=f"UAC bodyfile analysis failed: {e}",
+            )))
+
+        return out
+
+    def _analyze_uac_pattern_detection(self, ctx: AgentContext, uac_collection) -> list[Finding]:
+        """Run malicious pattern detection on UAC text artifacts."""
+        out: list[Finding] = []
+        uac_dir = Path(uac_collection.output_dir)
+
+        try:
+            # Import pattern detection from linux_triage
+            from el.skills import linux_triage as lt
+
+            # Run pattern detection on UAC directory
+            hits = lt.run_all(uac_dir)
+
+            if not hits:
+                out.append(self.emit(ctx, Finding(
+                    case_id=ctx.case_id, agent=self.name,
+                    confidence="insufficient",
+                    claim=f"UAC Pattern Detection: no malicious patterns detected in {len(list(uac_dir.rglob('*.txt')))} text files",
+                )))
+                return out
+
+            # Process pattern hits
+            manifest_path = uac_dir / "collection_manifest.txt"
+            sha = "0" * 64
+            if manifest_path.exists():
+                sha = hashlib.sha256(manifest_path.read_bytes()).hexdigest()
+
+            for hit in hits:
+                confidence = "high" if hit.family in _HIGH_FAMILIES else "medium"
+                facts = {
+                    "family": hit.family,
+                    "matched_pattern": hit.matched_pattern,
+                    "event_count": hit.event_count,
+                    "top_users": hit.top_users,
+                    "source_files": hit.source_files[:5],
+                    "attack_techniques": [t for t, _ in hit.attack],
+                    "sample_text_head": hit.sample_text[:200],
+                    "uac_source": True,
+                }
+
+                evidence = EvidenceItem(
+                    tool="el.linux_triage", version="0.1.0",
+                    command=f"run_all(uac:{uac_dir.name})",
+                    output_sha256=sha, output_path=str(manifest_path),
+                    extracted_facts=facts,
+                )
+
+                out.append(self.emit(ctx, Finding(
+                    case_id=ctx.case_id, agent=self.name,
+                    confidence=confidence,
+                    claim=(f"UAC Pattern Detection - {hit.family}: {hit.event_count} event(s) "
+                           f"matched pattern {hit.matched_pattern!r}. "
+                           f"ATT&CK: {', '.join(t for t, _ in hit.attack) or '-'}. "
+                           f"Sample: {hit.sample_text[:150]!r}"
+                           + (f" (users: {', '.join(hit.top_users[:3])})"
+                              if hit.top_users else "")),
+                    evidence=[evidence],
+                    hypotheses_supported=lt.hypotheses_for(hit.family) or ["H_APT_ESPIONAGE"],
+                )))
+
+        except Exception as e:
+            out.append(self.emit(ctx, Finding(
+                case_id=ctx.case_id, agent=self.name,
+                confidence="insufficient",
+                claim=f"UAC pattern detection failed: {e}",
             )))
 
         return out
