@@ -78,6 +78,10 @@ el/
 │   └── graph.py           # Kùzu graph init + open (per-case)
 ├── reporting/
 │   ├── render.py          # Markdown report rendering (deterministic projection)
+│   ├── html.py            # Self-contained case.html web view generation
+│   ├── combined_html.py   # Multi-case combined.html dashboard
+│   ├── executive.py       # Executive-level HTML reports
+│   ├── executive_pdf.py   # PDF report generation
 │   └── stix.py            # STIX 2.1 bundle emission
 ├── schemas/
 │   └── finding.py         # Pydantic Finding + EvidenceItem + RedReview (the contract)
@@ -127,7 +131,61 @@ make doctor                # = .venv/bin/el doctor
 
 # Snapshot host state for chain of custody
 .venv/bin/el provision-snapshot --label <reason>
+
+# Start web server for HTML case reports (auto-starts on boot)
+.venv/bin/el serve --port 8089 --bind 127.0.0.1
 ```
+
+---
+
+## Web View System
+
+EL includes a built-in HTTP server for viewing case reports through a web interface at **http://localhost:8089/**. The server auto-starts on system boot and serves read-only case reports.
+
+### Report Types
+
+| Report Type | File | URL Pattern | Description |
+|-------------|------|-------------|-------------|
+| **Case HTML** | `case.html` | `/cases/<case-id>/reports/case.html` | Self-contained interactive case report with ACH ranking, findings grid, IOC tables, ATT&CK mapping |
+| **Executive HTML** | `executive.html` | `/cases/<case-id>/reports/executive.html` | Executive summary for non-technical stakeholders |
+| **Combined Dashboard** | `combined.html` | `/cases/_combined/combined.html` | Multi-case dashboard with cross-host analysis, joint ACH matrix, unified timeline |
+| **Executive PDF** | `executive.pdf` | `/cases/<case-id>/reports/executive.pdf` | Printable executive report |
+
+### HTML Report Features
+
+- **Self-contained**: No CDN dependencies, works offline from `file://`
+- **Interactive**: Filterable findings grid, clickable ACH charts, expandable details
+- **Dark theme**: GitHub-style dark UI optimized for long analysis sessions
+- **Timeline visualization**: SVG-based event timeline with findings plotted
+- **ATT&CK mapping**: Technique coverage heatmap
+- **IOC extraction**: Grouped indicators by type with export capabilities
+
+### Web Server Management
+
+```bash
+# Manual control
+.venv/bin/el serve --port 8089                    # Start server (default port)
+.venv/bin/el serve --install-service              # Install as systemd --user service
+.venv/bin/el serve --uninstall-service            # Remove systemd service
+
+# Service management (auto-installed)
+systemctl --user status el-serve.service          # Check service status
+systemctl --user restart el-serve.service         # Restart web server
+journalctl --user -u el-serve.service -f          # Follow server logs
+
+# Generate reports manually
+.venv/bin/el report /opt/EL/cases/<case-id> --html      # Generate case.html + executive.html
+.venv/bin/el bundle /opt/EL/cases/<dir1> <dir2> ...     # Generate combined.html dashboard
+```
+
+### Direct Case URLs
+
+Once a case is investigated and reports are generated, access via:
+
+- **Case report**: `http://localhost:8089/<case-id>/reports/case.html`
+- **Executive summary**: `http://localhost:8089/<case-id>/reports/executive.html`  
+- **Case directory**: `http://localhost:8089/<case-id>/` (browse all files)
+- **All cases**: `http://localhost:8089/` (case directory listing)
 
 ---
 

@@ -26,6 +26,7 @@ from pathlib import Path
 from el.agents.base import Agent, AgentContext
 from el.schemas.finding import EvidenceItem, Finding
 from el.skills import linux_triage as lt
+from el.skills.father_rootkit_detection import detect_father_rootkit
 
 
 _HIGH_FAMILIES = {
@@ -171,6 +172,9 @@ class LinuxForensicatorAgent(Agent):
         # binary isn't installed.
         out.extend(_safe("rootkit-scanners",
                           self._analyze_rootkit_scanners, ctx, exports))
+        # Father rootkit detection (LD_PRELOAD hijacking, magic GID, backdoor ports)
+        out.extend(_safe("father-rootkit",
+                          self._analyze_father_rootkit, ctx, exports))
         return out
 
     def _analyze_utmp_family(self, ctx: AgentContext,
@@ -838,4 +842,145 @@ class LinuxForensicatorAgent(Agent):
                     evidence=[ev],
                     hypotheses_supported=[],
                 )))
+        return out
+
+    def _analyze_father_rootkit(self, ctx: AgentContext,
+                                exports: Path) -> list[Finding]:
+        """
+        Detect Father rootkit using specialized detection patterns.
+
+        Father rootkit (https://github.com/mav8557/Father) uses LD_PRELOAD
+        hijacking for persistence and stealth. Key indicators:
+        - /etc/ld.so.preload pointing to libymv.so.3
+        - Magic GID 7823 for file/process hiding
+        - Source port 48411 for SSH backdoor activation
+        - Password harvesting log at /tmp/silly.txt
+        """
+        out: list[Finding] = []
+
+        try:
+            # Use evidence root (could be mounted filesystem or extracted artifacts)
+            evidence_root = ctx.input_path if (ctx.input_path / "[root]").exists() else exports
+
+            father_evidence = detect_father_rootkit(evidence_root)
+
+            # LD_PRELOAD hijacking detection
+            if father_evidence.preload_path:
+                claim = "Father rootkit LD_PRELOAD hijacking detected"
+                confidence = "high"
+
+                if father_evidence.rootkit_md5:
+                    claim += f" (MD5: {father_evidence.rootkit_md5})"
+
+                if father_evidence.rootkit_path:
+                    claim += f" — library at {father_evidence.rootkit_path}"
+
+                ev = EvidenceItem(
+                    tool="father_rootkit_detection", version="0.1.0",
+                    command="detect_father_rootkit(ld_preload_analysis)",
+                    output_sha256=hashlib.sha256(str(father_evidence).encode()).hexdigest()[:16],
+                    output_path=father_evidence.preload_path,
+                    extracted_facts={
+                        "rootkit_family": "Father",
+                        "persistence_method": "LD_PRELOAD hijacking",
+                        "config_gid": father_evidence.config_gid,
+                        "source_port": father_evidence.source_port,
+                        "shell_password": father_evidence.shell_pass,
+                        "env_variable": father_evidence.env_var,
+                        "technique": "T1055.012"  # Process Injection: Dynamic linker hijacking
+                    },
+                )
+
+                out.append(self.emit(ctx, Finding(
+                    case_id=ctx.case_id, agent=self.name,
+                    confidence=confidence, claim=claim, evidence=[ev],
+                    hypotheses_supported=["H_ROOTKIT", "H_PERSISTENCE_SERVICE", "H_APT_ESPIONAGE"],
+                    ach_score_delta={"H_ROOTKIT": +3, "H_PERSISTENCE_SERVICE": +2}
+                )))
+
+            # Backdoor configuration detection
+            if father_evidence.source_port or father_evidence.config_gid:
+                config_details = []
+                if father_evidence.config_gid:
+                    config_details.append(f"magic GID {father_evidence.config_gid}")
+                if father_evidence.source_port:
+                    config_details.append(f"backdoor source port {father_evidence.source_port}")
+                if father_evidence.shell_pass:
+                    config_details.append(f"shell password '{father_evidence.shell_pass}'")
+
+                claim = f"Father rootkit configuration — {', '.join(config_details)}"
+
+                ev = EvidenceItem(
+                    tool="father_rootkit_detection", version="0.1.0",
+                    command="detect_father_rootkit(config_analysis)",
+                    output_sha256=hashlib.sha256(claim.encode()).hexdigest()[:16],
+                    output_path=father_evidence.preload_path or str(evidence_root),
+                    extracted_facts={
+                        "backdoor_activation": "SSH connection from source port",
+                        "hiding_mechanism": "Magic GID file/process concealment",
+                        "attack_technique": "T1014, T1055.012"
+                    },
+                )
+
+                out.append(self.emit(ctx, Finding(
+                    case_id=ctx.case_id, agent=self.name,
+                    confidence="high", claim=claim, evidence=[ev],
+                    hypotheses_supported=["H_ROOTKIT", "H_BACKDOOR"],
+                    ach_score_delta={"H_ROOTKIT": +2, "H_BACKDOOR": +2}
+                )))
+
+            # Credential harvesting detection
+            if father_evidence.silly_txt_present:
+                claim = "Father rootkit credential harvesting active (/tmp/silly.txt)"
+
+                ev = EvidenceItem(
+                    tool="father_rootkit_detection", version="0.1.0",
+                    command="detect_father_rootkit(credential_harvest)",
+                    output_sha256=hashlib.sha256("silly.txt_detected".encode()).hexdigest()[:16],
+                    output_path="/tmp/silly.txt",
+                    extracted_facts={
+                        "harvest_method": "PAM function hooking",
+                        "log_location": "/tmp/silly.txt",
+                        "technique": "T1555, T1003"  # Credentials from Password Stores
+                    },
+                )
+
+                out.append(self.emit(ctx, Finding(
+                    case_id=ctx.case_id, agent=self.name,
+                    confidence="high", claim=claim, evidence=[ev],
+                    hypotheses_supported=["H_CREDENTIAL_ACCESS", "H_ROOTKIT"],
+                    ach_score_delta={"H_CREDENTIAL_ACCESS": +3, "H_ROOTKIT": +1}
+                )))
+
+            # Boot errors indicating incomplete rootkit installation
+            if father_evidence.preload_errors:
+                error_sample = father_evidence.preload_errors[0][:150]
+                claim = f"Father rootkit deployment errors detected — {len(father_evidence.preload_errors)} error(s)"
+
+                ev = EvidenceItem(
+                    tool="father_rootkit_detection", version="0.1.0",
+                    command="detect_father_rootkit(error_analysis)",
+                    output_sha256=hashlib.sha256(str(father_evidence.preload_errors).encode()).hexdigest()[:16],
+                    output_path="/var/log/boot.log",
+                    extracted_facts={
+                        "error_count": len(father_evidence.preload_errors),
+                        "sample_error": error_sample,
+                        "deployment_status": "Partially failed"
+                    },
+                )
+
+                out.append(self.emit(ctx, Finding(
+                    case_id=ctx.case_id, agent=self.name,
+                    confidence="medium", claim=claim, evidence=[ev],
+                    hypotheses_supported=["H_ROOTKIT"],
+                    ach_score_delta={"H_ROOTKIT": +1}
+                )))
+
+        except Exception as e:
+            out.append(self.emit(ctx, Finding(
+                case_id=ctx.case_id, agent=self.name,
+                confidence="insufficient",
+                claim=f"Father rootkit detection failed: {e}"
+            )))
+
         return out
