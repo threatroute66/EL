@@ -1,0 +1,6 @@
+# BANNER FILE NOT PROVIDED (-b option)
+# BULK_EXTRACTOR-Version: 1.6.1 ($Rev: 10844 $)
+# Feature-Recorder: evtx_carved
+# Filename: /dev/loop20
+# Feature-File-Version: 1.1
+18123957216	evtx_carved/evtx_orphan_record	8

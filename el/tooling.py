@@ -129,8 +129,30 @@ def survey() -> list[ToolStatus]:
         probe_ezt("RECmd.dll", "RECmd"),
         probe_ezt("PECmd.dll"),
         probe_ezt("AmcacheParser.dll"),
+        probe_uac(),
         probe_weasyprint(),
     ]
+
+
+def probe_uac() -> ToolStatus:
+    """Unix Artifact Collector (UAC) for live response collection."""
+    uac_paths = [
+        "/opt/uac/uac",
+        "/usr/local/bin/uac",
+        shutil.which("uac")
+    ]
+
+    for path in uac_paths:
+        if path and Path(path).exists():
+            # UAC requires being run from its directory, so test with wrapper
+            rc, out, err = _run(["uac", "--version"])
+            if rc == 0:
+                version_line = out.strip()
+                return ToolStatus("uac", ["uac"], version_line, True,
+                                  note="live response artifact collection")
+
+    return ToolStatus("uac", None, None, False,
+                      note="install from https://github.com/tclahr/uac")
 
 
 def probe_weasyprint() -> ToolStatus:

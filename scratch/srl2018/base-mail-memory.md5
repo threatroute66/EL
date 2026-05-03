@@ -1,0 +1,12 @@
+
+dc3dd 7.2.641 started at 2018-09-05 15:48:40 +0000
+compiled options:
+command line: dc3dd if=/mnt/iscsi/base-mail/pmem/pmem of=./base-mail-memory.img hash=md5 hlog=./base-mail-memory.md5
+
+input results for file `/mnt/iscsi/base-mail/pmem/pmem':
+   a6f5b4e314f81fad37d80417e907b758 (md5)
+
+output results for file `./base-mail-memory.img':
+
+dc3dd completed at 2018-09-05 15:53:38 +0000
+

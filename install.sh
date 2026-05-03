@@ -179,6 +179,54 @@ else
     log "skipping EZ Tools check (--no-apt specified)"
 fi
 
+# --- UAC installation phase ------------------------------------------------
+# Install Unix Artifact Collector (UAC) for live response collection
+install_uac() {
+    local uac_dir="/opt/uac"
+    local uac_wrapper="/usr/local/bin/uac"
+
+    if [[ ! -d "$uac_dir" ]]; then
+        log "installing UAC (Unix Artifact Collector)"
+        local temp_dir="/tmp/uac_install"
+        mkdir -p "$temp_dir"
+
+        # Download latest UAC release
+        local uac_tarball="${temp_dir}/uac.tar.gz"
+        if curl -L -o "$uac_tarball" "https://api.github.com/repos/tclahr/uac/tarball/v3.3.0"; then
+            cd "$temp_dir" && tar -xf "$uac_tarball" >/dev/null 2>&1
+            local extracted_dir=$(find . -maxdepth 1 -type d -name "tclahr-uac-*" | head -1)
+
+            if [[ -n "$extracted_dir" && -f "$extracted_dir/uac" ]]; then
+                sudo mv "$extracted_dir" "$uac_dir"
+
+                # Create wrapper script
+                sudo tee "$uac_wrapper" > /dev/null << 'EOF'
+#!/bin/bash
+# UAC wrapper script to run from correct directory
+cd /opt/uac && exec ./uac "$@"
+EOF
+                sudo chmod +x "$uac_wrapper"
+
+                log "UAC installed at $uac_dir with wrapper at $uac_wrapper"
+            else
+                log "WARN: UAC extraction failed — live response collection unavailable"
+            fi
+        else
+            log "WARN: UAC download failed — live response collection unavailable"
+        fi
+
+        rm -rf "$temp_dir"
+    else
+        log "UAC already installed at $uac_dir — skipping"
+    fi
+}
+
+if [[ ${skip_apt} -eq 0 ]]; then
+    install_uac
+else
+    log "skipping UAC installation (--no-apt specified)"
+fi
+
 # --- venv phase -------------------------------------------------------------
 if [[ ! -d "${EL_DIR}/.venv" ]]; then
     log "creating Python venv at ${EL_DIR}/.venv"

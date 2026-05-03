@@ -1,0 +1,14 @@
+# BANNER FILE NOT PROVIDED (-b option)
+# BULK_EXTRACTOR-Version: 1.6.1 ($Rev: 10844 $)
+# Feature-Recorder: email
+# Filename: /dev/loop20
+# Feature-File-Version: 1.1
+14213079433	Jo%lkb@2PJ.Fj	ȅH\xF1\x85C\x92\xE0b\xA2\xFC\xA8\xB2\x82\xA7!Jo%lkb@2PJ.Fj6\xC4\xD4\xD1\xC9\x18i\x9BF\xF6\xC5L\xD8\x11\x93\x18
+14295867785	Jo%lkb@2PJ.Fj	ȅH\xF1\x85C\x92\xE0b\xA2\xFC\xA8\xB2\x82\xA7!Jo%lkb@2PJ.Fj6\xC4\xD4\xD1\xC9\x18i\x9BF\xF6\xC5L\xD8\x11\x93\x18
+43040292812-PDF-7	sales.uk@msab.com	mailto:sales.uk@msab.com mailto:info@msa
+43040292812-PDF-32	info@msab.com	msab.com mailto:info@msab.com mailto:support@
+43040292812-PDF-53	support@msab.com	msab.com mailto:support@msab.com mailto:sales@ms
+43040292812-PDF-77	sales@msab.com	msab.com mailto:sales@msab.com mailto:info@msa
+43040292812-PDF-99	info@msab.com	msab.com mailto:info@msab.com http://www.msab
+43042673433-PDF-7	support@msab.com	mailto:support@msab.com 
+43042969167-PDF-69	support@msab.com	?id=5783 mailto:support@msab.com 

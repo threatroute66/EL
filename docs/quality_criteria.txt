@@ -1,0 +1,53 @@
+Project Requirements
+
+    What to Create: Entrants must submit a working software application ("Project") that extends Protocol SIFT's autonomous incident response capability using an agentic framework as the primary execution engine. Claude Code and OpenClaw are the preferred frameworks, though comparable agentic architectures are permitted. Projects may operate on any supported case data type, including disk images, memory captures, log files, network captures, and remote endpoints via MCP.
+    Each Project must demonstrate all of the following:
+        Self-correction — the agent detects and resolves errors or inconsistencies in its own output without human intervention.
+        Accuracy validation — all findings are traceable to specific artifacts, files, offsets, or log entries.
+        Analytical reasoning — output is presented as a structured investigative narrative, not a raw execution log.
+    Functionality: The Project must be capable of being successfully installed and running consistently on the platform for which it is intended and must function as depicted in the video and/or expressed in the text description.
+    Platforms: Projects must be built on Linux terminal / SIFT Workstation environment. Projects must run on or integrate with the SANS SIFT Workstation using Claude Code or OpenClaw as the agentic framework. 
+    New & Existing: Projects must be substantially new work created during the hackathon period (April 15 -- June 15, 2026). Teams may use pre-existing open-source libraries, frameworks, and the existing SIFT codebase as a foundation. The novel contribution must be clearly documented.
+    Third Party Integrations: If a Project integrates any third-party SDK, APIs and/or data, Entrant must be authorized to use them in accordance with any terms and conditions or licensing requirements of the tool.
+
+Submission Requirements 
+
+Submissions to the Hackathon must meet the following requirements:
+
+    Include a Project built with the required developer tools and meets the above Project Requirements.
+    Provide a URL to your code repository for judging and testing. The repository must contain all necessary source code, assets, and instructions required for the project to be functional. 
+        The repository must be public and open source by including an MIT or Apache 2.0 open source license file. This license should be detectable and visible at the top of the repository page (in the About section).  
+        The repository must contain a README with setup instructions.
+    Include either a live deployment URL or step-by-step instructions that let judges run your agent locally against provided evidence. If local setup requires specific tools or dependencies, document them clearly in the README.
+    Include a text description that should explain the features and functionality of your Project.
+    Include a demonstration video of your Project. The video portion of the Submission:
+        should be less than five (5) minutes. Judges are not required to watch beyond ten minutes 
+        should include a screencast of live terminal execution with audio narration. Not slides. Not marketing videos. Show the agent working against real evidence, including at least one self-correction sequence.
+        must be uploaded to and made publicly visible on YouTube, Vimeo, or Youku, and a link to the video must be provided on the submission form on the Hackathon Website; and
+        must not include third party trademarks, or copyrighted music or other material unless the Entrant has permission to use such material.
+    Include an Architecture Diagram -- A clear visual showing how components connect -- the agent, SIFT tools, MCP servers, evidence sources, output pipeline.
+    Include Evidence Dataset Documentation -- What the agent was tested against, source of the data, and what the agent found.
+    Include an Accuracy Report -- Self-assessment of findings accuracy. False positives, missed artifacts, hallucinated claims identified during testing. Honesty valued over perfection.
+    Include Agent Execution Logs – Structured logs showing the full agent communication and tool execution sequence. For multi-agent submissions: agent-to-agent message logs with timestamps. For single-agent submissions: tool execution logs with timestamps and token usage. For persistent loop submissions: iteration-over-iteration traces showing how the agent's approach changed. Judges must be able to trace any finding back to the specific tool execution that produced it.
+
+Judges & Criteria
+
+Stage One) The first stage will determine via pass/fail whether the ideas meet a baseline level of viability, in that the Project reasonably fits the theme and reasonably applies the required APIs/SDKs featured in the Hackathon.
+
+Stage Two) All Submissions that pass Stage One will be evaluated in Stage Two based on the following equally weighted criteria (the “Judging Criteria”):
+
+Entries will be judged on the following equally weighted criteria, and according to the sole and absolute discretion of the judges:
+
+    Autonomous Execution Quality
+    Does the agent reason about next steps, handle failures, and self-correct in real time?
+    IR Accuracy
+    Are findings correct? Hallucinations caught and flagged? Confirmed findings distinguished from inferences?
+    Breadth and Depth of Analysis
+    How much case data can the agent handle? Depth on fewer types beats shallow coverage of many.
+    Constraint Implementation
+    Are guardrails architectural or prompt-based? Judges evaluate where security boundaries are enforced and whether they were tested for bypass.
+    Audit Trail Quality
+    Can judges trace any finding back to the specific tool execution that produced it?
+    Usability and Documentation
+    Can another practitioner deploy and build on this?
+

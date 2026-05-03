@@ -1,0 +1,12 @@
+
+dc3dd 7.2.641 started at 2018-09-07 01:00:01 +0000
+compiled options:
+command line: dc3dd if=/mnt/base-admin/base-admin/pmem/pmem of=./base-admin-memory.img hash=md5 hlog=./base-admin-memory.md5
+
+input results for file `/mnt/base-admin/base-admin/pmem/pmem':
+   36483334a3a18b826b9a9b640ed6bab5 (md5)
+
+output results for file `./base-admin-memory.img':
+
+dc3dd completed at 2018-09-07 01:01:11 +0000
+

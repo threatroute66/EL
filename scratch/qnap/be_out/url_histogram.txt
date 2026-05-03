@@ -1,0 +1,39 @@
+# BANNER FILE NOT PROVIDED (-b option)
+# BULK_EXTRACTOR-Version: 1.6.1 ($Rev: 10844 $)
+# Feature-Recorder: url
+# Filename: /dev/loop20
+# Histogram-File-Version: 1.1
+n=17	http://www.percona.com
+n=15	http://ns.adobe.com/xap/1.0/
+n=12	http://www.iec.ch
+n=9	http://ns.adobe.com/xap/1.0/mm/
+n=9	http://ns.adobe.com/xap/1.0/sType/ResourceRef#
+n=9	http://www.w3.org/1999/02/22-rdf-syntax-ns#
+n=8	http://ns.adobe.com/xap/1.0/sType/ResourceEvent#
+n=8	http://purl.org/dc/elements/1.1/
+n=7	http://creativecommons.org/licenses/by-nc-nd/2.5/
+n=7	http://www.wavemage.comTLEN
+n=6	http://ns.adobe.com/photoshop/1.0/
+n=2	http://creativecommons.org/licenses/by-nc-sa/3.0/us/
+n=2	http://creativecommons.org/licenses/by/3.0/
+n=2	http://freemusicarchive.org/
+n=2	http://ns.adobe.com/bwf/bext/1.0/
+n=2	http://ns.adobe.com/creatorAtom/1.0/
+n=2	http://ns.adobe.com/xmp/1.0/DynamicMedia/
+n=2	https://customer.msab.com/
+n=1	http://freemusicarchive.org/music/Broke_For_Free/Directionless_EP/Broke_For_Free_-_Directionless_EP_-_01_Night_Owl
+n=1	http://goo.gl/I6Xboe
+n=1	http://goo.gl/ZXgBhz
+n=1	http://mke3.net
+n=1	http://www.apache.org/licenses/LICENSE-2.0
+n=1	http://www.artificial3d.com
+n=1	http://www.iosue.it/federico
+n=1	http://www.msab.com/register-your-license
+n=1	http://www.msab.com/terms/#toc-eula
+n=1	http://www.videolan.org/x264.html
+n=1	https://github.com/federicoiosue
+n=1	https://goo.gl/Q843oh
+n=1	https://image.tmdb.org/t/p/w500/8qy3jRmaHR7f8VZh3iXCqCWfFsH.jpg
+n=1	https://m.media-amazon.com/images/M/MV5BMzc5NTUzNTgzMF5BMl5BanBnXkFtZTcwODcwMzQ5Mw@@.jpg
+n=1	https://play.google.com/apps/testing/it.feio.android.omninotes
+n=1	https://www.microsoft.com/en-us/download/details.aspx?id=5783

@@ -235,10 +235,12 @@ cd /opt/EL
 
 1. Snapshots host state (`dpkg -l`, `/opt`, vol3 presence) into `provisioning/snapshots/` for chain of custody.
 2. Installs apt packages from `provisioning/apt-packages.txt` (currently `yara` + `gh`).
-3. Creates a Python venv (prefers `virtualenv`, falls back to `python -m venv`).
-4. `pip install -e .[dev]` (volatility3, scapy, stix2, kuzu, anthropic, pydantic, etc.).
-5. Snapshots post-install state and writes a diff.
-6. Runs `el doctor`.
+3. Downloads and installs UAC (Unix Artifact Collector) v3.3.0 to `/opt/uac/` for live response collection.
+4. Downloads missing EZ Tools that EL requires but may be absent from SIFT's default installation.
+5. Creates a Python venv (prefers `virtualenv`, falls back to `python -m venv`).
+6. `pip install -e .[dev]` (volatility3, scapy, stix2, kuzu, anthropic, pydantic, etc.).
+7. Snapshots post-install state and writes a diff.
+8. Runs `el doctor`.
 
 Re-verify anytime with `./install.sh --doctor` or `make doctor`.
 

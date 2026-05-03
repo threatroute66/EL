@@ -1,0 +1,142 @@
+# BANNER FILE NOT PROVIDED (-b option)
+# BULK_EXTRACTOR-Version: 1.6.1 ($Rev: 10844 $)
+# Feature-Recorder: url
+# Filename: /dev/loop20
+# Feature-File-Version: 1.1
+1491812468	http://www.apache.org/licenses/LICENSE-2.0	 License v2.0 * http://www.apache.org/licenses/LICENSE-2.0 * * Designed an
+14078968806	http://www.w3.org/1999/02/22-rdf-syntax-ns#	:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"> <rdf:Descript
+14078968893	http://ns.adobe.com/xap/1.0/	t="" xmlns:xmp="http://ns.adobe.com/xap/1.0/" xmlns:xmpMM="h
+14078968936	http://ns.adobe.com/xap/1.0/mm/	/" xmlns:xmpMM="http://ns.adobe.com/xap/1.0/mm/" xmlns:stRef="h
+14078968982	http://ns.adobe.com/xap/1.0/sType/ResourceRef#	/" xmlns:stRef="http://ns.adobe.com/xap/1.0/sType/ResourceRef#" xmp:CreatorToo
+16584167505	http://www.artificial3d.com	Andy Goralczyk (http://www.artificial3d.com)\x0ALayout and typ
+16584167569	http://mke3.net	hy by Matt Ebb (http://mke3.net)\xFF\xDB\x00C\x00\x0A\x07\x07\x08\x07\x06\x0A\x08\x08\x08
+16588615929	http://creativecommons.org/licenses/by-nc-nd/2.5/	l-NoDerivs 2.5 (http://creativecommons.org/licenses/by-nc-nd/2.5/)WXXX\x00\x00\x00\x19\x00\x00\x00\x00htt
+16588615991	http://www.wavemage.comTLEN	.5/)WXXX\x00\x00\x00\x19\x00\x00\x00\x00http://www.wavemage.comTLEN\x00\x00\x00\x06@\x00\x0075000\x00\x00\x00\x00
+16590430464	http://creativecommons.org/licenses/by-nc-nd/2.5/	l-NoDerivs 2.5 (http://creativecommons.org/licenses/by-nc-nd/2.5/)WXXX\x00\x00\x00\x19\x00\x00\x00\x00htt
+16590430526	http://www.wavemage.comTLEN	.5/)WXXX\x00\x00\x00\x19\x00\x00\x00\x00http://www.wavemage.comTLEN\x00\x00\x00\x06@\x00\x0070000\x00\x00\x00\x00
+16592130304	http://creativecommons.org/licenses/by-nc-nd/2.5/	l-NoDerivs 2.5 (http://creativecommons.org/licenses/by-nc-nd/2.5/)WXXX\x00\x00\x00\x19\x00\x00\x00\x00htt
+16592130366	http://www.wavemage.comTLEN	.5/)WXXX\x00\x00\x00\x19\x00\x00\x00\x00http://www.wavemage.comTLEN\x00\x00\x00\x06@\x00\x0045000\x00\x00\x00\x00
+16616337566	http://creativecommons.org/licenses/by-nc-sa/3.0/us/	 United States: http://creativecommons.org/licenses/by-nc-sa/3.0/us/\x00TDAT\x00\x00\x00\x15\x00\x00\x032012
+16616337682	http://freemusicarchive.org/	RL: \x0D\x0AComments: http://freemusicarchive.org/\x0D\x0ACurator: \x0D\x0ACop
+16616337791	http://creativecommons.org/licenses/by-nc-sa/3.0/us/	 United States: http://creativecommons.org/licenses/by-nc-sa/3.0/us/\x00TPE2\x00\x00\x00\x0B\x00\x00\x03Mean
+16593219835	http://creativecommons.org/licenses/by-nc-nd/2.5/	l-NoDerivs 2.5 (http://creativecommons.org/licenses/by-nc-nd/2.5/)WXXX\x00\x00\x00\x19\x00\x00\x00\x00htt
+16593219897	http://www.wavemage.comTLEN	.5/)WXXX\x00\x00\x00\x19\x00\x00\x00\x00http://www.wavemage.comTLEN\x00\x00\x00\x06@\x00\x0060000\x00\x00\x00\x00
+16593715478	http://www.w3.org/1999/02/22-rdf-syntax-ns#	:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">\x0A  <rdf:Descri
+16593715571	http://ns.adobe.com/xap/1.0/	\x0A    xmlns:xmp="http://ns.adobe.com/xap/1.0/"\x0A    xmlns:xmpM
+16593715618	http://ns.adobe.com/xap/1.0/mm/	   xmlns:xmpMM="http://ns.adobe.com/xap/1.0/mm/"\x0A    xmlns:stEv
+16593715668	http://ns.adobe.com/xap/1.0/sType/ResourceEvent#	   xmlns:stEvt="http://ns.adobe.com/xap/1.0/sType/ResourceEvent#"\x0A    xmlns:stRe
+16593715735	http://ns.adobe.com/xap/1.0/sType/ResourceRef#	   xmlns:stRef="http://ns.adobe.com/xap/1.0/sType/ResourceRef#"\x0A    xmlns:dc="
+16593715797	http://purl.org/dc/elements/1.1/	"\x0A    xmlns:dc="http://purl.org/dc/elements/1.1/"\x0A    xmlns:crea
+16593715854	http://ns.adobe.com/creatorAtom/1.0/	ns:creatorAtom="http://ns.adobe.com/creatorAtom/1.0/"\x0A    xmlns:bext
+16593715908	http://ns.adobe.com/bwf/bext/1.0/	    xmlns:bext="http://ns.adobe.com/bwf/bext/1.0/"\x0A    xmlns:xmpD
+16593715960	http://ns.adobe.com/xmp/1.0/DynamicMedia/	   xmlns:xmpDM="http://ns.adobe.com/xmp/1.0/DynamicMedia/"\x0A   xmp:Creator
+16600146169	http://creativecommons.org/licenses/by-nc-nd/2.5/	l-NoDerivs 2.5 (http://creativecommons.org/licenses/by-nc-nd/2.5/)WXXX\x00\x00\x00\x19\x00\x00\x00\x00htt
+16600146231	http://www.wavemage.comTLEN	.5/)WXXX\x00\x00\x00\x19\x00\x00\x00\x00http://www.wavemage.comTLEN\x00\x00\x00\x06@\x00\x0091000\x00\x00\x00\x00
+16602341628	http://creativecommons.org/licenses/by-nc-nd/2.5/	l-NoDerivs 2.5 (http://creativecommons.org/licenses/by-nc-nd/2.5/)WXXX\x00\x00\x00\x19\x00\x00\x00\x00htt
+16602341690	http://www.wavemage.comTLEN	.5/)WXXX\x00\x00\x00\x19\x00\x00\x00\x00http://www.wavemage.comTLEN\x00\x00\x00\x06@\x00\x0074000\x00\x00\x00\x00
+16604143864	http://creativecommons.org/licenses/by-nc-nd/2.5/	l-NoDerivs 2.5 (http://creativecommons.org/licenses/by-nc-nd/2.5/)WXXX\x00\x00\x00\x19\x00\x00\x00\x00htt
+16604143926	http://www.wavemage.comTLEN	.5/)WXXX\x00\x00\x00\x19\x00\x00\x00\x00http://www.wavemage.comTLEN\x00\x00\x00\x07@\x00\x00109000\x00\x00\x00
+16654532886	http://www.w3.org/1999/02/22-rdf-syntax-ns#	:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">\x0A  <rdf:Descri
+16654532979	http://ns.adobe.com/xap/1.0/	\x0A    xmlns:xmp="http://ns.adobe.com/xap/1.0/"\x0A    xmlns:xmpM
+16654533026	http://ns.adobe.com/xap/1.0/mm/	   xmlns:xmpMM="http://ns.adobe.com/xap/1.0/mm/"\x0A    xmlns:stEv
+16654533076	http://ns.adobe.com/xap/1.0/sType/ResourceEvent#	   xmlns:stEvt="http://ns.adobe.com/xap/1.0/sType/ResourceEvent#"\x0A    xmlns:stRe
+16654533143	http://ns.adobe.com/xap/1.0/sType/ResourceRef#	   xmlns:stRef="http://ns.adobe.com/xap/1.0/sType/ResourceRef#"\x0A    xmlns:dc="
+16654533205	http://purl.org/dc/elements/1.1/	"\x0A    xmlns:dc="http://purl.org/dc/elements/1.1/"\x0A    xmlns:bext
+16654533255	http://ns.adobe.com/bwf/bext/1.0/	    xmlns:bext="http://ns.adobe.com/bwf/bext/1.0/"\x0A    xmlns:crea
+16654533313	http://ns.adobe.com/creatorAtom/1.0/	ns:creatorAtom="http://ns.adobe.com/creatorAtom/1.0/"\x0A    xmlns:xmpD
+16654533368	http://ns.adobe.com/xmp/1.0/DynamicMedia/	   xmlns:xmpDM="http://ns.adobe.com/xmp/1.0/DynamicMedia/"\x0A   xmp:Creator
+16706838720	http://creativecommons.org/licenses/by/3.0/	ns Attribution: http://creativecommons.org/licenses/by/3.0/\x00TDAT\x00\x00\x00\x15\x00\x00\x032011
+16722331287	http://freemusicarchive.org/music/Broke_For_Free/Directionless_EP/Broke_For_Free_-_Directionless_EP_-_01_Night_Owl	\x00\x00\x02\x0A\x00\x00\x00eng\x00URL: http://freemusicarchive.org/music/Broke_For_Free/Directionless_EP/Broke_For_Free_-_Directionless_EP_-_01_Night_Owl\x0D\x0AComments: http
+16722331413	http://freemusicarchive.org/	_Owl\x0D\x0AComments: http://freemusicarchive.org/\x0D\x0ACurator: WFMU\x0D
+16722331499	http://creativecommons.org/licenses/by/3.0/	ns Attribution: http://creativecommons.org/licenses/by/3.0/\x00TPE2\x00\x00\x00\x10\x00\x00\x03Brok
+17061904509	http://www.videolan.org/x264.html	eft 2003-2012 - http://www.videolan.org/x264.html - options: caba
+17077998294	https://m.media-amazon.com/images/M/MV5BMzc5NTUzNTgzMF5BMl5BanBnXkFtZTcwODcwMzQ5Mw@@.jpg	/plot>\x0A\x09<poster>https://m.media-amazon.com/images/M/MV5BMzc5NTUzNTgzMF5BMl5BanBnXkFtZTcwODcwMzQ5Mw@@.jpg</poster>\x0A\x09<mime
+17078113639	https://image.tmdb.org/t/p/w500/8qy3jRmaHR7f8VZh3iXCqCWfFsH.jpg	/plot>\x0A\x09<poster>https://image.tmdb.org/t/p/w500/8qy3jRmaHR7f8VZh3iXCqCWfFsH.jpg</poster>\x0A\x09<mime
+17593186755	http://www.iec.ch	desc\x00\x00\x00\x00\x00\x00\x00\x16IEC http://www.iec.ch\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x16IEC 
+17593186788	http://www.iec.ch	\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x16IEC http://www.iec.ch\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00
+17593189291	http://ns.adobe.com/xap/1.0/	\xFD)\xFD\xBA\xFEK\xFE\xDC\xFFm\xFF\xFF\xFF\xE1\x1F\xE7http://ns.adobe.com/xap/1.0/\x00<?xpacket begin
+17593189504	http://www.w3.org/1999/02/22-rdf-syntax-ns#	:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"> <rdf:Descript
+17593189591	http://ns.adobe.com/xap/1.0/	t="" xmlns:xmp="http://ns.adobe.com/xap/1.0/" xmlns:photosho
+17593189638	http://ns.adobe.com/photoshop/1.0/	mlns:photoshop="http://ns.adobe.com/photoshop/1.0/" xmlns:xmpMM="h
+17593189687	http://ns.adobe.com/xap/1.0/mm/	/" xmlns:xmpMM="http://ns.adobe.com/xap/1.0/mm/" xmlns:stEvt="h
+17593189733	http://ns.adobe.com/xap/1.0/sType/ResourceEvent#	/" xmlns:stEvt="http://ns.adobe.com/xap/1.0/sType/ResourceEvent#" xmlns:stRef="h
+17593189796	http://ns.adobe.com/xap/1.0/sType/ResourceRef#	#" xmlns:stRef="http://ns.adobe.com/xap/1.0/sType/ResourceRef#" xmlns:dc="http
+17593189854	http://purl.org/dc/elements/1.1/	Ref#" xmlns:dc="http://purl.org/dc/elements/1.1/" xmp:CreatorToo
+17593342403	http://www.iec.ch	desc\x00\x00\x00\x00\x00\x00\x00\x16IEC http://www.iec.ch\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x16IEC 
+17593342436	http://www.iec.ch	\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x16IEC http://www.iec.ch\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00
+17593344939	http://ns.adobe.com/xap/1.0/	\xFD)\xFD\xBA\xFEK\xFE\xDC\xFFm\xFF\xFF\xFF\xE1\x1F\xE7http://ns.adobe.com/xap/1.0/\x00<?xpacket begin
+17593345152	http://www.w3.org/1999/02/22-rdf-syntax-ns#	:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"> <rdf:Descript
+17593345239	http://ns.adobe.com/xap/1.0/	t="" xmlns:xmp="http://ns.adobe.com/xap/1.0/" xmlns:photosho
+17593345286	http://ns.adobe.com/photoshop/1.0/	mlns:photoshop="http://ns.adobe.com/photoshop/1.0/" xmlns:xmpMM="h
+17593345335	http://ns.adobe.com/xap/1.0/mm/	/" xmlns:xmpMM="http://ns.adobe.com/xap/1.0/mm/" xmlns:stEvt="h
+17593345381	http://ns.adobe.com/xap/1.0/sType/ResourceEvent#	/" xmlns:stEvt="http://ns.adobe.com/xap/1.0/sType/ResourceEvent#" xmlns:stRef="h
+17593345444	http://ns.adobe.com/xap/1.0/sType/ResourceRef#	#" xmlns:stRef="http://ns.adobe.com/xap/1.0/sType/ResourceRef#" xmlns:dc="http
+17593345502	http://purl.org/dc/elements/1.1/	Ref#" xmlns:dc="http://purl.org/dc/elements/1.1/" xmp:CreatorToo
+17593397132	http://www.iec.ch	desc\x00\x00\x00\x00\x00\x00\x00\x16IEC http://www.iec.ch\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x16IEC 
+17593397165	http://www.iec.ch	\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x16IEC http://www.iec.ch\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00
+17593399668	http://ns.adobe.com/xap/1.0/	\xFD)\xFD\xBA\xFEK\xFE\xDC\xFFm\xFF\xFF\xFF\xE1\x1F\x1Fhttp://ns.adobe.com/xap/1.0/\x00<?xpacket begin
+17593399881	http://www.w3.org/1999/02/22-rdf-syntax-ns#	:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"> <rdf:Descript
+17593399968	http://ns.adobe.com/xap/1.0/	t="" xmlns:xmp="http://ns.adobe.com/xap/1.0/" xmlns:photosho
+17593400015	http://ns.adobe.com/photoshop/1.0/	mlns:photoshop="http://ns.adobe.com/photoshop/1.0/" xmlns:xmpMM="h
+17593400064	http://ns.adobe.com/xap/1.0/mm/	/" xmlns:xmpMM="http://ns.adobe.com/xap/1.0/mm/" xmlns:stEvt="h
+17593400110	http://ns.adobe.com/xap/1.0/sType/ResourceEvent#	/" xmlns:stEvt="http://ns.adobe.com/xap/1.0/sType/ResourceEvent#" xmlns:stRef="h
+17593400173	http://ns.adobe.com/xap/1.0/sType/ResourceRef#	#" xmlns:stRef="http://ns.adobe.com/xap/1.0/sType/ResourceRef#" xmlns:dc="http
+17593400231	http://purl.org/dc/elements/1.1/	Ref#" xmlns:dc="http://purl.org/dc/elements/1.1/" xmp:CreatorToo
+17593425804	http://www.iec.ch	desc\x00\x00\x00\x00\x00\x00\x00\x16IEC http://www.iec.ch\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x16IEC 
+17593425837	http://www.iec.ch	\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x16IEC http://www.iec.ch\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00
+17593428340	http://ns.adobe.com/xap/1.0/	\xFD)\xFD\xBA\xFEK\xFE\xDC\xFFm\xFF\xFF\xFF\xE1\x1F\x1Fhttp://ns.adobe.com/xap/1.0/\x00<?xpacket begin
+17593428553	http://www.w3.org/1999/02/22-rdf-syntax-ns#	:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"> <rdf:Descript
+17593428640	http://ns.adobe.com/xap/1.0/	t="" xmlns:xmp="http://ns.adobe.com/xap/1.0/" xmlns:photosho
+17593428687	http://ns.adobe.com/photoshop/1.0/	mlns:photoshop="http://ns.adobe.com/photoshop/1.0/" xmlns:xmpMM="h
+17593428736	http://ns.adobe.com/xap/1.0/mm/	/" xmlns:xmpMM="http://ns.adobe.com/xap/1.0/mm/" xmlns:stEvt="h
+17593428782	http://ns.adobe.com/xap/1.0/sType/ResourceEvent#	/" xmlns:stEvt="http://ns.adobe.com/xap/1.0/sType/ResourceEvent#" xmlns:stRef="h
+17593428845	http://ns.adobe.com/xap/1.0/sType/ResourceRef#	#" xmlns:stRef="http://ns.adobe.com/xap/1.0/sType/ResourceRef#" xmlns:dc="http
+17593428903	http://purl.org/dc/elements/1.1/	Ref#" xmlns:dc="http://purl.org/dc/elements/1.1/" xmp:CreatorToo
+17598003277	http://ns.adobe.com/xap/1.0/	\x00\x00\x00\x07\x00\x04\x01\x01\x00\x01\x01\x00\xFF\xE1\x1F\xE7http://ns.adobe.com/xap/1.0/\x00<?xpacket begin
+17598003490	http://www.w3.org/1999/02/22-rdf-syntax-ns#	:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"> <rdf:Descript
+17598003577	http://ns.adobe.com/xap/1.0/	t="" xmlns:xmp="http://ns.adobe.com/xap/1.0/" xmlns:photosho
+17598003624	http://ns.adobe.com/photoshop/1.0/	mlns:photoshop="http://ns.adobe.com/photoshop/1.0/" xmlns:xmpMM="h
+17598003673	http://ns.adobe.com/xap/1.0/mm/	/" xmlns:xmpMM="http://ns.adobe.com/xap/1.0/mm/" xmlns:stEvt="h
+17598003719	http://ns.adobe.com/xap/1.0/sType/ResourceEvent#	/" xmlns:stEvt="http://ns.adobe.com/xap/1.0/sType/ResourceEvent#" xmlns:stRef="h
+17598003782	http://ns.adobe.com/xap/1.0/sType/ResourceRef#	#" xmlns:stRef="http://ns.adobe.com/xap/1.0/sType/ResourceRef#" xmlns:dc="http
+17598003840	http://purl.org/dc/elements/1.1/	Ref#" xmlns:dc="http://purl.org/dc/elements/1.1/" xmp:CreatorToo
+17598012072	http://www.iec.ch	desc\x00\x00\x00\x00\x00\x00\x00\x16IEC http://www.iec.ch\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x16IEC 
+17598012105	http://www.iec.ch	\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x16IEC http://www.iec.ch\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00
+17599311354	http://ns.adobe.com/xap/1.0/	\x00\x00\x00\x07\x00\x04\x01\x01\x00\x01\x01\x00\xFF\xE1\x1F\x1Fhttp://ns.adobe.com/xap/1.0/\x00<?xpacket begin
+17599311567	http://www.w3.org/1999/02/22-rdf-syntax-ns#	:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"> <rdf:Descript
+17599311654	http://ns.adobe.com/xap/1.0/	t="" xmlns:xmp="http://ns.adobe.com/xap/1.0/" xmlns:photosho
+17599311701	http://ns.adobe.com/photoshop/1.0/	mlns:photoshop="http://ns.adobe.com/photoshop/1.0/" xmlns:xmpMM="h
+17599311750	http://ns.adobe.com/xap/1.0/mm/	/" xmlns:xmpMM="http://ns.adobe.com/xap/1.0/mm/" xmlns:stEvt="h
+17599311796	http://ns.adobe.com/xap/1.0/sType/ResourceEvent#	/" xmlns:stEvt="http://ns.adobe.com/xap/1.0/sType/ResourceEvent#" xmlns:stRef="h
+17599311859	http://ns.adobe.com/xap/1.0/sType/ResourceRef#	#" xmlns:stRef="http://ns.adobe.com/xap/1.0/sType/ResourceRef#" xmlns:dc="http
+17599311917	http://purl.org/dc/elements/1.1/	Ref#" xmlns:dc="http://purl.org/dc/elements/1.1/" xmp:CreatorToo
+17599319949	http://www.iec.ch	desc\x00\x00\x00\x00\x00\x00\x00\x16IEC http://www.iec.ch\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x16IEC 
+17599319982	http://www.iec.ch	\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x16IEC http://www.iec.ch\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00
+18122025790	http://goo.gl/I6Xboe	hi_IN\x00\x05\x05hr_HR\x00\x14\x14http://goo.gl/I6Xboe\x00\x14\x14http://goo.gl
+18122025813	http://goo.gl/ZXgBhz	goo.gl/I6Xboe\x00\x14\x14http://goo.gl/ZXgBhz\x00\x1C\x1Chttp://www.io
+18122025836	http://www.iosue.it/federico	goo.gl/ZXgBhz\x00\x1C\x1Chttp://www.iosue.it/federico\x00  https://githu
+18122025867	https://github.com/federicoiosue	e.it/federico\x00  https://github.com/federicoiosue\x00\x15\x15https://goo.g
+18122025902	https://goo.gl/Q843oh	federicoiosue\x00\x15\x15https://goo.gl/Q843oh\x00>>https://play.
+18122025926	https://play.google.com/apps/testing/it.feio.android.omninotes	goo.gl/Q843oh\x00>>https://play.google.com/apps/testing/it.feio.android.omninotes\x00\x05\x05hu_HU\x00\x05\x05in_ID
+43040292812-PDF-113	http://www.msab.com/terms/#toc-eula	o:info@msab.com http://www.msab.com/terms/#toc-eula Identity Adobe 
+43040328609-PDF-0	https://customer.msab.com/	https://customer.msab.com/ http://www.msab
+43040328609-PDF-27	http://www.msab.com/register-your-license	tomer.msab.com/ http://www.msab.com/register-your-license Identity Adobe 
+43040941292-PDF-0	https://customer.msab.com/	https://customer.msab.com/ 
+43042969167-PDF-0	https://www.microsoft.com/en-us/download/details.aspx?id=5783	https://www.microsoft.com/en-us/download/details.aspx?id=5783 mailto:support@
+94591541450	http://www.percona.com	Percona XtraDB (http://www.percona.com) 5.5.55-MariaDB
+94591542904	http://www.percona.com	Percona XtraDB (http://www.percona.com) 5.5.55-MariaDB
+94582629703	http://www.percona.com	P\xF7rcona XtraDB (http://www.percona.com) 5\xBC5.55-MariaDB
+94582631735	http://www.percona.com	Percona XtraDB (http://www.percona.com) 5.5.55-MariaDB
+94585823768	http://www.percona.com	Percona XtraDB (http://www.percona.com) 5.5.55-MariaDB
+94585825307	http://www.percona.com	Percona XtraDB (http://www.percona.com) 5.5.55-MariaDB
+94585826632	http://www.percona.com	Percona XtraDB (http://www.percona.com) 5.5.55-MariaDB
+94586348056	http://www.percona.com	Percona XtraDB (http://www.percona.com) 5.5.55-MariaDB
+94586349595	http://www.percona.com	Percona XtraDB (http://www.percona.com) 5.5.55-MariaDB
+94586350920	http://www.percona.com	Percona XtraDB (http://www.percona.com) 5.5.55-MariaDB
+94586823200	http://www.percona.com	Percona XtraDB (http://www.percona.com) 5.5.55-MariaDB
+94586825077	http://www.percona.com	Percona XtraDB (http://www.percona.com) 5.5.55-MariaDB
+94587347488	http://www.percona.com	Percona \xCAtraDB (http://www.percona.com) 5.5.55-M\xF3riaDB
+94587349365	http://www.percona.com	Percona XtraDB (http://www.percona.com) 5.5.55-MariaDB
+94589423845	http://www.percona.com	Percona XtraDB (http://www.percona.com) 5.5.55-MariaDB
+94589425384	http://www.percona.com	Percona XtraDB (http://www.percona.com) 5.5.55-MariaDB
+94589426709	http://www.percona.com	Percona XtraDB (http://www.percona.com) 5.5.55-MariaDB
