@@ -22,6 +22,136 @@ class FatherRootkitError(Exception):
     pass
 
 
+def _build_evidence_search_paths(evidence_root: Path) -> dict:
+    """
+    Build comprehensive search paths for Father rootkit artifacts based on evidence structure.
+
+    Handles three evidence patterns:
+    1. Live response collection (chkrootkit/, live_response/, [root]/, etc.)
+    2. Direct filesystem root (etc/, var/, home/, etc.)
+    3. Mixed structure with both live response and filesystem data
+    """
+    evidence_root = Path(evidence_root)
+
+    # Detect evidence structure type
+    has_live_response = (evidence_root / "live_response").exists()
+    has_chkrootkit = (evidence_root / "chkrootkit").exists()
+    has_root_dir = (evidence_root / "[root]").exists()
+    has_direct_etc = (evidence_root / "etc").exists()
+
+    search_paths = {
+        "preload_files": [],
+        "rootkit_libraries": [],
+        "silly_txt_paths": [],
+        "log_paths": [],
+        "proc_files": [],
+        "net_files": [],
+        "evidence_type": "unknown"
+    }
+
+    if has_live_response or has_chkrootkit:
+        # Live response collection structure
+        search_paths["evidence_type"] = "live_response_collection"
+
+        # LD_PRELOAD files from chkrootkit or system scans
+        search_paths["preload_files"].extend([
+            evidence_root / "chkrootkit" / "etc_ld_so_preload.txt",
+            evidence_root / "system" / "etc_ld_so_preload.txt",
+            evidence_root / "live_response" / "system" / "etc_ld_so_preload.txt",
+        ])
+
+        # Process lists from live response
+        if has_live_response:
+            lr_proc = evidence_root / "live_response" / "process"
+            search_paths["proc_files"].extend([
+                lr_proc / "ps_-ef.txt",
+                lr_proc / "ps_auxwww.txt",
+                lr_proc / "ps_-axo_pid_user_lstart_args.txt",
+            ])
+
+            # Network connections from live response
+            lr_net = evidence_root / "live_response" / "network"
+            search_paths["net_files"].extend([
+                lr_net / "ss_-tanp.txt",
+                lr_net / "ss_-ap.txt",
+                lr_net / "netstat.txt",
+                lr_net / "netstat_-anp.txt",
+            ])
+
+        # If [root] directory exists, also check filesystem artifacts
+        if has_root_dir:
+            root_dir = evidence_root / "[root]"
+            search_paths["preload_files"].append(root_dir / "etc" / "ld.so.preload")
+            search_paths["rootkit_libraries"].extend([
+                root_dir / "usr" / "lib" / "x86_64-linux-gnu" / "libymv.so.3",
+                root_dir / "lib" / "x86_64-linux-gnu" / "libymv.so.3",
+            ])
+            search_paths["silly_txt_paths"].append(root_dir / "tmp" / "silly.txt")
+            search_paths["log_paths"].extend([
+                root_dir / "var" / "log" / "boot.log",
+                root_dir / "var" / "log" / "syslog",
+                root_dir / "var" / "log" / "dmesg",
+            ])
+
+        # Add live response system files to logs for error detection
+        if has_live_response:
+            lr_system = evidence_root / "live_response" / "system"
+            search_paths["log_paths"].extend([
+                lr_system / "dmesg.txt",
+                lr_system / "boot_log.txt",
+                lr_system / "syslog.txt",
+            ])
+
+        # Add chkrootkit and system directory scans
+        if has_chkrootkit:
+            chk_dir = evidence_root / "chkrootkit"
+            search_paths["log_paths"].extend([
+                chk_dir / "dmesg.txt",
+                chk_dir / "boot_log.txt",
+            ])
+            search_paths["proc_files"].extend([
+                chk_dir / "ps_-ef.txt",
+                chk_dir / "ps_auxwww.txt",
+            ])
+
+        # Add system directory scans
+        system_dir = evidence_root / "system"
+        if system_dir.exists():
+            search_paths["log_paths"].extend([
+                system_dir / "dmesg.txt",
+                system_dir / "boot_log.txt",
+            ])
+            search_paths["proc_files"].extend([
+                system_dir / "ps_-ef.txt",
+                system_dir / "ps_auxwww.txt",
+            ])
+
+    elif has_direct_etc:
+        # Direct filesystem root structure
+        search_paths["evidence_type"] = "filesystem_root"
+
+        search_paths["preload_files"].append(evidence_root / "etc" / "ld.so.preload")
+        search_paths["rootkit_libraries"].extend([
+            evidence_root / "usr" / "lib" / "x86_64-linux-gnu" / "libymv.so.3",
+            evidence_root / "lib" / "x86_64-linux-gnu" / "libymv.so.3",
+        ])
+        search_paths["silly_txt_paths"].append(evidence_root / "tmp" / "silly.txt")
+        search_paths["log_paths"].extend([
+            evidence_root / "var" / "log" / "boot.log",
+            evidence_root / "var" / "log" / "syslog",
+        ])
+
+    else:
+        # Unknown structure - try common paths
+        search_paths["evidence_type"] = "unknown_structure"
+        search_paths["preload_files"].extend([
+            evidence_root / "etc" / "ld.so.preload",
+            evidence_root / "chkrootkit" / "etc_ld_so_preload.txt",
+        ])
+
+    return search_paths
+
+
 @dataclass
 class FatherRootkitEvidence:
     """Evidence of Father rootkit presence."""
@@ -65,6 +195,11 @@ def detect_father_rootkit(evidence_root: Path) -> FatherRootkitEvidence:
     """
     Detect Father rootkit artifacts in evidence.
 
+    Enhanced to handle multiple evidence structures:
+    - Live response data (chkrootkit/, live_response/, system/)
+    - Mounted filesystem ([root]/ directory)
+    - Direct filesystem root (etc/, var/, home/, etc.)
+
     Father rootkit detection signatures:
     1. LD_PRELOAD entry pointing to suspicious .so file
     2. Magic GID 7823 (default) in processes/files
@@ -77,12 +212,11 @@ def detect_father_rootkit(evidence_root: Path) -> FatherRootkitEvidence:
     result = FatherRootkitEvidence()
     result.preload_errors = []
 
-    # Check LD_PRELOAD configuration
-    preload_files = [
-        evidence_root / "chkrootkit" / "etc_ld_so_preload.txt",
-        evidence_root / "[root]" / "etc" / "ld.so.preload",
-        evidence_root / "system" / "etc_ld_so_preload.txt"
-    ]
+    # Detect evidence structure type and build search paths
+    search_paths = _build_evidence_search_paths(evidence_root)
+
+    # Check LD_PRELOAD configuration across all possible locations
+    preload_files = search_paths["preload_files"]
 
     for preload_file in preload_files:
         if not preload_file.exists():
@@ -108,14 +242,9 @@ def detect_father_rootkit(evidence_root: Path) -> FatherRootkitEvidence:
         except Exception as e:
             result.preload_errors.append(f"Error reading {preload_file}: {e}")
 
-    # Look for Father rootkit library file
-    lib_paths = [
-        evidence_root / "[root]" / "usr" / "lib" / "x86_64-linux-gnu" / "libymv.so.3",
-        evidence_root / "[root]" / "lib" / "x86_64-linux-gnu" / "libymv.so.3",
-        evidence_root / "live_response" / "system" / "libymv.so.3",
-    ]
-
-    for lib_path in lib_paths:
+    # Look for Father rootkit library file using enhanced search paths
+    rootkit_libraries = search_paths["rootkit_libraries"]
+    for lib_path in rootkit_libraries:
         if lib_path.exists():
             result.rootkit_path = str(lib_path)
             # Calculate MD5 hash
@@ -124,22 +253,14 @@ def detect_father_rootkit(evidence_root: Path) -> FatherRootkitEvidence:
             break
 
     # Check for password log file (Father hooks PAM passwords here)
-    silly_txt_paths = [
-        evidence_root / "[root]" / "tmp" / "silly.txt",
-        evidence_root / "live_response" / "system" / "tmp_silly.txt",
-    ]
-
+    silly_txt_paths = search_paths["silly_txt_paths"]
     for silly_path in silly_txt_paths:
         if silly_path.exists():
             result.silly_txt_present = True
             break
 
     # Look for Father rootkit errors in system logs
-    log_paths = [
-        evidence_root / "[root]" / "var" / "log" / "boot.log",
-        evidence_root / "[root]" / "var" / "log" / "syslog",
-        evidence_root / "live_response" / "system" / "dmesg.txt",
-    ]
+    log_paths = search_paths["log_paths"]
 
     father_error_patterns = [
         r"object '/.*libymv\.so.*' from /etc/ld\.so\.preload cannot be preloaded",
@@ -160,10 +281,7 @@ def detect_father_rootkit(evidence_root: Path) -> FatherRootkitEvidence:
             continue
 
     # Look for magic GID 7823 in process lists or file ownership
-    proc_files = [
-        evidence_root / "live_response" / "process" / "ps_-ef.txt",
-        evidence_root / "live_response" / "process" / "ps_auxwww.txt",
-    ]
+    proc_files = search_paths["proc_files"]
 
     for proc_file in proc_files:
         if not proc_file.exists():
@@ -177,10 +295,7 @@ def detect_father_rootkit(evidence_root: Path) -> FatherRootkitEvidence:
             continue
 
     # Look for source port 48411 in network connections
-    net_files = [
-        evidence_root / "live_response" / "network" / "ss_-tanp.txt",
-        evidence_root / "live_response" / "network" / "netstat.txt",
-    ]
+    net_files = search_paths["net_files"]
 
     for net_file in net_files:
         if not net_file.exists():
