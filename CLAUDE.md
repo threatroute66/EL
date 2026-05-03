@@ -22,6 +22,10 @@ file adds the project-specific contracts.
   final findings. If blocked, pick the most reasonable path and note it.
   Architectural discussion and convergence on direction are exempt — that's
   not "asking during a task."
+- **Every improvement gets committed and pushed.** After enhancing agents,
+  skills, or documentation, immediately commit with a descriptive message
+  and push to origin/main. This ensures all forensic capabilities and
+  lessons learned persist in the codebase for future investigations.
 - **Tool output IS evidence.** Agents are Python orchestration around
   vetted CLI tools. Do NOT ask Claude to "read" event logs or parse
   process trees — deterministic parsers exist. LLMs reason about
