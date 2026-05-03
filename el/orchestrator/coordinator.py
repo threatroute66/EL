@@ -27,6 +27,7 @@ from el.agents.email_forensicator import EmailForensicatorAgent
 from el.agents.bulk_extractor_features_agent import BulkExtractorFeaturesAgent
 from el.agents.endpoint_analyst import EndpointAnalystAgent
 from el.agents.linux_forensicator import LinuxForensicatorAgent
+from el.agents.live_response_collector import LiveResponseCollector
 from el.agents.macos_forensicator import MacOSForensicatorAgent
 from el.agents.execution_corroborator import ExecutionCorroboratorAgent
 from el.agents.lateral_movement_analyst import LateralMovementAnalystAgent
@@ -94,6 +95,8 @@ KIND_TO_AGENT: dict[str, type[Agent]] = {
     "macos-fs-dir": MacOSForensicatorAgent,
     "bulk-extractor-output": BulkExtractorFeaturesAgent,
     "k8s-audit-log": K8sAuditAnalystAgent,
+    "live-linux-system": LiveResponseCollector,
+    "uac-collection": LinuxForensicatorAgent,  # Process UAC artifacts with Linux forensicator
 }
 
 
@@ -120,6 +123,41 @@ def _looks_like_cloudtrail(path: Path) -> bool:
 def _looks_like_k8s_audit(path: Path) -> bool:
     head = _sample_head(path)
     return b'"audit.k8s.io/' in head and b'"auditID"' in head
+
+
+def _looks_like_live_system(path: Path) -> bool:
+    """
+    Determine if path represents a live Unix/Linux system.
+
+    Checks for indicators of a live, mounted filesystem:
+    - Root filesystem (/)
+    - Active /proc filesystem with running processes
+    - /sys filesystem present
+    """
+    if not path.exists() or not path.is_dir():
+        return False
+
+    # Check if this is root filesystem
+    if str(path) == "/" and (Path("/proc").exists() and Path("/sys").exists()):
+        return True
+
+    # Check for active /proc with running processes
+    proc_dir = path / "proc"
+    if proc_dir.exists() and proc_dir.is_dir():
+        try:
+            # Look for numeric PID directories (indicating running processes)
+            pid_dirs = [d for d in proc_dir.iterdir()
+                       if d.is_dir() and d.name.isdigit()]
+            if len(pid_dirs) > 10:  # Threshold for "live" system
+                return True
+
+            # Also check if /proc/self exists (indicates mounted proc)
+            if (proc_dir / "self").exists():
+                return True
+        except (OSError, PermissionError):
+            pass
+
+    return False
 
 
 @dataclass
@@ -309,6 +347,9 @@ class Coordinator:
         kind = ctx.shared.get("evidence_kind")
         if kind and kind in KIND_TO_AGENT:
             return KIND_TO_AGENT[kind]()
+        if _looks_like_live_system(ctx.input_path):
+            ctx.shared["evidence_kind"] = "live-linux-system"
+            return LiveResponseCollector()
         if _looks_like_k8s_audit(ctx.input_path):
             ctx.shared["evidence_kind"] = "k8s-audit-log"
             return K8sAuditAnalystAgent()
