@@ -683,6 +683,33 @@ class Coordinator:
                 if self.audit:
                     self.audit.error("case_seal_failed", err=str(e))
 
+            # SIGMA pack export — convert the bundled SIGMA rules to
+            # SPL / KQL / Lucene per-SIEM query files under
+            # reports/sigma_rules/. Useful for analysts who want to deploy
+            # the same detection content EL evaluates in-process.
+            try:
+                from el.skills import sigma_export
+                # Hayabusa rules dir is the canonical local SIGMA pack;
+                # fall back to /opt/sigma/rules when present.
+                for candidate in (Path("/opt/hayabusa/rules"),
+                                   Path("/opt/sigma/rules")):
+                    if candidate.is_dir():
+                        sigma_out = (ctx.case_dir / "reports" /
+                                      "sigma_rules")
+                        sx_run = sigma_export.export_pack(candidate, sigma_out)
+                        if self.audit:
+                            self.audit.info(
+                                "sigma_export",
+                                rules_walked=sx_run.rule_count,
+                                converted=sx_run.converted_count,
+                                backends=sx_run.backends_run,
+                                output_dir=str(sigma_out),
+                            )
+                        break
+            except Exception as e:
+                if self.audit:
+                    self.audit.error("sigma_export_failed", err=str(e))
+
             # TI push — opt-in via EL_OPENCTI_URL+TOKEN and/or EL_MISP_URL+KEY.
             # Only at DONE (not BLOCKED): pushing a case still under
             # adversarial review would leak unverified IOCs into the org's TI

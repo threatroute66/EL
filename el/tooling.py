@@ -117,6 +117,7 @@ def survey() -> list[ToolStatus]:
         probe_tracee(),
         probe_dftimewolf_bundle(),
         probe_falco_events(),
+        probe_sigma_export(),
         probe_ti_push(),
         probe_simple("zeek", ["--version"]),
         probe_simple("suricata", ["-V"]),
@@ -231,6 +232,23 @@ def probe_tracee() -> ToolStatus:
         note=("eBPF runtime capture (requires root)"
               if os.geteuid() == 0
               else "eBPF runtime capture (run live-system step as root)"),
+    )
+
+
+def probe_sigma_export() -> ToolStatus:
+    """pySigma + per-SIEM backends — converts SIGMA rules to deployable
+    SPL / KQL / Lucene queries at coordinator DONE."""
+    from el.skills import sigma_export as sx
+    ok, reason = sx.is_available()
+    if not ok:
+        return ToolStatus(
+            "sigma_export", None, None, False,
+            note=reason,
+        )
+    backends = list(sx._resolve_backends().keys())
+    return ToolStatus(
+        "sigma_export", None, "pysigma + backends",
+        True, note=f"backends: {', '.join(backends)}",
     )
 
 
