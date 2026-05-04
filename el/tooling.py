@@ -113,6 +113,7 @@ def survey() -> list[ToolStatus]:
         probe_ja4(),
         probe_cape(),
         probe_m365_collect(),
+        probe_azurehound_triage(),
         probe_simple("zeek", ["--version"]),
         probe_simple("suricata", ["-V"]),
         probe_simple("tshark", ["-v"]),
@@ -191,6 +192,15 @@ def probe_m365_collect() -> ToolStatus:
     return ToolStatus(
         "m365_collect", [pwsh], f"Microsoft-Extractor-Suite {version}", True,
         note=note,
+    )
+
+
+def probe_azurehound_triage() -> ToolStatus:
+    """In-process AzureHound JSON parser (no Neo4j; no BloodHound CE).
+    Always available — pure Python."""
+    return ToolStatus(
+        "azurehound_triage", None, "0.1.0", True,
+        note="in-process Entra ID privileged-role triage on AzureHound dumps",
     )
 
 

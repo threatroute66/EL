@@ -156,13 +156,33 @@ These are high-quality but narrower in scope. Build when EL starts seeing the re
 
 ---
 
-### 2.2 BloodHound CE + AzureHound — identity attack-path graphs
-**Project**: bloodhound.specterops.io  
-**Why**: EL's Kùzu graph captures evidence relationships but not *identity-system* relationships (AD group nesting, Azure role inheritance, ACL paths). BloodHound CE (which merged AzureHound in 2024) is the OSS standard.
+### 2.2 BloodHound CE + AzureHound — pivoted to in-process triage
 
-**Integration shape**: Skill `el/skills/bloodhound.py` — wraps BloodHound's collectors when EL is given AD/Entra ID JSON exports. Feeds `LateralMovementAnalystAgent` and `CredentialAnalystAgent`. Requires Neo4j (BloodHound CE bundles it).
+**Status**: Pivoted during Tier 2 build (2026-05-04). Full BloodHound CE
+requires Neo4j, which is a heavy operational dependency for per-case
+offline forensic analysis. Rather than ship a Neo4j-bundled-installer, EL
+now ships ``el/skills/azurehound_triage.py`` — a pure-Python parser for
+AzureHound's JSON output that surfaces the highest-signal forensic facts
+without standing up the graph backend:
 
-**Risk**: Medium — Neo4j is a non-trivial dependency. Document as optional.
+  * Users / service principals / groups assigned privileged Entra ID roles
+    (Global Admin, App Admin, Auth Admin, etc. — full Microsoft-published
+    "privileged roles" list)
+  * External-guest accounts holding privileged roles (BEC red flag)
+  * App registrations with admin-consented high-risk OAuth scopes
+    (Mail.ReadWrite, Files.ReadWrite.All, Directory.ReadWrite.All, ...)
+  * Distinct-kind / record-count summaries
+
+This is consistent with the existing pattern (cloudtrail / k8s_audit
+parsers don't run AWS / Kubernetes either — they parse the JSON the
+investigator brings). Feed by handing EL an AzureHound output directory or
+.zip; works on .json and .jsonl shapes.
+
+**If a case truly needs Neo4j-class attack-path graphs** beyond what this
+in-process triage surfaces (transitive group nesting, ACL chain analysis,
+shortest-path queries), the operator can: (a) run the actual BloodHound CE
+Docker stack separately, or (b) we add a thin client to a configured
+BloodHound CE instance later — strictly additive.
 
 ---
 
