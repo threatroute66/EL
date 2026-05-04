@@ -324,6 +324,33 @@ else
     log "skipping FoxIO ja4 install (--no-apt specified)"
 fi
 
+# --- Microsoft-Extractor-Suite (PowerShell) phase --------------------------
+# Install Invictus IR's PowerShell module for M365 / Entra ID acquisition.
+# Best-effort: requires pwsh (PowerShell 7) which SIFT ships natively.
+install_m365_extractor_suite() {
+    if ! command -v pwsh >/dev/null 2>&1; then
+        log "INFO: pwsh not present — skipping Microsoft-Extractor-Suite install"
+        return 0
+    fi
+    if pwsh -NoProfile -NonInteractive -Command \
+        "if (Get-Module -ListAvailable -Name Microsoft-Extractor-Suite) { exit 0 } else { exit 1 }" \
+        >/dev/null 2>&1; then
+        log "Microsoft-Extractor-Suite already installed — skipping"
+        return 0
+    fi
+    log "installing Microsoft-Extractor-Suite (Invictus IR, MIT) for current user"
+    pwsh -NoProfile -NonInteractive -Command \
+        "Install-Module Microsoft-Extractor-Suite -Scope CurrentUser -Force -AllowClobber -ErrorAction Stop" \
+        2>/dev/null \
+        || log "WARN: Microsoft-Extractor-Suite install failed — M365 acquisition unavailable"
+}
+
+if [[ ${skip_apt} -eq 0 ]]; then
+    install_m365_extractor_suite
+else
+    log "skipping Microsoft-Extractor-Suite install (--no-apt specified)"
+fi
+
 # --- venv phase -------------------------------------------------------------
 if [[ ! -d "${EL_DIR}/.venv" ]]; then
     log "creating Python venv at ${EL_DIR}/.venv"

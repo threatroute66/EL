@@ -112,6 +112,7 @@ def survey() -> list[ToolStatus]:
         probe_yara_x(),
         probe_ja4(),
         probe_cape(),
+        probe_m365_collect(),
         probe_simple("zeek", ["--version"]),
         probe_simple("suricata", ["-V"]),
         probe_simple("tshark", ["-v"]),
@@ -157,6 +158,39 @@ def probe_ja4() -> ToolStatus:
     return ToolStatus(
         "ja4", None, None, False,
         note="install via install.sh; clone github.com/FoxIO-LLC/ja4 to /opt/ja4-tools/",
+    )
+
+
+def probe_m365_collect() -> ToolStatus:
+    """Microsoft-Extractor-Suite (Invictus) — M365 / Entra ID acquisition.
+
+    Requires PowerShell 7 + Microsoft-Extractor-Suite module + tenant
+    credentials. All optional (opt-in via env)."""
+    pwsh = shutil.which("pwsh")
+    if not pwsh:
+        return ToolStatus(
+            "m365_collect", None, None, False,
+            note="install PowerShell 7 (apt install powershell)",
+        )
+    rc, out, err = _run(
+        [pwsh, "-NoProfile", "-NonInteractive", "-Command",
+         "(Get-Module -ListAvailable -Name Microsoft-Extractor-Suite | "
+         "Select-Object -First 1).Version.ToString()"],
+        timeout=15,
+    )
+    version = (out or "").strip()
+    if not version:
+        return ToolStatus(
+            "m365_collect", None, "pwsh present", False,
+            note="pwsh ok; install: pwsh -c 'Install-Module Microsoft-Extractor-Suite'",
+        )
+    from el.skills import m365_collect as m
+    note = (f"configured for tenant {os.environ.get('EL_M365_TENANT_ID','')[:8]}..."
+            if m.is_configured()
+            else "module installed; set EL_M365_TENANT_ID + auth env to enable")
+    return ToolStatus(
+        "m365_collect", [pwsh], f"Microsoft-Extractor-Suite {version}", True,
+        note=note,
     )
 
 

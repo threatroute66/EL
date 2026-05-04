@@ -339,6 +339,17 @@ el investigate /cases/<input> --timeline             # auto-pushes when set
 export EL_CAPE_URL=https://cape.internal.lab
 export EL_CAPE_TOKEN=<api-token>                     # preferred
 # (export EL_CAPE_VERIFY=0 to disable TLS verification for self-signed)
+
+# Microsoft-Extractor-Suite (Invictus IR) — M365 / Entra ID forensic
+# acquisition (UAL, MailItemsAccessed, sign-ins, OAuth consents, inbox
+# rules). Requires pwsh + Microsoft-Extractor-Suite module (install.sh
+# handles both). Opt-in via tenant credentials.
+export EL_M365_TENANT_ID=<tenant-guid>
+export EL_M365_APP_ID=<app-registration-guid>        # preferred
+export EL_M365_APP_SECRET=<app-secret>
+# or (less secure):
+# export EL_M365_USERNAME=alice@contoso.onmicrosoft.com
+# export EL_M365_PASSWORD=$(pass m365/alice)
 ```
 
 Each case workspace lives at `cases/<case_id>/`:
