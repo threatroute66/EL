@@ -166,13 +166,34 @@ These are high-quality but narrower in scope. Build when EL starts seeing the re
 
 ---
 
-### 2.3 RITA v5 — beaconing / long-connection detection
-**Project**: github.com/activecm/rita  
-**Why**: EL's `network_anomaly` skill catches DGA + DNS tunnelling but has no statistical-beaconing detector. RITA's beacon-score algorithm (interval consistency × dispersion × jitter) is the OSS reference.
+### 2.3 RITA v5 — pivoted to algorithmic implementation
 
-**Integration shape**: Skill `el/skills/rita.py` — runs RITA over Zeek logs that `NetworkAnalystAgent` already produces; ingests beacon scores as Findings. Strengthens `H_C2_BEACONING` scorer (currently relies on heuristic port-set + DGA).
+**Status**: Pivoted during Tier 2 build (2026-05-04). RITA v5 was assumed to be a
+"single binary, no Mongo" tool (per the original proposal); verification on
+the activecm/rita README showed v5 actually requires **Docker + Compose +
+ClickHouse + Ansible** for deployment. That's an unacceptable operational
+dependency for per-case forensic analysis.
 
-**Risk**: Low. RITA v5 is Go-based, single binary, no Mongo dependency anymore.
+The algorithm itself, however, is published research and ~150 lines of Python.
+Implemented as ``el/skills/network_beaconing.py`` — directly cites Hill &
+Bestard (Active Countermeasures, 2018-2024) and follows RITA's published
+formula:
+
+  ts_score   = 1 - (mad_intervals / mean_interval)
+  disp_score = 1 - (stdev_intervals / mean_interval)
+  beacon     = mean(ts_score, disp_score), clamped [0..1]
+
+Operational threshold ≥ 0.85 with ≥ 10 connections per tuple matches what
+AC-Hunter publishes. NetworkAnalyst chains it after Zeek so the existing
+``conn.log`` (TSV or JSON form, optionally gzip) gets scored automatically.
+
+This is consistent with the existing pattern — EL already implements
+similar small algorithmic detectors (network_anomaly DGA detector,
+disk_anomaly path patterns) directly rather than wrapping a heavy backend.
+
+**If a future deployment ALREADY runs the full RITA v5 stack**, a thin
+`rita_client.py` querying the ClickHouse backing store could be added —
+but it's strictly additive over what we now ship.
 
 ---
 

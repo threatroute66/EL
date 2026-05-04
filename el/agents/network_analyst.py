@@ -94,6 +94,80 @@ class NetworkAnalystAgent(Agent):
         # deprecated by FoxIO in 2024 but many TI feeds still index by it,
         # so both run side-by-side during the migration window.
         out.extend(self._run_ja4(ctx, analysis))
+        # Statistical beaconing detection over Zeek conn.log
+        # (RITA-algorithm implementation; strengthens H_C2_BEACONING).
+        out.extend(self._run_beaconing(ctx, analysis))
+        return out
+
+    def _run_beaconing(self, ctx: AgentContext, analysis) -> list[Finding]:
+        """Score Zeek's conn.log for beacon-shaped traffic patterns."""
+        from el.skills import network_beaconing as bcn
+        out: list[Finding] = []
+        zeek_dir = analysis / "zeek"
+        if not zeek_dir.is_dir():
+            return out  # zeek didn't run — nothing to score
+
+        # Find conn.log (Zeek emits conn.log in the case-runtime dir).
+        candidates: list[Path] = []
+        for name in ("conn.log", "conn.log.gz"):
+            candidates.extend(p for p in zeek_dir.rglob(name) if p.is_file())
+        if not candidates:
+            return out
+
+        for conn_log in candidates[:3]:  # cap; one is the norm
+            try:
+                result = bcn.score_conn_log(conn_log)
+            except (bcn.BeaconingError, OSError, TypeError, ValueError) as e:
+                out.append(self.emit(ctx, Finding(
+                    case_id=ctx.case_id, agent=self.name,
+                    confidence="insufficient",
+                    claim=f"Beaconing scan skipped for {conn_log.name}: {e}",
+                )))
+                continue
+
+            ev = result.as_evidence()
+            if not result.hits:
+                out.append(self.emit(ctx, Finding(
+                    case_id=ctx.case_id, agent=self.name,
+                    confidence="low",
+                    claim=(f"Beaconing scan: {result.candidate_pairs} "
+                           f"flow-pair(s) had >=10 connections; none scored "
+                           f"≥{result.threshold} (no statistical beacon "
+                           f"shape detected). Algorithmic check from "
+                           f"{conn_log.name}."),
+                    evidence=[ev],
+                )))
+                continue
+
+            # Headline finding for the top-scoring beacon.
+            top = result.hits[0]
+            out.append(self.emit(ctx, Finding(
+                case_id=ctx.case_id, agent=self.name, confidence="high",
+                claim=(f"Statistical beaconing: {len(result.hits)} flow-pair(s) "
+                       f"score ≥{result.threshold}. Top: "
+                       f"{top.src} → {top.dst}:{top.dport}/{top.proto} "
+                       f"score={top.score:.3f} "
+                       f"({top.connection_count} conns over "
+                       f"{top.duration_seconds:.0f}s, mean interval "
+                       f"{top.mean_interval_seconds:.1f}s ± "
+                       f"{top.interval_stdev_seconds:.1f}s)"),
+                evidence=[ev],
+                hypotheses_supported=["H_C2_BEACONING"],
+                hypotheses_refuted=["H_BENIGN_NO_INCIDENT"],
+            )))
+
+            # Per-hit findings for the next 4 (cap), so each ranks individually
+            # in the report rather than only the top one.
+            for hit in result.hits[1:5]:
+                out.append(self.emit(ctx, Finding(
+                    case_id=ctx.case_id, agent=self.name, confidence="medium",
+                    claim=(f"Beaconing candidate: {hit.src} → {hit.dst}:"
+                           f"{hit.dport}/{hit.proto} score={hit.score:.3f} "
+                           f"({hit.connection_count} conns, mean interval "
+                           f"{hit.mean_interval_seconds:.1f}s)"),
+                    evidence=[ev],
+                    hypotheses_supported=["H_C2_BEACONING"],
+                )))
         return out
 
     def _run_ja4(self, ctx: AgentContext, analysis) -> list[Finding]:
