@@ -129,9 +129,40 @@ def survey() -> list[ToolStatus]:
         probe_ezt("RECmd.dll", "RECmd"),
         probe_ezt("PECmd.dll"),
         probe_ezt("AmcacheParser.dll"),
+        probe_memprocfs(),
         probe_uac(),
         probe_weasyprint(),
     ]
+
+
+def probe_memprocfs() -> ToolStatus:
+    """MemProcFS — memory as a virtual filesystem (forensic triage).
+    Complements vol3; shipped in /opt/memprocfs/ via install.sh."""
+    candidates = [
+        "/opt/memprocfs/memprocfs",
+        "/usr/local/bin/memprocfs",
+    ]
+    p = shutil.which("memprocfs")
+    if p:
+        candidates.insert(0, p)
+    for c in candidates:
+        if Path(c).is_file():
+            rc, out, err = _run([c, "-h"], timeout=4)
+            text = (out + "\n" + err).lower()
+            version = ""
+            for line in (out + "\n" + err).splitlines():
+                if "memprocfs v" in line.lower():
+                    version = line.strip()
+                    break
+            if "memprocfs" in text:
+                return ToolStatus(
+                    "memprocfs", [c], version or "present", True,
+                    note="memory-as-filesystem forensic triage",
+                )
+    return ToolStatus(
+        "memprocfs", None, None, False,
+        note="install via install.sh; download from https://github.com/ufrisk/MemProcFS/releases",
+    )
 
 
 def probe_uac() -> ToolStatus:

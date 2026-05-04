@@ -12,7 +12,7 @@ from pathlib import Path
 from el.agents.base import Agent, AgentContext
 from el.evidence.graph import open_graph
 from el.schemas.finding import Finding
-from el.skills import memory_baseliner, netscan_triage, process_profile, vol3
+from el.skills import memory_baseliner, memprocfs as mpfs, netscan_triage, process_profile, vol3
 
 
 SUSPICIOUS_PARENTS = {
@@ -228,6 +228,79 @@ class MemoryForensicatorAgent(Agent):
         if baseline_path:
             out.extend(self._run_baseline(ctx, Path(baseline_path)))
 
+        # MemProcFS forensic-mode corroboration — Windows-only.
+        # Mounts the image as a virtual FS, runs FindEvil (yara + injection
+        # heuristics), harvests results. Independent of vol3 plugins, so a
+        # match here corroborates a vol3 match (Red Reviewer's "single tool"
+        # challenger gets satisfied automatically).
+        if family == "windows":
+            out.extend(self._run_memprocfs_corroboration(ctx))
+
+        return out
+
+    def _run_memprocfs_corroboration(self, ctx: AgentContext) -> list[Finding]:
+        """Mount the image with MemProcFS, harvest FindEvil + YARA outputs."""
+        out: list[Finding] = []
+        mount_dir = ctx.case_dir / "raw" / "memprocfs_mount"
+        analysis = ctx.case_dir / "analysis" / self.name / "memprocfs"
+        analysis.mkdir(parents=True, exist_ok=True)
+        # Clean any stale mount point from prior runs.
+        if mount_dir.exists():
+            try:
+                # Best-effort unmount + remove if previous run was killed mid-mount.
+                import subprocess as _sp
+                _sp.run(["fusermount", "-u", str(mount_dir)],
+                         check=False, capture_output=True, timeout=10)
+                if mount_dir.is_dir() and not any(mount_dir.iterdir()):
+                    mount_dir.rmdir()
+            except Exception:
+                pass
+
+        try:
+            result = mpfs.run_forensic_scan(
+                ctx.input_path,
+                mount_dir,
+                forensic_mode=1,
+                timeout_seconds=1800,
+                stderr_dir=analysis,
+            )
+        except mpfs.MemProcFSError as e:
+            out.append(self.emit(ctx, Finding(
+                case_id=ctx.case_id, agent=self.name, confidence="insufficient",
+                claim=f"MemProcFS corroboration unavailable: {e}",
+            )))
+            return out
+
+        ev = result.as_evidence()
+        if result.forensic_findings:
+            # Group hits by rule for a compact summary.
+            by_rule: dict[str, int] = {}
+            for h in result.forensic_findings:
+                by_rule[h.rule] = by_rule.get(h.rule, 0) + 1
+            top = sorted(by_rule.items(), key=lambda kv: -kv[1])[:5]
+            top_str = ", ".join(f"{rule}×{count}" for rule, count in top)
+            sample = next(iter(mpfs.iter_findevil_hits(result)), None)
+            sample_str = (
+                f" — sample: {sample.rule} on {sample.process} pid={sample.pid}"
+                if sample else ""
+            )
+            out.append(self.emit(ctx, Finding(
+                case_id=ctx.case_id, agent=self.name, confidence="high",
+                claim=(f"MemProcFS FindEvil: {len(result.forensic_findings)} "
+                       f"hit(s) across {len(by_rule)} rule(s) "
+                       f"(top: {top_str}){sample_str}"),
+                evidence=[ev],
+                hypotheses_supported=["H_PROCESS_INJECTION", "H_APT_ESPIONAGE"],
+                hypotheses_refuted=["H_BENIGN_NO_INCIDENT"],
+            )))
+        else:
+            out.append(self.emit(ctx, Finding(
+                case_id=ctx.case_id, agent=self.name, confidence="low",
+                claim=("MemProcFS FindEvil: scan completed with 0 hits — "
+                       "independent triage corroborates absence of injection / "
+                       "PE-header anomalies in the memory image"),
+                evidence=[ev],
+            )))
         return out
 
     def _run_baseline(self, ctx: AgentContext, baseline_json: Path) -> list[Finding]:

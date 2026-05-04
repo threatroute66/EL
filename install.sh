@@ -227,6 +227,45 @@ else
     log "skipping UAC installation (--no-apt specified)"
 fi
 
+# --- MemProcFS installation phase ------------------------------------------
+# Install MemProcFS for memory-as-filesystem forensic triage (complements vol3)
+install_memprocfs() {
+    local memprocfs_dir="/opt/memprocfs"
+    local version="v5.17"
+    local file_version="v5.17.6-linux_x64-20260426"
+    local url="https://github.com/ufrisk/MemProcFS/releases/download/${version}/MemProcFS_files_and_binaries_${file_version}.tar.gz"
+
+    if [[ -x "${memprocfs_dir}/memprocfs" ]]; then
+        log "MemProcFS already installed at ${memprocfs_dir} — skipping"
+        return 0
+    fi
+
+    log "installing MemProcFS ${version}"
+    local temp_tar="/tmp/memprocfs.tar.gz"
+    if curl -L -s -o "${temp_tar}" "${url}"; then
+        if [[ -f "${temp_tar}" ]] && file "${temp_tar}" | grep -q "gzip"; then
+            sudo mkdir -p "${memprocfs_dir}"
+            sudo tar -xzf "${temp_tar}" -C "${memprocfs_dir}"
+            if [[ -x "${memprocfs_dir}/memprocfs" ]]; then
+                log "MemProcFS installed at ${memprocfs_dir}"
+            else
+                log "WARN: MemProcFS extraction did not produce expected binary"
+            fi
+        else
+            log "WARN: downloaded MemProcFS tarball appears invalid"
+        fi
+        rm -f "${temp_tar}"
+    else
+        log "WARN: MemProcFS download failed — memory-as-FS triage unavailable"
+    fi
+}
+
+if [[ ${skip_apt} -eq 0 ]]; then
+    install_memprocfs
+else
+    log "skipping MemProcFS installation (--no-apt specified)"
+fi
+
 # --- venv phase -------------------------------------------------------------
 if [[ ! -d "${EL_DIR}/.venv" ]]; then
     log "creating Python venv at ${EL_DIR}/.venv"
