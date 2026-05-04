@@ -54,6 +54,10 @@ dependencies = [
     # EL_TIMESKETCH_TOKEN env vars.
     "timesketch-api-client>=20260312",
     "timesketch-import-client>=20260108",
+    # OpenCTI + MISP clients for the per-case TI push at coordinator DONE.
+    # Both Apache-2.0. Opt-in via EL_OPENCTI_URL+TOKEN / EL_MISP_URL+KEY.
+    "pycti>=6.0",
+    "pymisp>=2.5",
 ]
 
 [project.optional-dependencies]

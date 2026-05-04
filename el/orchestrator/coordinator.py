@@ -669,6 +669,31 @@ class Coordinator:
             except Exception as e:
                 if self.audit:
                     self.audit.error("case_seal_failed", err=str(e))
+
+            # TI push — opt-in via EL_OPENCTI_URL+TOKEN and/or EL_MISP_URL+KEY.
+            # Only at DONE (not BLOCKED): pushing a case still under
+            # adversarial review would leak unverified IOCs into the org's TI
+            # substrate. The seal step above is the canonical "this case is
+            # done"; TI push runs immediately after.
+            if stix_path is not None and stix_path.is_file():
+                try:
+                    from el.skills import ti_push
+                    if ti_push.any_configured():
+                        results = ti_push.push_all(stix_path,
+                                                     event_info=f"EL case {ctx.case_id}")
+                        for r in results:
+                            if self.audit:
+                                self.audit.info(
+                                    "ti_push",
+                                    target=r.target,
+                                    server=r.server_url,
+                                    rc=r.rc,
+                                    indicator_count=r.indicator_count,
+                                    note=r.note[:200],
+                                )
+                except Exception as e:
+                    if self.audit:
+                        self.audit.error("ti_push_failed", err=str(e))
         elif self.state == State.DONE and is_bundle_subcase and self.audit:
             self.audit.info(
                 "case_seal_skipped",

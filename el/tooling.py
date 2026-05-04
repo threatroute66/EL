@@ -115,6 +115,7 @@ def survey() -> list[ToolStatus]:
         probe_m365_collect(),
         probe_azurehound_triage(),
         probe_tracee(),
+        probe_ti_push(),
         probe_simple("zeek", ["--version"]),
         probe_simple("suricata", ["-V"]),
         probe_simple("tshark", ["-v"]),
@@ -228,6 +229,49 @@ def probe_tracee() -> ToolStatus:
         note=("eBPF runtime capture (requires root)"
               if os.geteuid() == 0
               else "eBPF runtime capture (run live-system step as root)"),
+    )
+
+
+def probe_ti_push() -> ToolStatus:
+    """OpenCTI / MISP push — submits per-case STIX bundle at coordinator DONE.
+    Opt-in via env vars. Both clients are pure Python."""
+    have_pycti = False
+    have_pymisp = False
+    try:
+        import pycti  # noqa: F401
+        have_pycti = True
+    except ImportError:
+        pass
+    try:
+        import pymisp  # noqa: F401
+        have_pymisp = True
+    except ImportError:
+        pass
+    if not (have_pycti or have_pymisp):
+        return ToolStatus(
+            "ti_push", None, None, False,
+            note="pip install pycti pymisp",
+        )
+    from el.skills import ti_push as ti
+    targets: list[str] = []
+    if ti.opencti_configured():
+        targets.append("opencti")
+    if ti.misp_configured():
+        targets.append("misp")
+    if targets:
+        return ToolStatus(
+            "ti_push", None, "clients present", True,
+            note=f"configured for: {', '.join(targets)}",
+        )
+    libs = []
+    if have_pycti:
+        libs.append("pycti")
+    if have_pymisp:
+        libs.append("pymisp")
+    return ToolStatus(
+        "ti_push", None, "clients present", True,
+        note=(f"{'/'.join(libs)} installed; set EL_OPENCTI_URL+TOKEN "
+              "or EL_MISP_URL+KEY to enable"),
     )
 
 

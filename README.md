@@ -357,6 +357,16 @@ export EL_M365_APP_SECRET=<app-secret>
 # + kernel ≥4.18 + BTF (modern SIFT 22.04+ supports it natively).
 export EL_TRACEE_DURATION=60                          # seconds (5..600)
 sudo el investigate /                                 # live-system mode
+
+# TI push — submit per-case STIX 2.1 bundle to OpenCTI / MISP at coordinator
+# DONE so the org's threat-intel platform sees EL findings without manual
+# transformation. Both can be configured simultaneously.
+export EL_OPENCTI_URL=https://opencti.internal.lab
+export EL_OPENCTI_TOKEN=<opencti-api-token>
+# and / or:
+export EL_MISP_URL=https://misp.internal.lab
+export EL_MISP_KEY=<misp-api-key>
+# (export EL_MISP_VERIFY=0 to disable TLS verification for self-signed)
 ```
 
 Each case workspace lives at `cases/<case_id>/`:
