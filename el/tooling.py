@@ -111,6 +111,7 @@ def survey() -> list[ToolStatus]:
         probe_simple("yara", ["--version"]),
         probe_yara_x(),
         probe_ja4(),
+        probe_cape(),
         probe_simple("zeek", ["--version"]),
         probe_simple("suricata", ["-V"]),
         probe_simple("tshark", ["-v"]),
@@ -156,6 +157,22 @@ def probe_ja4() -> ToolStatus:
     return ToolStatus(
         "ja4", None, None, False,
         note="install via install.sh; clone github.com/FoxIO-LLC/ja4 to /opt/ja4-tools/",
+    )
+
+
+def probe_cape() -> ToolStatus:
+    """CAPE Sandbox client (REST). Opt-in via EL_CAPE_URL env var."""
+    url = os.environ.get("EL_CAPE_URL", "").strip()
+    if not url:
+        return ToolStatus(
+            "cape", None, None, False,
+            note=("client present (stdlib urllib) — set EL_CAPE_URL to "
+                  "enable dynamic-analysis submissions"),
+        )
+    auth = "token" if os.environ.get("EL_CAPE_TOKEN") else "anonymous"
+    return ToolStatus(
+        "cape", None, "rest-client",
+        True, note=f"configured for {url} ({auth})",
     )
 
 

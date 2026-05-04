@@ -332,6 +332,13 @@ export EL_TIMESKETCH_USERNAME=alice
 export EL_TIMESKETCH_PASSWORD=$(pass timesketch/alice)
 # (export EL_TIMESKETCH_VERIFY=0 to disable TLS verification for self-signed)
 el investigate /cases/<input> --timeline             # auto-pushes when set
+
+# CAPE Sandbox client — submit suspicious binaries from <case>/exports/ to
+# a configured CAPEv2 instance for dynamic analysis (Cuckoo successor).
+# Opt-in via env vars; without them, EL skips CAPE and continues.
+export EL_CAPE_URL=https://cape.internal.lab
+export EL_CAPE_TOKEN=<api-token>                     # preferred
+# (export EL_CAPE_VERIFY=0 to disable TLS verification for self-signed)
 ```
 
 Each case workspace lives at `cases/<case_id>/`:
