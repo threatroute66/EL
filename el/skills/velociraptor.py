@@ -2,13 +2,15 @@
 
 Velociraptor exports collected data as JSONL files, one per artifact.
 Filenames are usually `<Artifact.Name>.json` (line-delimited JSON, one
-event per line). This skill parses the most common artifacts:
+event per line). The KNOWN_PARSERS table below maps every artifact name
+EL currently recognises to a short label used in the summary.
 
-  - Windows.System.Pslist
-  - Windows.Network.Netstat
-  - Windows.Sysinternals.Autoruns
-  - Windows.Forensics.Prefetch
-  - Windows.System.TaskScheduler
+The schema audit done for Tier 4.2 (proposal docs/enhancement_proposals.md)
+added the post-Velociraptor-0.7 artifact set: Generic.System.PEDump for
+dumped PE files inside running processes, Windows.Memory.ProcessInfo for
+per-process memory metadata, plus the modern Linux + filesystem-forensics
+artifacts (Windows.NTFS.MFT, Windows.Forensics.Amcache / Lnk / Jumplists /
+Shellbags / UserAssist, Linux.Sys.Pslist, Linux.Forensics.BashHistory).
 
 Other artifact files are noted but not deeply parsed — the framework
 is extensible: add a per-artifact parser here when the case demands it.
@@ -25,12 +27,33 @@ from el.schemas.finding import EvidenceItem
 
 
 KNOWN_PARSERS = {
+    # Windows: process / network / persistence (v0.6 era — already wired)
     "Windows.System.Pslist": "pslist",
     "Windows.Network.Netstat": "netstat",
     "Windows.Sysinternals.Autoruns": "autoruns",
     "Windows.Forensics.Prefetch": "prefetch",
     "Windows.System.TaskScheduler": "tasks",
     "Windows.EventLogs.EvtxHunter": "evtx_hunter",
+    # Windows: memory + PE dumps (v0.7+)
+    "Generic.System.PEDump": "pe_dump",
+    "Windows.Memory.ProcessInfo": "process_info",
+    "Windows.Memory.Acquisition": "memory_acq",
+    # Windows: filesystem forensics (v0.6+ but commonly added in 0.7+ recipes)
+    "Windows.NTFS.MFT": "mft",
+    "Windows.Forensics.Amcache": "amcache",
+    "Windows.Forensics.Lnk": "lnk",
+    "Windows.Forensics.Jumplists_JumplistsFile": "jumplist",
+    "Windows.Forensics.Shellbags": "shellbags",
+    "Windows.Forensics.UserAssist": "userassist",
+    # Windows: detection-content-driven (v0.7+)
+    "Windows.Detection.PsexecService": "psexec",
+    "Generic.System.Hash": "file_hash",
+    # Linux: live-response equivalents
+    "Linux.Sys.Pslist": "linux_pslist",
+    "Linux.Network.Netstat": "linux_netstat",
+    "Linux.Network.PacketCapture": "linux_pcap",
+    "Linux.Forensics.BashHistory": "linux_bash_history",
+    "Linux.Forensics.RecentlyUsed": "linux_recently_used",
 }
 
 
@@ -42,11 +65,23 @@ class VelociraptorSummary:
     process_count: int = 0
     netstat_count: int = 0
     autorun_count: int = 0
+    # Per-artifact counts. Populated when the relevant artifact is present;
+    # left at 0 otherwise. Keep this dataclass backwards-compatible —
+    # process_count / netstat_count / autorun_count fields stay for the
+    # existing tests + downstream code that reads them by name.
+    pe_dump_count: int = 0
+    process_info_count: int = 0
+    mft_record_count: int = 0
+    amcache_count: int = 0
+    lnk_count: int = 0
+    bash_history_count: int = 0
+    linux_process_count: int = 0
+    linux_netstat_count: int = 0
 
     def as_evidence(self) -> EvidenceItem:
         sha = hashlib.sha256(self.out_path.read_bytes()).hexdigest()
         return EvidenceItem(
-            tool="el.velociraptor", version="0.1.0",
+            tool="el.velociraptor", version="0.2.0",
             command=f"el.velociraptor.parse({self.out_path.parent})",
             output_sha256=sha, output_path=str(self.out_path),
             extracted_facts={
@@ -54,6 +89,16 @@ class VelociraptorSummary:
                 "process_count": self.process_count,
                 "netstat_count": self.netstat_count,
                 "autorun_count": self.autorun_count,
+                # New (post-0.7) artifact counts.
+                "pe_dump_count": self.pe_dump_count,
+                "process_info_count": self.process_info_count,
+                "mft_record_count": self.mft_record_count,
+                "amcache_count": self.amcache_count,
+                "lnk_count": self.lnk_count,
+                # Linux artifact counts.
+                "bash_history_count": self.bash_history_count,
+                "linux_process_count": self.linux_process_count,
+                "linux_netstat_count": self.linux_netstat_count,
                 "parsed_artifacts": list(self.parsed.keys()),
             },
         )
@@ -103,12 +148,36 @@ def parse(input_dir: Path, out_dir: Path) -> VelociraptorSummary:
                 summary.netstat_count += len(rows)
             elif kind == "autoruns":
                 summary.autorun_count += len(rows)
+            elif kind == "pe_dump":
+                summary.pe_dump_count += len(rows)
+            elif kind == "process_info":
+                summary.process_info_count += len(rows)
+            elif kind == "mft":
+                summary.mft_record_count += len(rows)
+            elif kind == "amcache":
+                summary.amcache_count += len(rows)
+            elif kind == "lnk":
+                summary.lnk_count += len(rows)
+            elif kind == "linux_bash_history":
+                summary.bash_history_count += len(rows)
+            elif kind == "linux_pslist":
+                summary.linux_process_count += len(rows)
+            elif kind == "linux_netstat":
+                summary.linux_netstat_count += len(rows)
 
     payload = {
         "artifact_files": summary.artifact_files,
         "process_count": summary.process_count,
         "netstat_count": summary.netstat_count,
         "autorun_count": summary.autorun_count,
+        "pe_dump_count": summary.pe_dump_count,
+        "process_info_count": summary.process_info_count,
+        "mft_record_count": summary.mft_record_count,
+        "amcache_count": summary.amcache_count,
+        "lnk_count": summary.lnk_count,
+        "bash_history_count": summary.bash_history_count,
+        "linux_process_count": summary.linux_process_count,
+        "linux_netstat_count": summary.linux_netstat_count,
         "parsed_artifacts": {
             k: rows[:50] for k, rows in summary.parsed.items()
         },

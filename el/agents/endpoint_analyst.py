@@ -64,6 +64,73 @@ class EndpointAnalystAgent(Agent):
                 evidence=[ev], hypotheses_supported=["H_PERSISTENCE_SERVICE"],
             )))
 
+        # Tier 4.2 — surface post-v0.7 artifact presence so the analyst
+        # sees them in the finding ledger (rather than only in the raw
+        # JSONL). One finding per artifact-kind with a non-zero count;
+        # most are low-confidence "evidence available, please review"
+        # signals that downstream agents (or manual triage) should follow up.
+        if s.pe_dump_count:
+            out.append(self.emit(ctx, Finding(
+                case_id=ctx.case_id, agent=self.name, confidence="medium",
+                claim=(f"Generic.System.PEDump: {s.pe_dump_count} dumped PE "
+                       "object(s) from running processes — pivot to "
+                       "MalwareTriage / capa for static analysis"),
+                evidence=[ev],
+                hypotheses_supported=["H_PROCESS_INJECTION"],
+            )))
+        if s.process_info_count:
+            out.append(self.emit(ctx, Finding(
+                case_id=ctx.case_id, agent=self.name, confidence="low",
+                claim=(f"Windows.Memory.ProcessInfo: {s.process_info_count} "
+                       "process-memory metadata record(s) — "
+                       "complements vol3 process listings"),
+                evidence=[ev],
+            )))
+        if s.mft_record_count:
+            out.append(self.emit(ctx, Finding(
+                case_id=ctx.case_id, agent=self.name, confidence="medium",
+                claim=(f"Windows.NTFS.MFT: {s.mft_record_count:,} MFT "
+                       "record(s) extracted — pivot to MFTECmd / "
+                       "TimelineSynthesist for filesystem timeline"),
+                evidence=[ev],
+            )))
+        if s.amcache_count:
+            out.append(self.emit(ctx, Finding(
+                case_id=ctx.case_id, agent=self.name, confidence="medium",
+                claim=(f"Windows.Forensics.Amcache: {s.amcache_count} "
+                       "Amcache record(s) — execution-history evidence"),
+                evidence=[ev],
+            )))
+        if s.lnk_count:
+            out.append(self.emit(ctx, Finding(
+                case_id=ctx.case_id, agent=self.name, confidence="low",
+                claim=(f"Windows.Forensics.Lnk: {s.lnk_count} LNK "
+                       "artifact(s) — recently-opened-files evidence"),
+                evidence=[ev],
+            )))
+        if s.bash_history_count:
+            out.append(self.emit(ctx, Finding(
+                case_id=ctx.case_id, agent=self.name, confidence="medium",
+                claim=(f"Linux.Forensics.BashHistory: "
+                       f"{s.bash_history_count} command(s) — pipe through "
+                       "linux_triage for malicious-pattern detection"),
+                evidence=[ev],
+            )))
+        if s.linux_process_count:
+            out.append(self.emit(ctx, Finding(
+                case_id=ctx.case_id, agent=self.name, confidence="medium",
+                claim=(f"Linux.Sys.Pslist: {s.linux_process_count} "
+                       "process row(s) from a Linux endpoint collection"),
+                evidence=[ev],
+            )))
+        if s.linux_netstat_count:
+            out.append(self.emit(ctx, Finding(
+                case_id=ctx.case_id, agent=self.name, confidence="medium",
+                claim=(f"Linux.Network.Netstat: {s.linux_netstat_count} "
+                       "connection(s) from a Linux endpoint collection"),
+                evidence=[ev],
+            )))
+
         return out
 
     def _populate_processes(self, ctx, rows, ev) -> list[Finding]:
