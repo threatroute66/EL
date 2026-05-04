@@ -21,18 +21,19 @@ designed as a reusable forensic investigation framework.
 
 Hand EL a piece of evidence — memory image, pcap, EVTX file, CloudTrail
 JSON, Azure sign-in / M365 UAL export, extracted-artifacts directory,
-Velociraptor collection bundle, E01 disk image (NTFS / ext4 / APFS), or
-extracted filesystem tree (Windows / Linux / macOS / Android / iOS) —
-and it produces:
+Velociraptor / UAC / dfTimewolf collection bundle, Falco event JSONL,
+E01 disk image (NTFS / ext4 / APFS), live Linux system root, or extracted
+filesystem tree (Windows / Linux / macOS / Android / iOS) — and it produces:
 
 - **A structured Findings ledger** — every claim ships with the tool, version,
   command, output sha256, supporting/refuting hypotheses, and an
   adversarial-review verdict. No claim without evidence.
 - **A ranked hypothesis table** — Heuer's *Analysis of Competing
-  Hypotheses* over 15 case-level hypotheses (ransomware, APT espionage,
+  Hypotheses* over 25 case-level hypotheses (ransomware, APT espionage,
   insider exfil, BEC, supply chain, brute force, cloud persistence, C2
   beaconing, opportunistic commodity, process injection, credential
-  access, lateral movement, persistence variants, plus a null
+  access, lateral movement, persistence variants, mobile-spyware
+  persistence, container escape, K8s privilege escalation, plus a null
   benign-no-incident).
 - **A Markdown report** with executive summary, hypothesis ranking, most
   diagnostic findings, MITRE ATT&CK techniques implicated, IOC catalog,
@@ -65,14 +66,15 @@ guess.**
 
 ```mermaid
 flowchart TB
-    subgraph INPUTS["Evidence inputs (12 validated types)"]
+    subgraph INPUTS["Evidence inputs (16 validated shapes, 27 routed kinds)"]
         direction LR
         IN_MEM["memory image<br/>(.raw / .vmem / .mdd)"]
-        IN_DISK["disk image<br/>E01 / raw / NTFS / ext4 / APFS"]
-        IN_PCAP["pcap / pcapng"]
-        IN_LOG["EVTX / .evt /<br/>CloudTrail / Entra / M365"]
-        IN_FS["FS tree<br/>Windows / Linux / macOS /<br/>Android / iOS"]
-        IN_VELO["Velociraptor bundle"]
+        IN_DISK["disk image<br/>E01 / raw / NTFS / ext4 / APFS<br/>+ VHDX / VMDK"]
+        IN_PCAP["pcap / pcapng<br/>(also pcap-collection)"]
+        IN_LOG["EVTX / .evt /<br/>CloudTrail / Entra / M365 /<br/>k8s-audit / Falco events"]
+        IN_FS["FS tree<br/>Windows / Linux / macOS /<br/>Android / iOS / QNAP"]
+        IN_VELO["Velociraptor bundle<br/>+ UAC collection<br/>+ dfTimewolf bundle"]
+        IN_LIVE["<i>live Linux system</i><br/>UAC + Tracee eBPF"]
     end
 
     INTAKE["<b>Intake</b><br/>hash + manifest<br/>read-only enforcement"]
@@ -81,28 +83,32 @@ flowchart TB
 
     INPUTS --> INTAKE --> TRIAGE --> COORD
 
-    subgraph AGENTS["24 specialist agents (one per evidence kind, chained as applicable)"]
+    subgraph AGENTS["27 specialist agents (one per evidence kind, chained as applicable)"]
         direction TB
-        A_MEM["MemoryForensicator<br/>18 vol3 plugins + Baseliner"]
+        A_MEM["MemoryForensicator<br/>18 vol3 plugins + Baseliner<br/>+ MemProcFS FindEvil corroboration"]
         A_DISK["DiskForensicator<br/>Sleuth Kit + EWF + NTFS/ext4/APFS mount"]
         A_WIN["WindowsArtifactAgent<br/>11 EZ Tools + BAM/DAM + IE5 + XP .evt"]
-        A_LIN["LinuxForensicator<br/>utmp/wtmp/btmp + systemd-journal + cron + SSH"]
-        A_MAC["MacOSForensicator"]
-        A_AND["AndroidForensicator"]
-        A_IOS["IOSForensicator"]
-        A_NET["NetworkAnalyst<br/>scapy + Zeek replay + Kerberos"]
-        A_LOG["LogAnalyst<br/>EvtxECmd + SIGMA"]
+        A_LIN["LinuxForensicator<br/>utmp/wtmp/btmp + systemd-journal +<br/>cron + SSH + Father rootkit + UAC mode"]
+        A_MAC["MacOSForensicator<br/>+ Mandiant macos-UnifiedLogs (Rust)"]
+        A_AND["AndroidForensicator<br/>+ MVT (Pegasus / Predator IOCs)"]
+        A_IOS["IOSForensicator<br/>+ MVT mercenary-spyware check"]
+        A_NET["NetworkAnalyst<br/>scapy + Zeek + Suricata + tshark<br/>+ JA3/JA4+ + RITA-algorithm beaconing"]
+        A_LOG["LogAnalyst<br/>EvtxECmd + Hayabusa + Sigma correlation"]
         A_CRED["CredentialAnalyst"]
         A_LAT["LateralMovementAnalyst"]
         A_PS["PowerShellAnalyst<br/>EID 4104 + 4103 + PSReadline"]
         A_CLOUD["CloudForensicator<br/>CloudTrail / VPC / Entra / M365 / GCP"]
         A_MAIL["EmailForensicator<br/>PST + OST + inbound phishing"]
-        A_BROWSE["BrowserForensicator"]
+        A_BROWSE["BrowserForensicator<br/>+ Hindsight (Chromium family)"]
         A_EXEC["ExecutionCorroborator"]
-        A_ENDP["EndpointAnalyst<br/>Velociraptor"]
-        A_TIME["TimelineSynthesist<br/>Plaso"]
-        A_HUNT["ThreatHunter<br/>YARA + stego-carrier"]
+        A_ENDP["EndpointAnalyst<br/>Velociraptor v0.7+ schema<br/>(PEDump / ProcessInfo / MFT / Linux)"]
+        A_TIME["TimelineSynthesist<br/>Plaso → Timesketch push"]
+        A_HUNT["ThreatHunter<br/>YARA / YARA-X auto-prefer + stego-carrier"]
         A_MAL["MalwareTriage<br/>capa + FLOSS + pefile + 19 families"]
+        A_LIVE["<b>LiveResponseCollector</b><br/>UAC IR-triage + Tracee eBPF"]
+        A_DFTW["<b>DFTimewolfDispatcher</b><br/>recipe + sub-artifact inventory"]
+        A_K8S["K8sAuditAnalyst"]
+        A_CONT["<b>ContainerForensicator</b><br/>Falco events → escape / k8s privesc"]
     end
 
     COORD --> AGENTS
@@ -119,7 +125,7 @@ flowchart TB
     AGENTS -. ioc registration .-> KNOW
 
     CORR["<b>Correlator</b><br/>cross-agent Kùzu graph queries"]
-    ACH["<b>ACH Engine</b><br/>15 hypotheses × all findings<br/>Heuer diagnostic scoring"]
+    ACH["<b>ACH Engine</b><br/>25 hypotheses × all findings<br/>Heuer diagnostic scoring"]
     RED["<b>Red Reviewer</b><br/>rule-based challenger (always)<br/>+ LLM (if API key) — blocks SYNTHESIZE<br/>until every unresolved Finding resolves"]
 
     LEDGER --> CORR --> ACH --> RED
@@ -131,16 +137,26 @@ flowchart TB
         direction LR
         O_MD["report.md<br/>narrative.md"]
         O_HTML["case.html<br/>(dark theme, zero CDN)"]
-        O_STIX["stix-bundle.json"]
+        O_STIX["stix-bundle.json<br/><i>(deterministic UUID5 ids,<br/>Layer-3 recurrence labels)</i>"]
         O_JSON["findings.json"]
+        O_SIGMA["reports/sigma_rules/<br/>SPL · KQL · Lucene packs"]
         O_EXEC["execution_log.jsonl<br/>execution_log.md<br/><b>traceability_matrix.md</b>"]
         O_SEAL["seal.json<br/>+ tar.gz archive"]
     end
 
+    subgraph PUSH["Optional push targets (env-var configured)"]
+        direction LR
+        P_TS["Timesketch<br/>(.plaso upload)"]
+        P_OCTI["OpenCTI<br/>(STIX bundle)"]
+        P_MISP["MISP<br/>(STIX bundle)"]
+        P_CAPE["CAPE Sandbox<br/>(dynamic analysis)"]
+    end
+
     REPORT --> OUT
+    REPORT -. opt-in .-> PUSH
 
     classDef sub fill:#0d1117,stroke:#30363d,color:#c9d1d9
-    class INPUTS,AGENTS,SHARED,OUT sub
+    class INPUTS,AGENTS,SHARED,OUT,PUSH sub
 ```
 
 ### Agents
@@ -148,29 +164,33 @@ flowchart TB
 | Agent | Owns |
 |---|---|
 | `Triage` | First-touch: hash, file-magic, evidence-kind classification, vol3 banner OS detection, directory-shape recognition (Windows-artifacts / Velociraptor / Android / iOS / macOS — mobile shapes detected by cheap `is_dir()` probes before the expensive filesystem walk) |
-| `MemoryForensicator` | Volatility 3 plugins (`pslist`, `psscan`, `pstree`, `cmdline`, `malfind --dump`, `netstat`, `netscan`, `dlllist`, `svcscan`, `modules`, `modscan`, `ldrmodules`, `handles`, `getsids`, `ssdt`, `driverirp`, `filescan`, `mftscan`); psscan-pslist hidden-process diff; modules-vs-modscan unlinked-driver diff; ldrmodules three-list reflective-injection diff; PE-header / process-anomaly detection; credential-access carve-out (lsass / winlogon / csrss); optional Memory Baseliner image-vs-image diff |
+| `MemoryForensicator` | Volatility 3 plugins (`pslist`, `psscan`, `pstree`, `cmdline`, `malfind --dump`, `netstat`, `netscan`, `dlllist`, `svcscan`, `modules`, `modscan`, `ldrmodules`, `handles`, `getsids`, `ssdt`, `driverirp`, `filescan`, `mftscan`); psscan-pslist hidden-process diff; modules-vs-modscan unlinked-driver diff; ldrmodules three-list reflective-injection diff; PE-header / process-anomaly detection; credential-access carve-out (lsass / winlogon / csrss); optional Memory Baseliner image-vs-image diff; **MemProcFS FindEvil corroboration** (mounts the image as a virtual FS, runs Ulf Frisk's built-in injection scanner — independent second tool satisfies Red Reviewer's single-tool challenger automatically) |
 | `DiskForensicator` | Sleuth Kit (`mmls`, `fls`, `mactime`); EWF integrity verification + `ewfmount` + per-partition (and no-partition fallback) walk; NTFS mount + artifact extraction; ext4 mount; APFS mount via `fsapfsmount`; disk anomaly scoring (PsExec service binary, PyInstaller `_MEI` temp dirs, svchost/lsass outside System32, exe-in-Temp, non-MS scheduled tasks, mimikatz-named binaries, vssadmin shadow-copy deletion traces) |
 | `WindowsArtifactAgent` | Extracted-artifacts directory pipeline — auto-chained after DiskForensicator extracts: MFTECmd, RECmd-Kroll-batch, AmcacheParser, AppCompatCacheParser, PECmd, EvtxECmd, SrumECmd, SBECmd, JLECmd, LECmd, RBCmd, BAM/DAM registry subtree decoding, ActivitiesCache.db (Windows Timeline) parsing |
-| `LinuxForensicator` | Extracted Linux filesystem tree (ext4 mount or pre-extracted) — pulls `/etc`, `/var/log`, `/var/spool/cron`, per-user histories + SSH. 5 detectors: shell-history malicious (reverse shell / download cradle / base64 pipe / persistence / defense evasion / priv esc / credential access), `/etc/ld.so.preload`, auth-log failure burst, `authorized_keys` anomaly, cron suspicious |
-| `MacOSForensicator` | Extracted macOS filesystem (APFS mount or pre-extracted). Pulls `/private/etc`, `/Library/Launch{Agents,Daemons,StartupItems}`, per-user Safari/KnowledgeC/Quarantine/LoginItems/LaunchAgents, `/private/var/log`. 4 detectors: LaunchAgent/Daemon suspicious-path persistence, shell-history malicious (shared Linux pattern library), Safari `QuarantineEventsV2` raw-IP / suspicious-TLD download source, Safari `Downloads.plist` anomalies |
-| `AndroidForensicator` | Pre-extracted Android filesystem tree (Belkasoft / UFED / adb-pull). Pulls `/data/system/*.xml+db`, `/data/adb/`, `/data/local/tmp/`, ANR traces, tombstones, per-app messenger DBs. 4 detectors: rooted device (Magisk markers), sideloaded APKs (packages.xml installer heuristic with OEM exemptions), `/data/local/tmp` executable staging, messenger presence |
-| `IOSForensicator` | Pre-extracted iOS filesystem tree (checkm8 / GrayKey / Cellebrite). Pulls SystemVersion.plist, `/private/var/mobile/Library/` user-data DBs (SMS, AddressBook, CallHistory, knowledgeC, interactionC, Safari, Mail, Notes, Health), per-app iTunesMetadata + BundleMetadata + Info.plist, provisioning profiles. 4 detectors: jailbreak indicators, sideloaded apps (no iTunesMetadata + non-Apple bundle id), provisioning-profile presence, messenger / privacy-tool presence (Signal / Telegram / Wickr / Session / Threema / Onion Browser / KeepSafe / Burner / ProtonMail / Tutanota / …) |
-| `NetworkAnalyst` | pcap parsing via scapy: flows, DNS, HTTP Hosts + URIs + User-Agents, TLS SNI, suspicious-port flagging, Zeek replay with DGA entropy + DNS tunneling + SMB admin-share write detection, wire-layer Kerberos triage |
-| `LogAnalyst` | EvtxECmd → high-value Event ID extraction (4624, 4625, 4672, 4688, 4697, 4698, 4720, 4732, 4769, 4776, 1102, 7045); SIGMA rule evaluator |
+| `LinuxForensicator` | Extracted Linux filesystem tree (ext4 mount or pre-extracted) — pulls `/etc`, `/var/log`, `/var/spool/cron`, per-user histories + SSH. 5 detectors: shell-history malicious (reverse shell / download cradle / base64 pipe / persistence / defense evasion / priv esc / credential access), `/etc/ld.so.preload`, auth-log failure burst, `authorized_keys` anomaly, cron suspicious. **Father-rootkit detection** (multi-directory LD_PRELOAD + magic GID + backdoor-port pattern matcher). Also accepts **UAC collection** evidence shape with the same detectors |
+| `MacOSForensicator` | Extracted macOS filesystem (APFS mount or pre-extracted). Pulls `/private/etc`, `/Library/Launch{Agents,Daemons,StartupItems}`, per-user Safari/KnowledgeC/Quarantine/LoginItems/LaunchAgents, `/private/var/log`. 4 detectors: LaunchAgent/Daemon suspicious-path persistence, shell-history malicious (shared Linux pattern library), Safari `QuarantineEventsV2` raw-IP / suspicious-TLD download source, Safari `Downloads.plist` anomalies. **Mandiant macos-UnifiedLogs** (Rust tracev3 parser, ~100x faster than `log show`, runs on Linux): walks `.logarchive` bundles + `/private/var/db/diagnostics/Persist/` for high-signal events (TCC consent / AMFI rejection / Gatekeeper / Sandbox violations / kextd) |
+| `AndroidForensicator` | Pre-extracted Android filesystem tree (Belkasoft / UFED / adb-pull). Pulls `/data/system/*.xml+db`, `/data/adb/`, `/data/local/tmp/`, ANR traces, tombstones, per-app messenger DBs. 4 detectors: rooted device (Magisk markers), sideloaded APKs (packages.xml installer heuristic with OEM exemptions), `/data/local/tmp` executable staging, messenger presence. **MVT** (Amnesty Tech Mobile Verification Toolkit): runs `check-androidqf` / `check-backup` against the artifact set with the published Pegasus / Predator / Triangulation STIX2 IOC bundles → activates the otherwise-dormant `H_MOBILE_SPYWARE_PERSISTENCE` scorer |
+| `IOSForensicator` | Pre-extracted iOS filesystem tree (checkm8 / GrayKey / Cellebrite). Pulls SystemVersion.plist, `/private/var/mobile/Library/` user-data DBs (SMS, AddressBook, CallHistory, knowledgeC, interactionC, Safari, Mail, Notes, Health), per-app iTunesMetadata + BundleMetadata + Info.plist, provisioning profiles. 4 detectors: jailbreak indicators, sideloaded apps (no iTunesMetadata + non-Apple bundle id), provisioning-profile presence, messenger / privacy-tool presence (Signal / Telegram / Wickr / Session / Threema / Onion Browser / KeepSafe / Burner / ProtonMail / Tutanota / …). **MVT** `check-fs --fast` + `check-backup -n` runs after iLEAPP for mercenary-spyware IOC matching against Amnesty Tech bundles |
+| `NetworkAnalyst` | pcap parsing via scapy: flows, DNS, HTTP Hosts + URIs + User-Agents, TLS SNI, suspicious-port flagging, Zeek replay with DGA entropy + DNS tunneling + SMB admin-share write detection, wire-layer Kerberos triage, JA3 reputation. **JA4+ family** (FoxIO ja4.py — TLS / HTTP / SSH / QUIC client fingerprinting; supplements not replaces JA3). **Statistical beaconing detection** (RITA-algorithm Hill & Bestard formula on Zeek conn.log: ≥0.85 score on `ts_score`+`disp_score`/2 = high-confidence `H_C2_BEACONING` lift) |
+| `LogAnalyst` | EvtxECmd → high-value Event ID extraction (4624, 4625, 4672, 4688, 4697, 4698, 4720, 4732, 4769, 4776, 1102, 7045); SIGMA rule evaluator. **Hayabusa Sigma correlation** (v3+ composite-rule output → second high-confidence finding when correlation rules fire — e.g. brute-force = "N failed + 1 success in 1 min") |
 | `CloudForensicator` | AWS CloudTrail JSON + AWS VPC Flow Logs + Azure Entra sign-in logs + M365 Unified Audit Log + Azure Activity + GCP Cloud Audit. Sniffs input shape and dispatches; detectors for brute / spray, legacy-auth bypass, impossible travel, OAuth consent, inbox-rule external forwarding |
-| `EndpointAnalyst` | Velociraptor collection bundles (Pslist / Netstat / Autoruns / Prefetch / TaskScheduler artifacts) |
-| `BrowserForensicator` | Chrome / Edge / Firefox history, cookies, login-data, downloads from extracted user profiles |
+| `EndpointAnalyst` | Velociraptor collection bundles. v0.6 era: Pslist / Netstat / Autoruns / Prefetch / TaskScheduler. **v0.7+ schema**: Generic.System.PEDump, Windows.Memory.ProcessInfo, Windows.NTFS.MFT, Windows.Forensics.{Amcache, Lnk, Jumplists, Shellbags, UserAssist}, Linux.Sys.Pslist / Linux.Network.Netstat / Linux.Forensics.BashHistory |
+| `BrowserForensicator` | Chrome / Edge / Firefox history, cookies, login-data, downloads from extracted user profiles. **Hindsight** (Ryan Benson) for Chromium-family deep parsing: Local Storage, IndexedDB, Session Storage, autofill, login data, sync evidence, extensions, FedCM. Emits exfil-shape findings on forum-upload paths / anon-share hosts / consumer-webmail |
 | `CredentialAnalyst` | Kerberos anomalies from EVTX — RC4-HMAC TGS-REQ (Kerberoasting), AS-REQ failure burst, krbtgt-service TGS-REQ (golden-ticket smell) |
 | `PowerShellAnalyst` | EID 4104 ScriptBlock decoding (base64 + gzip) + malicious pattern match, EID 4103 module logging, PSReadline history, transcription logs |
 | `SigmaAnalyst` | Native SIGMA rule evaluator over parsed EVTX — EventID-indexed pre-filter, 90%-coverage modifier set, tag-to-hypothesis mapping |
 | `EmailForensicator` | `.pst` / `.ost` / `.msg` / `.eml` parsing via `libpff` + `libolecf` wrappers |
 | `ExecutionCorroborator` | Cross-artifact execution confirmation — Prefetch × Amcache × Registry × EvidenceOfExecution overlap |
 | `LateralMovementAnalyst` | Cross-host pivot detection from EVTX 4624/4625/4648/4672/4769 + Security-Auditing event chaining |
-| `TimelineSynthesist` | Plaso `log2timeline.py --parsers win10 --hashers md5,sha256 --timezone UTC` + `psort.py` + `pinfo.py` (opt-in via `--timeline`) |
+| `TimelineSynthesist` | Plaso `log2timeline.py --parsers win_gen --hashers md5,sha256 --timezone UTC` + `psort.py` + `pinfo.py` (opt-in via `--timeline`). **Timesketch push** (opt-in via `EL_TIMESKETCH_URL` + token) — auto-uploads the `.plaso` storage to a configured Timesketch sketch at `case_id` for collaborative review |
 | `Correlator` | Kùzu graph queries — top destination IPs, cross-host shared processes, entity counts, netscan-triage cluster lifting |
 | `ThreatHunter` | Auto-generates a per-case YARA file from extracted IOCs; sweeps the input + analysis dir; uses `el hunt <case>` CLI for standalone re-sweeps |
 | `MalwareTriage` | Per-region `.dmp` strings extraction + 19-family fingerprint library (mimikatz / cobalt strike / metasploit / empire / darkcomet / njrat / remcos / agent tesla / hancitor / trickbot / qakbot / icedid / sliver / ip_lookup_chain / angler / nuclear / fiesta EKs / asprox / dyre). Also scans non-memory analysis text (pcap summaries, EVTX CSVs, fls bodyfiles) for the same fingerprints; `capa` + `FLOSS` integration with ATT&CK technique attribution on dumped PEs / shellcode |
 | `RedReviewer` | Rule-Based Challenger always runs (Office-spawn-shell, JIT carve-out for credential targets, LOLBin, network-context, low-confidence corroboration, single-evidence); LLM challenger augments when `ANTHROPIC_API_KEY` is set |
+| `LiveResponseCollector` | Triage-routed for `live-linux-system` evidence kind (input is `/` or a chroot with active `/proc`). Runs UAC IR-triage profile + Tracee eBPF time-bounded capture (`EL_TRACEE_DURATION` env, 5–600s default 60). Stages results so downstream `LinuxForensicator` UAC mode picks them up |
+| `DFTimewolfDispatcher` | Triage-routed for `dftimewolf-bundle` (recipe JSON/YAML + `dftimewolf.log` alongside artifacts). Records *provenance* (which dfTimewolf recipe + modules ran — chain-of-custody value) and emits a per-kind sub-artifact inventory with operator follow-up commands; sub-artifacts (Plaso storage, CloudTrail JSON, .pcap, .evtx) re-route through existing EL agents on operator re-run |
+| `ContainerForensicator` | Triage-routed for `falco-events` (Falco JSONL with `rule` + `priority`). Aggregates by rule + priority; classifies hits into container-escape / K8s-privesc buckets via curated rule-name keyword families; emits `H_CONTAINER_ESCAPE` / `H_K8S_PRIVILEGE_ESCALATION` findings + per-event medium-confidence detail for top CRITICAL/ERROR events |
+| `K8sAuditAnalyst` | Kubernetes audit-log JSON parser (audit.k8s.io/v1) — surfaces RBAC abuse, ServiceAccount token operations, privileged-pod admission, exec/portforward into privileged pods |
 
 Plus the **ACH engine** (Heuer-style scoring; not a Claude agent — pure Python) which
 emits a ranked-hypothesis Finding and writes a per-case `ach_matrix.json`.
@@ -209,6 +229,23 @@ windows-artifacts, yara-hunting).
 | `seal` | Per-case sha256 manifest + `merkle_root` + `tar.gz` archive emission at coordinator-DONE |
 | `knowledge` | `~/.el/knowledge.sqlite` cross-case IOC + family-attribution store; rarity bucketing (rare / uncommon / common / ubiquitous) |
 | `stix_import` | STIX 2.1 inbound bundle ingestion into `~/.el/knowledge.sqlite` with provenance tag |
+| `memprocfs` | Ulf Frisk's MemProcFS (Tier 1.1) — mounts a Windows memory image as a virtual FUSE filesystem; runs the built-in FindEvil scanner; harvests `findevil.csv` + YARA matches for Red Reviewer corroboration of vol3 plugin hits |
+| `mvt` | Amnesty Tech Mobile Verification Toolkit (Tier 1.2) — `mvt-ios check-fs` / `check-backup`, `mvt-android check-androidqf` / `check-backup`. STIX2-IOC matching against published Pegasus / Predator / Reign / Triangulation indicator bundles |
+| `hindsight` | Ryan Benson `pyhindsight` (Tier 1.3) — Chromium-family deep forensics via subprocess CLI; JSONL output. Profile-discovery walks for History+Cookies pairs; 14 tests verify shape detection + lazy-iter parsing |
+| `timesketch` | `timesketch-api-client` + `timesketch-import-client` (Tier 1.5). Opt-in `.plaso` upload to a configured Timesketch sketch at coordinator DONE; absent env vars = clean no-op |
+| `uac` | Unix Artifact Collector (Tier UAC-prep) — live response collection on Linux/Unix targets via `uac -p ir_triage` profile; output structure consumed by LinuxForensicator UAC mode |
+| `father_rootkit_detection` | Specialised LD_PRELOAD / magic-GID / source-port detector for the Father Linux rootkit family (Tier UAC-prep) — multi-evidence-shape search across chkrootkit / live_response / [root] tree |
+| `ja4` | FoxIO JA4+ family fingerprinting (Tier 2.6) — TLS / HTTP / SSH / QUIC client signatures via `ja4.py` (BSD-3-Clause + FoxIO License 1.1). Supplements (does not replace) `ja3_reputation` |
+| `network_beaconing` | Statistical C2-beacon detector (Tier 2.3) — pure-Python implementation of the published RITA / AC-Hunter formula (Hill & Bestard); runs over Zeek conn.log; ≥0.85 score with ≥10 connections per tuple = `H_C2_BEACONING` lift |
+| `cape_client` | CAPEv2 REST client (Tier 2.4) — opt-in via `EL_CAPE_URL` + token. Submits binaries, polls `tasks/status/`, parses report JSON (signatures + score + family). Cuckoo-successor dynamic analysis |
+| `m365_collect` | Invictus IR Microsoft-Extractor-Suite wrapper (Tier 2.1) — PowerShell subprocess. Connect-M365 + Get-{UAL, MailItemsAccessed, MessageTraceLog, AdminAuditLog, EntraIDSignInLogs, OAuthPermissionsGraph, MailboxRules, InboxRule}. App-secret or username/password auth |
+| `azurehound_triage` | Pure-Python AzureHound JSON triage (Tier 2.2) — privileged Entra ID role assignments, external-guest admins, high-risk OAuth scopes (Mail.ReadWrite / Files.ReadWrite.All / Directory.ReadWrite.All). No Neo4j dependency |
+| `tracee` | Aqua Security Tracee eBPF wrapper (Tier 2.7) — bounded-duration syscall + file + network event capture from a live Linux kernel. Default 60s window, 5-600s via `EL_TRACEE_DURATION`. Requires root + BTF kernel |
+| `ti_push` | OpenCTI + MISP submission (Tier 3.1) — at coordinator DONE, posts `reports/stix-bundle.json` to a configured OpenCTI (pycti `import_bundle_from_json`) and/or MISP (PyMISP `upload_stix`). Opt-in via env vars; absent = no-op |
+| `dftimewolf_bundle` | dfTimewolf output-directory parser (Tier 3.2) — recipe + log + sub-artifact inventory. `looks_like_dftimewolf_bundle()` shape detector for triage routing |
+| `falco_events` | Falco event-JSONL parser (Tier 3.4) — rule-keyword classification into container-escape / K8s-privesc buckets; preserves CRITICAL / ERROR ordering for high-priority findings |
+| `macos_unifiedlogs` | Mandiant macos-UnifiedLogs Rust port wrapper (Tier 4.3) — tracev3 / `.logarchive` parsing on Linux. ~100x faster than `log show`. Runs on extracted macOS filesystem trees alongside the existing macos_triage detectors |
+| `sigma_export` | pySigma multi-backend rule-conversion (Tier 4.1) — at coordinator DONE writes `reports/sigma_rules/sigma_rules.{splunk.spl, elasticsearch.lucene, opensearch.lucene, kusto.kql}` so analysts can deploy the same SIGMA content EL evaluates in-process. ~2,400 rules per backend on the bundled Hayabusa pack |
 
 ---
 
