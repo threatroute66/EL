@@ -264,11 +264,29 @@ class MemoryForensicatorAgent(Agent):
                 timeout_seconds=1800,
                 stderr_dir=analysis,
             )
-        except mpfs.MemProcFSError as e:
+        except (mpfs.MemProcFSError, OSError, TypeError, ValueError) as e:
+            # Broad except is deliberate. The MemProcFS skill walks a
+            # FUSE-mounted virtual filesystem; a stalled or partially-
+            # initialised forensic scan can surface as ``OSError`` /
+            # ``[Errno 5] Input/output error`` when we read the (not-yet-
+            # written) findevil.csv. That MUST NOT kill the host
+            # MemoryForensicator agent — its vol3 plugin findings are the
+            # primary evidence; MemProcFS is a corroborator. Per the
+            # CLAUDE.md "no false negatives, never break the case-completion
+            # path" rule, fall back to an insufficient finding and let
+            # downstream agents continue.
             out.append(self.emit(ctx, Finding(
                 case_id=ctx.case_id, agent=self.name, confidence="insufficient",
-                claim=f"MemProcFS corroboration unavailable: {e}",
+                claim=(f"MemProcFS corroboration unavailable: {e} "
+                       f"(vol3 plugin findings above are unaffected)"),
             )))
+            # Best-effort unmount any stale FUSE mount left by the partial run.
+            try:
+                import subprocess as _sp
+                _sp.run(["fusermount", "-u", str(mount_dir)],
+                         check=False, capture_output=True, timeout=10)
+            except Exception:
+                pass
             return out
 
         ev = result.as_evidence()
