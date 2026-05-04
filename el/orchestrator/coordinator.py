@@ -17,6 +17,7 @@ from el import knowledge as kb
 from el import seal as case_seal
 from el.agents.base import Agent, AgentContext
 from el.agents.cloud_forensicator import CloudForensicatorAgent
+from el.agents.container_forensicator import ContainerForensicatorAgent
 from el.agents.correlator import CorrelatorAgent
 from el.agents.browser_forensicator import BrowserForensicatorAgent
 from el.agents.credential_analyst import CredentialAnalystAgent
@@ -99,6 +100,7 @@ KIND_TO_AGENT: dict[str, type[Agent]] = {
     "live-linux-system": LiveResponseCollector,
     "uac-collection": LinuxForensicatorAgent,  # Process UAC artifacts with Linux forensicator
     "dftimewolf-bundle": DFTimewolfDispatcherAgent,
+    "falco-events": ContainerForensicatorAgent,
 }
 
 
@@ -125,6 +127,12 @@ def _looks_like_cloudtrail(path: Path) -> bool:
 def _looks_like_k8s_audit(path: Path) -> bool:
     head = _sample_head(path)
     return b'"audit.k8s.io/' in head and b'"auditID"' in head
+
+
+def _looks_like_falco_events(path: Path) -> bool:
+    head = _sample_head(path)
+    return (b'"rule"' in head and b'"priority"' in head
+            and (b'"output"' in head or b'"output_fields"' in head))
 
 
 def _looks_like_live_system(path: Path) -> bool:
@@ -355,6 +363,9 @@ class Coordinator:
         if _looks_like_k8s_audit(ctx.input_path):
             ctx.shared["evidence_kind"] = "k8s-audit-log"
             return K8sAuditAnalystAgent()
+        if _looks_like_falco_events(ctx.input_path):
+            ctx.shared["evidence_kind"] = "falco-events"
+            return ContainerForensicatorAgent()
         if _looks_like_cloudtrail(ctx.input_path):
             ctx.shared["evidence_kind"] = "AWS CloudTrail"
             return CloudForensicatorAgent()

@@ -116,6 +116,7 @@ def survey() -> list[ToolStatus]:
         probe_azurehound_triage(),
         probe_tracee(),
         probe_dftimewolf_bundle(),
+        probe_falco_events(),
         probe_ti_push(),
         probe_simple("zeek", ["--version"]),
         probe_simple("suricata", ["-V"]),
@@ -230,6 +231,14 @@ def probe_tracee() -> ToolStatus:
         note=("eBPF runtime capture (requires root)"
               if os.geteuid() == 0
               else "eBPF runtime capture (run live-system step as root)"),
+    )
+
+
+def probe_falco_events() -> ToolStatus:
+    """In-process Falco event-JSONL parser. Always available — pure Python."""
+    return ToolStatus(
+        "falco_events", None, "0.1.0", True,
+        note="Falco JSONL parsing for container/K8s runtime forensics",
     )
 
 

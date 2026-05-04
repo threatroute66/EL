@@ -86,6 +86,16 @@ HYPOTHESIS_MAP: dict[str, list[Technique]] = {
         ("T1481", "Web Service"),
         ("T1462", "Manipulate Device Communication"),
     ],
+    # Container / Kubernetes — MITRE Containers matrix.
+    "H_CONTAINER_ESCAPE": [
+        ("T1611", "Escape to Host"),
+        ("T1610", "Deploy Container"),
+    ],
+    "H_K8S_PRIVILEGE_ESCALATION": [
+        ("T1078.004", "Valid Accounts: Cloud Accounts"),
+        ("T1098.003", "Account Manipulation: Additional Cloud Roles"),
+        ("T1613", "Container and Resource Discovery"),
+    ],
     "H_INSIDER_EMAIL_EXFIL": [
         ("T1048.003", "Exfiltration Over Unencrypted Non-C2 Protocol"),
         ("T1534", "Internal Spearphishing"),

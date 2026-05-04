@@ -514,6 +514,30 @@ HYPOTHESES: list[Hypothesis] = [
                "compromise.",
                lambda f: (3 if "H_MOBILE_MDM_ABUSE"
                           in f.hypotheses_supported else 0)),
+    # Container / Kubernetes hypotheses. Triggered by Falco event-JSONL
+    # ingestion + (future) container-explorer offline-state inspection.
+    # The forensicators emit explicit tags; these case-level rollups are
+    # what ACH actually scores.
+    Hypothesis("H_CONTAINER_ESCAPE",
+               "Container runtime escape",
+               "Behavioural evidence of a container breaking the runtime "
+               "boundary: writes to /proc/sys/, mount of host filesystems, "
+               "kernel module load from inside a container, ptrace of a "
+               "host PID, /var/run/docker.sock access from a non-privileged "
+               "pod. Falco rule families like 'Container Escape via *' or "
+               "Tracee 'cap_capable' anomalies are the diagnostic signal.",
+               lambda f: (3 if "H_CONTAINER_ESCAPE"
+                          in f.hypotheses_supported else 0)),
+    Hypothesis("H_K8S_PRIVILEGE_ESCALATION",
+               "Kubernetes privilege escalation",
+               "RBAC abuse, ServiceAccount token theft, privileged-pod "
+               "creation, hostPath/hostNetwork pod admission, "
+               "exec/portforward into a privileged pod, or tampering with "
+               "cluster-role bindings. Audit-log anomalies + Falco "
+               "K8s rule hits diagnose this distinct from generic "
+               "H_LATERAL_MOVEMENT (which is host-network-tier).",
+               lambda f: (3 if "H_K8S_PRIVILEGE_ESCALATION"
+                          in f.hypotheses_supported else 0)),
 ]
 
 
