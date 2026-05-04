@@ -90,24 +90,34 @@ These address concrete weaknesses in EL's current coverage. Each is a single new
 
 ---
 
-### 1.4 PE-sieve + hollows_hunter — fileless / process-injection scanning
-**Project**: github.com/hasherezade/pe-sieve  
-**Gap addressed**: EL's `malfind` (vol3) finds RWX VAD regions but doesn't fingerprint the *type* of injection (hollowing, doppelgänging, module stomping, replaced PE, in-memory PE). PE-sieve does this — and runs against memory dumps `vol3 windows.memmap --dump` produces.
+### 1.4 PE-sieve — DEFERRED (proposal had factual error)
 
-**Why it fits EL**:
-- Reads dumped process memory (which EL already produces via `windows.memmap --dump`)
-- Outputs JSON report per process — directly emit-able as evidence
-- Independent corroboration for `H_PROCESS_INJECTION` and the credential-access carve-out
-- The `windows` build runs on SIFT under WINE; native Linux port (`pe-sieve-linux`) available
+**Status**: Verified during Tier 1.1 implementation (2026-05-04) that PE-sieve
+v0.4.1.1 is **live-process-only** — its only required argument is `/pid <PID>`,
+and it operates by attaching to a running Windows process via `OpenProcess`.
+There is no offline file-input mode, no `/file` flag, no `/dump-input` flag.
+Confirmed against `wine pe-sieve64.exe /help` output.
 
-**Integration shape**:
-- Skill `el/skills/pesieve.py` — point at `<case>/exports/memdump/`, parse summary.json
-- `MemoryForensicatorAgent` chains it after `windows.memmap --dump` runs
-- Hollowing/doppelgänging detection becomes high-confidence finding (existing `H_PROCESS_INJECTION` lifts +3)
+The proposal claim "reads dumped process memory which EL already produces via
+`windows.memmap --dump`" was incorrect. PE-sieve cannot operate on the .dmp
+files vol3 produces.
 
-**SIFT status**: Not present; one binary download. WINE-required for Windows build OR native Linux build.
+**Why deferred rather than substituted**:
+- The intent (independent PE-injection rule scanning) is ~80% covered by
+  Tier 1.1's MemProcFS FindEvil scanner, which detects the same injection
+  classes (INJECTED_PE, HOLLOW_PROCESS, RWX_HEAP, MZ_FOUND_IN_RWX) on the
+  raw memory image, independent of vol3.
+- The remaining ~20% (YARA-rule scanning of individual malfind-dumped .dmp
+  files) overlaps with EL's existing `yara_hunt` skill which already sweeps
+  case exports with auto-generated rules.
+- Building a separate skill that duplicates 80% of MemProcFS FindEvil for
+  the marginal 20% violates the "don't add features beyond what the task
+  requires" rule from CLAUDE.md.
 
-**Risk**: Medium. WINE dependency; document it in `el doctor` probe.
+**If a future case demands per-injection-type forensic detail beyond what
+MemProcFS provides**: revisit with hasherezade's published YARA rule pack
+(github.com/hasherezade/r3d_tools) plumbed into the existing `yara_hunt`
+skill — not a separate PE-sieve wrapper.
 
 ---
 
