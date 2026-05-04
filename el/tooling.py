@@ -109,6 +109,7 @@ def survey() -> list[ToolStatus]:
         probe_simple("psort.py", ["--version"]),
         probe_simple("bulk_extractor", ["-V"]),
         probe_simple("yara", ["--version"]),
+        probe_yara_x(),
         probe_simple("zeek", ["--version"]),
         probe_simple("suricata", ["-V"]),
         probe_simple("tshark", ["-v"]),
@@ -136,6 +137,24 @@ def survey() -> list[ToolStatus]:
         probe_uac(),
         probe_weasyprint(),
     ]
+
+
+def probe_yara_x() -> ToolStatus:
+    """YARA-X (`yr`) — VirusTotal's Rust rewrite of YARA. ~10x faster.
+    yara_hunt skill auto-prefers it when present (set EL_FORCE_YARA4=1
+    to opt back to YARA 4.x)."""
+    p = shutil.which("yr")
+    if not p:
+        return ToolStatus(
+            "yara-x", None, None, False,
+            note="install from https://github.com/VirusTotal/yara-x/releases (binary name: yr)",
+        )
+    rc, out, err = _run([p, "--version"], timeout=5)
+    version = (out or err).strip().splitlines()[0] if (out or err) else "present"
+    return ToolStatus(
+        "yara-x", [p], version, True,
+        note="auto-preferred by yara_hunt skill",
+    )
 
 
 def probe_timesketch() -> ToolStatus:

@@ -266,6 +266,38 @@ else
     log "skipping MemProcFS installation (--no-apt specified)"
 fi
 
+# --- YARA-X installation phase --------------------------------------------
+# Install YARA-X (Rust rewrite of YARA, ~10x faster). yara_hunt skill
+# auto-prefers it when present. Falls back to YARA 4.x if install fails.
+install_yara_x() {
+    if [[ -x /usr/local/bin/yr ]]; then
+        log "YARA-X already installed at /usr/local/bin/yr — skipping"
+        return 0
+    fi
+    log "installing YARA-X v1.15.0"
+    local url="https://github.com/VirusTotal/yara-x/releases/download/v1.15.0/yara-x-v1.15.0-x86_64-unknown-linux-gnu.gz"
+    local temp="/tmp/yarax_install"
+    mkdir -p "$temp"
+    if curl -L -s -o "$temp/yr.tar.gz" "$url"; then
+        if tar -xzf "$temp/yr.tar.gz" -C "$temp" 2>/dev/null && [[ -f "$temp/yr" ]]; then
+            sudo mv "$temp/yr" /usr/local/bin/yr
+            sudo chmod +x /usr/local/bin/yr
+            log "YARA-X installed at /usr/local/bin/yr"
+        else
+            log "WARN: YARA-X archive extraction failed — yara_hunt will use YARA 4.x"
+        fi
+    else
+        log "WARN: YARA-X download failed — yara_hunt will use YARA 4.x"
+    fi
+    rm -rf "$temp"
+}
+
+if [[ ${skip_apt} -eq 0 ]]; then
+    install_yara_x
+else
+    log "skipping YARA-X installation (--no-apt specified)"
+fi
+
 # --- venv phase -------------------------------------------------------------
 if [[ ! -d "${EL_DIR}/.venv" ]]; then
     log "creating Python venv at ${EL_DIR}/.venv"

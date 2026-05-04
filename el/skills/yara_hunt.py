@@ -4,6 +4,11 @@ Wraps the system `yara` binary. Pure subprocess — pure Python `yara-python`
 intentionally avoided here so we use the same binary the SKILL documents
 (consistent flag semantics with operator notes).
 
+YARA-X migration (per docs/enhancement_proposals.md Tier 2.5): the helper
+``_yara_bin()`` prefers VirusTotal's Rust rewrite ``yr`` (~10× faster) when
+present on PATH, falling back to YARA 4.x. Set ``EL_FORCE_YARA4=1`` to opt
+out (useful for rules that target YARA 4 features YARA-X hasn't yet ported).
+
 Provides:
   - scan_paths(): scan files/dirs against a rules file
   - generate_ioc_rules(): emit a YARA file from a per-case IOC catalog,
@@ -13,6 +18,7 @@ Provides:
 from __future__ import annotations
 
 import hashlib
+import os
 import shutil
 import subprocess
 from dataclasses import dataclass, field
@@ -23,6 +29,16 @@ from el.schemas.finding import EvidenceItem
 
 class YaraError(RuntimeError):
     pass
+
+
+def _is_yara_x(binary_path: str) -> bool:
+    """Heuristic: a path containing 'yr' or 'yara-x' is YARA-X; else YARA 4.x.
+
+    YARA-X's CLI uses ``yr scan ...`` rather than ``yara ...`` directly, so
+    invoking it differs slightly. Callers query this to decide the argv shape.
+    """
+    name = Path(binary_path).name
+    return name in ("yr", "yara-x") or "yara-x" in name
 
 
 @dataclass
@@ -48,16 +64,33 @@ class YaraScanResult:
 
 
 def _yara_bin() -> str:
+    """Locate the YARA binary, preferring YARA-X (`yr`) when present.
+
+    Set EL_FORCE_YARA4=1 to skip the YARA-X check and force YARA 4.x.
+    """
+    if os.environ.get("EL_FORCE_YARA4") != "1":
+        yr = shutil.which("yr")
+        if yr:
+            return yr
     p = shutil.which("yara")
-    if not p:
-        raise YaraError("yara not on PATH (install per yara-hunting SKILL)")
-    return p
+    if p:
+        return p
+    raise YaraError(
+        "neither yr (YARA-X) nor yara (YARA 4) on PATH "
+        "(install per yara-hunting SKILL)"
+    )
 
 
 def _yara_version() -> str:
     try:
-        r = subprocess.run([_yara_bin(), "--version"], capture_output=True, text=True, timeout=5)
-        return (r.stdout or r.stderr).strip().splitlines()[0]
+        binary = _yara_bin()
+        # YARA-X: `yr --version` works; YARA 4: `yara --version` works too.
+        r = subprocess.run([binary, "--version"],
+                            capture_output=True, text=True, timeout=5)
+        text = (r.stdout or r.stderr).strip()
+        if not text:
+            return "present"
+        return text.splitlines()[0]
     except Exception:
         return "present"
 
@@ -66,17 +99,38 @@ def scan_paths(rules_path: Path, target: Path, out_dir: Path,
                recursive: bool = True, show_strings: bool = True,
                threads: int = 4, timeout: int = 1800,
                per_file_timeout: int = 30) -> YaraScanResult:
-    """SKILL flag set: -r recursive, -s strings, -p N threads, --timeout per file."""
+    """SKILL flag set: -r recursive, -s strings, -p N threads, --timeout per file.
+
+    Compatible with both YARA 4.x (``yara``) and YARA-X (``yr scan``):
+    YARA-X uses a ``scan`` subcommand and lacks the ``-N`` (no-symlinks)
+    flag YARA 4 supports. We adapt the argv per binary; output line shape
+    (``rule_name <space> filepath``) is identical between the two so our
+    parser doesn't change.
+    """
     out_dir.mkdir(parents=True, exist_ok=True)
     hits_path = out_dir / f"yara_hits_{target.name}.txt"
     stderr_path = out_dir / f"yara_{target.name}.stderr"
-    args = [_yara_bin()]
-    if recursive and target.is_dir():
-        args.append("-r")
-    if show_strings:
-        args.append("-s")
-    args += ["-p", str(threads), "-a", str(per_file_timeout),
-             "-N", str(rules_path), str(target)]
+
+    binary = _yara_bin()
+    args: list[str] = [binary]
+    if _is_yara_x(binary):
+        # YARA-X: argv is `yr scan [opts] <rules> <target>`. No -N flag.
+        args.append("scan")
+        if recursive and target.is_dir():
+            args.append("-r")
+        if show_strings:
+            args.append("-s")
+        args += ["-p", str(threads), "-a", str(per_file_timeout),
+                 str(rules_path), str(target)]
+    else:
+        # YARA 4.x: argv is `yara [opts] <rules> <target>`.
+        if recursive and target.is_dir():
+            args.append("-r")
+        if show_strings:
+            args.append("-s")
+        args += ["-p", str(threads), "-a", str(per_file_timeout),
+                 "-N", str(rules_path), str(target)]
+
     try:
         proc = subprocess.run(args, capture_output=True, text=True, timeout=timeout)
     except subprocess.TimeoutExpired as e:
