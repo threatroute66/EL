@@ -132,9 +132,34 @@ def survey() -> list[ToolStatus]:
         probe_memprocfs(),
         probe_hindsight(),
         probe_mvt(),
+        probe_timesketch(),
         probe_uac(),
         probe_weasyprint(),
     ]
+
+
+def probe_timesketch() -> ToolStatus:
+    """Timesketch push — collaborative super-timeline review (opt-in)."""
+    try:
+        import timesketch_api_client  # noqa: F401
+        import timesketch_import_client  # noqa: F401
+    except ImportError as e:
+        return ToolStatus(
+            "timesketch", None, None, False,
+            note=f"pip install timesketch-api-client + timesketch-import-client ({e})",
+        )
+    from el.skills import timesketch as ts
+    if ts.is_configured():
+        url = os.environ.get("EL_TIMESKETCH_URL", "")
+        return ToolStatus(
+            "timesketch", None, "client present",
+            True, note=f"configured for {url}",
+        )
+    return ToolStatus(
+        "timesketch", None, "client present", True,
+        note=("client installed; set EL_TIMESKETCH_URL + "
+              "EL_TIMESKETCH_TOKEN to enable push (opt-in)"),
+    )
 
 
 def probe_mvt() -> ToolStatus:

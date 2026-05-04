@@ -48,6 +48,12 @@ dependencies = [
     # MVT-2.0 license (project-specific permissive). Provides mvt-ios and
     # mvt-android CLI entrypoints.
     "mvt>=2026",
+    # Timesketch client + import client (Apache-2.0). Optional Plaso
+    # super-timeline upload to a configured Timesketch instance for
+    # collaborative analyst review. Opt-in via EL_TIMESKETCH_URL +
+    # EL_TIMESKETCH_TOKEN env vars.
+    "timesketch-api-client>=20260312",
+    "timesketch-import-client>=20260108",
 ]
 
 [project.optional-dependencies]

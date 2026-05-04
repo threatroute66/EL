@@ -319,6 +319,21 @@ el knowledge lookup 8.8.8.8
 el knowledge lookup evil.example.com
 ```
 
+### Optional integrations (env-var configured)
+
+```bash
+# Timesketch push — when --timeline is enabled, EL can upload the .plaso
+# storage to a Timesketch sketch named after the case (Apache-2.0).
+# Opt-in: set the URL and either a token or a username/password pair.
+export EL_TIMESKETCH_URL=https://timesketch.example.org
+export EL_TIMESKETCH_TOKEN=<your-api-token>          # preferred
+# or
+export EL_TIMESKETCH_USERNAME=alice
+export EL_TIMESKETCH_PASSWORD=$(pass timesketch/alice)
+# (export EL_TIMESKETCH_VERIFY=0 to disable TLS verification for self-signed)
+el investigate /cases/<input> --timeline             # auto-pushes when set
+```
+
 Each case workspace lives at `cases/<case_id>/`:
 
 ```

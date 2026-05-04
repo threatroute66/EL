@@ -10,6 +10,7 @@ from __future__ import annotations
 from el.agents.base import Agent, AgentContext
 from el.schemas.finding import Finding
 from el.skills import plaso
+from el.skills import timesketch as tsk
 
 
 class TimelineSynthesistAgent(Agent):
@@ -111,6 +112,55 @@ class TimelineSynthesistAgent(Agent):
                       if first_ts else "")),
             evidence=[ps.as_evidence(ts_facts)],
         )))
+
+        # Optional Timesketch upload — closes the analyst-review loop. Opt-in
+        # via EL_TIMESKETCH_URL + EL_TIMESKETCH_TOKEN (or USERNAME+PASSWORD).
+        # Pushes the .plaso storage file (l2t.output_path) into a sketch
+        # named after the case so multi-analyst review can begin without
+        # the operator manually re-uploading.
+        out.extend(self._maybe_push_to_timesketch(ctx, l2t.output_path))
+        return out
+
+    def _maybe_push_to_timesketch(self, ctx: AgentContext,
+                                    plaso_path) -> list[Finding]:
+        """Push the .plaso storage to Timesketch if configured. No-op otherwise."""
+        out: list[Finding] = []
+        if not tsk.is_configured():
+            out.append(self.emit(ctx, Finding(
+                case_id=ctx.case_id, agent=self.name,
+                confidence="insufficient",
+                claim=("Timesketch push skipped — set EL_TIMESKETCH_URL + "
+                       "EL_TIMESKETCH_TOKEN (or USERNAME+PASSWORD) to enable"),
+            )))
+            return out
+
+        try:
+            upload = tsk.push(plaso_path, sketch_name=ctx.case_id)
+        except (tsk.TimesketchError, OSError, TypeError, ValueError) as e:
+            out.append(self.emit(ctx, Finding(
+                case_id=ctx.case_id, agent=self.name,
+                confidence="insufficient",
+                claim=f"Timesketch push failed: {e}",
+            )))
+            return out
+
+        ev = upload.as_evidence()
+        if upload.sketch_url:
+            out.append(self.emit(ctx, Finding(
+                case_id=ctx.case_id, agent=self.name, confidence="high",
+                claim=(f"Timesketch sketch ready for review: "
+                       f"{upload.sketch_url} "
+                       f"({upload.plaso_size_bytes:,} bytes uploaded in "
+                       f"{upload.duration_seconds:.1f}s)"),
+                evidence=[ev],
+            )))
+        else:
+            out.append(self.emit(ctx, Finding(
+                case_id=ctx.case_id, agent=self.name, confidence="medium",
+                claim=("Timesketch upload completed but server returned no "
+                       "sketch URL; check the sketch list manually"),
+                evidence=[ev],
+            )))
         return out
 
 
