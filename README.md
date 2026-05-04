@@ -317,6 +317,13 @@ el seal-verify /opt/EL/cases/wkstn-01
 el knowledge stats
 el knowledge lookup 8.8.8.8
 el knowledge lookup evil.example.com
+
+# Atomic Red Team coverage harness — for each ATT&CK technique mapped in
+# tests/atomic/expectations/coverage_map.yaml, run EL against a per-atomic
+# fixture and assert the corresponding hypothesis (or claim-substring) fires.
+# Use this to validate every new detector you add: drop a fixture, append
+# the YAML mapping, re-run.
+make atomic-validate
 ```
 
 ### Optional integrations (env-var configured)

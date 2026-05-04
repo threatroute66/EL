@@ -1,0 +1,11 @@
+--- synthetic memory-dump fragment for atomic harness ---
+This file contains a deliberate mimikatz fingerprint-string so EL's
+malware_triage skill emits a CREDENTIAL_ACCESS-tagged finding.
+
+Indicator: mimikatz # privilege::debug
+Module:    sekurlsa::logonpasswords
+Author:    Benjamin DELPY (gentilkiwi)
+
+Padding to make the file non-trivial in size:
+DEADBEEFDEADBEEFDEADBEEFDEADBEEFDEADBEEFDEADBEEFDEADBEEFDEADBEEF
+DEADBEEFDEADBEEFDEADBEEFDEADBEEFDEADBEEFDEADBEEFDEADBEEFDEADBEEF

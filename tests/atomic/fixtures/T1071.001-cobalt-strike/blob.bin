@@ -1,0 +1,11 @@
+--- synthetic beacon-fragment for atomic harness ---
+This file contains a deliberate Cobalt Strike fingerprint-string so EL's
+malware_triage skill emits a C2_OR_REVERSE_SHELL-tagged finding.
+
+Indicator marker: cobalt_strike beacon staging
+Inline header:    MZARUH (binary marker shipped by the family fingerprint)
+URL fragment:     /__utm.gif?guid=ABCD
+
+Padding so file size is meaningful:
+0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF
+0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF

@@ -1,0 +1,64 @@
+# Atomic Red Team → EL detection coverage map.
+#
+# Each entry maps an Atomic Red Team test (technique ID + atomic test number,
+# in the form T<technique>.<sub>-<atomic_index>) to the EL hypothesis IDs
+# that SHOULD fire if EL detects the technique correctly.
+#
+# Used by tests/test_atomic_red_team_coverage.py to assert that, for each
+# fixture under tests/atomic/fixtures/<atomic_id>/, an EL run against that
+# fixture emits at least one Finding tagged with one of the expected
+# hypotheses (in `hypotheses_supported` or via family-fingerprint match).
+#
+# To add coverage for a new atomic:
+#   1. Stage minimal evidence under tests/atomic/fixtures/<atomic_id>/
+#   2. Add an entry below mapping <atomic_id> → expected hypothesis IDs
+#   3. Run `pytest tests/test_atomic_red_team_coverage.py` — green = covered
+#
+# The harness is INTENTIONALLY YAML-driven so non-Python detection-engineers
+# can extend it without touching code.
+
+atomics:
+  # T1574.006 — Hijack Execution Flow: Dynamic Linker Hijacking (LD_PRELOAD)
+  # Atomic test #1: append a malicious .so to /etc/ld.so.preload.
+  # EL's father_rootkit_detection skill catches this pattern.
+  T1574.006-1:
+    description: "LD_PRELOAD hijacking via /etc/ld.so.preload"
+    expected_hypotheses:
+      - H_PERSISTENCE_SERVICE
+      - H_ROOTKIT
+      - H_APT_ESPIONAGE
+    fixture_kind: linux-fs-dir
+    matcher: claim_substring
+    matcher_args:
+      patterns:
+        - "ld.so.preload"
+        - "Father rootkit"
+        - "LD_PRELOAD"
+
+  # T1003.001 — OS Credential Dumping: LSASS Memory (mimikatz family)
+  # EL's malware_triage skill catches mimikatz strings in dumps.
+  T1003.001-mimikatz:
+    description: "LSASS dumping with mimikatz-shaped tooling"
+    expected_hypotheses:
+      - H_CREDENTIAL_ACCESS
+      - H_APT_ESPIONAGE
+    fixture_kind: bytes-blob
+    matcher: claim_substring
+    matcher_args:
+      patterns:
+        - "mimikatz"
+
+  # T1071.001 — Application Layer Protocol: Web Protocols (Cobalt Strike)
+  # EL's malware_triage catches Cobalt Strike strings; family map sets
+  # H_C2_OR_REVERSE_SHELL.
+  T1071.001-cobalt-strike:
+    description: "Cobalt Strike beacon-shaped traffic / strings"
+    expected_hypotheses:
+      - H_C2_OR_REVERSE_SHELL
+      - H_PROCESS_INJECTION
+    fixture_kind: bytes-blob
+    matcher: claim_substring
+    matcher_args:
+      patterns:
+        - "cobalt_strike"
+        - "Cobalt Strike"
