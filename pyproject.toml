@@ -39,6 +39,10 @@ dependencies = [
     # Renders an HTML+CSS document to a paginated PDF so a stakeholder
     # can print, email, or attach the report. BSD-3-Clause.
     "weasyprint>=62",
+    # Hindsight — Chromium-family browser forensics (Chrome/Edge/Brave).
+    # Apache-2.0. Note: pulls in ccl_chromium_reader as a transitive dep
+    # which is GitHub-only; install.sh installs it explicitly.
+    "pyhindsight>=2026",
 ]
 
 [project.optional-dependencies]

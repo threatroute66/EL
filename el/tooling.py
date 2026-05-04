@@ -130,9 +130,34 @@ def survey() -> list[ToolStatus]:
         probe_ezt("PECmd.dll"),
         probe_ezt("AmcacheParser.dll"),
         probe_memprocfs(),
+        probe_hindsight(),
         probe_uac(),
         probe_weasyprint(),
     ]
+
+
+def probe_hindsight() -> ToolStatus:
+    """Hindsight (pyhindsight) — Chromium-family browser forensics."""
+    try:
+        import pyhindsight  # noqa: F401
+        version = getattr(pyhindsight, "__version__", "present")
+        # Verify the GitHub-only ccl_chromium_reader dep is installed too.
+        try:
+            import ccl_chromium_reader  # noqa: F401
+        except ImportError as e:
+            return ToolStatus(
+                "hindsight", None, version, False,
+                note=f"pyhindsight installed but missing GitHub dep: {e}",
+            )
+        return ToolStatus(
+            "hindsight", None, version, True,
+            note="Chromium-family browser forensics (Chrome/Edge/Brave)",
+        )
+    except ImportError:
+        return ToolStatus(
+            "hindsight", None, None, False,
+            note="pip install pyhindsight + ccl_chromium_reader (from GitHub)",
+        )
 
 
 def probe_memprocfs() -> ToolStatus:

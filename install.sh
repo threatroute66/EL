@@ -286,6 +286,14 @@ log "upgrading pip"
 log "installing EL + Python deps from pyproject.toml"
 "${EL_DIR}/.venv/bin/pip" install --quiet -e "${EL_DIR}[dev]"
 
+# Hindsight (pyhindsight) imports ccl_chromium_reader — GitHub-only dep that
+# isn't published to PyPI. pip install from the upstream repo so the venv has
+# everything Chromium-family browser forensics needs.
+log "installing ccl_chromium_reader (Hindsight transitive dep, from GitHub)"
+"${EL_DIR}/.venv/bin/pip" install --quiet \
+    "git+https://github.com/cclgroupltd/ccl_chromium_reader.git" \
+    || log "WARN: ccl_chromium_reader install failed — Chromium browser forensics will be skipped"
+
 # --- Post-install snapshot --------------------------------------------------
 log "capturing post-install snapshot"
 dpkg -l 2>/dev/null > "${SNAP}/dpkg-post-${TS}.txt" || true

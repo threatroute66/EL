@@ -23,7 +23,7 @@ from urllib.parse import urlparse
 
 from el.agents.base import Agent, AgentContext
 from el.schemas.finding import EvidenceItem, Finding
-from el.skills import browser
+from el.skills import browser, hindsight as hs
 
 
 # URL shapes that are exfil-adjacent in casework. We match against the
@@ -76,14 +76,103 @@ class BrowserForensicatorAgent(Agent):
 
         # Firefox profiles: any places.sqlite anywhere under root.
         places = sorted(p for p in root.rglob("places.sqlite") if p.is_file())
-        if not places:
-            return [self.emit(ctx, Finding(
-                case_id=ctx.case_id, agent=self.name, confidence="insufficient",
-                claim=f"No Firefox places.sqlite files under {root}",
-            ))]
-
         for p in places:
             out.extend(self._triage_places(ctx, p))
+
+        # Chromium-family profiles: dirs containing both 'History' and 'Cookies'.
+        # Run Hindsight against each, emit a JSONL inventory finding plus
+        # url-shape exfil triage on the parsed history rows.
+        chromium_profiles = hs.find_profiles(root)
+        for prof in chromium_profiles:
+            out.extend(self._triage_chromium(ctx, prof, analysis))
+
+        if not places and not chromium_profiles:
+            return [self.emit(ctx, Finding(
+                case_id=ctx.case_id, agent=self.name, confidence="insufficient",
+                claim=(f"No Firefox places.sqlite or Chromium profile dirs "
+                       f"(History+Cookies) found under {root}"),
+            ))]
+
+        return out
+
+    def _triage_chromium(self, ctx: AgentContext, profile_dir: Path,
+                          analysis: Path) -> list[Finding]:
+        """Run Hindsight against a Chromium profile and emit findings."""
+        out: list[Finding] = []
+        out_dir = analysis / "hindsight" / profile_dir.name
+        out_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            run = hs.run(profile_dir, out_dir)
+        except hs.HindsightError as e:
+            out.append(self.emit(ctx, Finding(
+                case_id=ctx.case_id, agent=self.name, confidence="insufficient",
+                claim=f"Hindsight unavailable for {profile_dir.name}: {e}",
+            )))
+            return out
+
+        if run.rc != 0 or run.output_jsonl is None:
+            out.append(self.emit(ctx, Finding(
+                case_id=ctx.case_id, agent=self.name, confidence="insufficient",
+                claim=(f"Hindsight failed for {profile_dir.name}: "
+                       f"rc={run.rc}, note={run.note or '-'}"),
+            )))
+            return out
+
+        ev = run.as_evidence()
+        out.append(self.emit(ctx, Finding(
+            case_id=ctx.case_id, agent=self.name, confidence="high",
+            claim=(f"Chromium profile parsed: {run.record_count:,} record(s) "
+                   f"across {len(run.distinct_event_types)} event type(s) "
+                   f"({profile_dir.name})"),
+            evidence=[ev],
+        )))
+
+        # URL-shape exfil triage over Hindsight history rows.
+        forum_hits: list[dict] = []
+        anon_hits: list[dict] = []
+        webmail_hits: list[dict] = []
+        for rec in run.iter_records(max_rows=20000):
+            url = (rec.get("url") or rec.get("URL")
+                   or rec.get("web_address") or "")
+            if not url or not url.startswith(("http://", "https://")):
+                continue
+            host = _host(url)
+            if _FORUM_UPLOAD_PATH.search(url):
+                forum_hits.append({"url": url[:200], "host": host})
+            if host in _ANON_SHARE_HOSTS:
+                anon_hits.append({"url": url[:200], "host": host})
+            if host in _CONSUMER_WEBMAIL_HOSTS:
+                webmail_hits.append({"url": url[:200], "host": host})
+
+        if forum_hits:
+            out.append(self.emit(ctx, Finding(
+                case_id=ctx.case_id, agent=self.name, confidence="medium",
+                claim=(f"Chromium history: {len(forum_hits)} forum/upload-shape "
+                       f"URL(s) ({profile_dir.name}) — exfil-adjacent paths"),
+                evidence=[ev],
+                hypotheses_supported=["H_INSIDER_DATA_EXFIL"],
+            )))
+        if anon_hits:
+            out.append(self.emit(ctx, Finding(
+                case_id=ctx.case_id, agent=self.name, confidence="medium",
+                claim=(f"Chromium history: {len(anon_hits)} visit(s) to "
+                       f"anon-share/pastebin host(s) "
+                       f"({sorted(set(h['host'] for h in anon_hits))[:5]}) "
+                       f"({profile_dir.name})"),
+                evidence=[ev],
+                hypotheses_supported=["H_INSIDER_DATA_EXFIL",
+                                       "H_BEC_ACCOUNT_TAKEOVER"],
+            )))
+        if webmail_hits:
+            out.append(self.emit(ctx, Finding(
+                case_id=ctx.case_id, agent=self.name, confidence="low",
+                claim=(f"Chromium history: {len(webmail_hits)} consumer-webmail "
+                       f"visit(s) ({profile_dir.name}) — relevant to BEC / "
+                       f"insider-email-exfil scenarios"),
+                evidence=[ev],
+                hypotheses_supported=["H_INSIDER_DATA_EXFIL"],
+            )))
+
         return out
 
     def _triage_places(self, ctx: AgentContext, places_sqlite: Path) -> list[Finding]:
