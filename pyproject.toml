@@ -43,6 +43,11 @@ dependencies = [
     # Apache-2.0. Note: pulls in ccl_chromium_reader as a transitive dep
     # which is GitHub-only; install.sh installs it explicitly.
     "pyhindsight>=2026",
+    # MVT (Mobile Verification Toolkit) — mercenary spyware (Pegasus,
+    # Predator, Triangulation) IOC matching against iOS/Android extractions.
+    # MVT-2.0 license (project-specific permissive). Provides mvt-ios and
+    # mvt-android CLI entrypoints.
+    "mvt>=2026",
 ]
 
 [project.optional-dependencies]

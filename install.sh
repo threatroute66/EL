@@ -294,6 +294,16 @@ log "installing ccl_chromium_reader (Hindsight transitive dep, from GitHub)"
     "git+https://github.com/cclgroupltd/ccl_chromium_reader.git" \
     || log "WARN: ccl_chromium_reader install failed — Chromium browser forensics will be skipped"
 
+# Stage Amnesty Tech mercenary-spyware IOC bundles for MVT to use. Without
+# them, MVT runs but only emits "no IOC matches" — still useful (it parses
+# the artifacts, which downstream agents consume), but the headline
+# detection signal is silent. Operators can refresh later with:
+#   sudo -E "${EL_DIR}/.venv/bin/mvt-ios" download-iocs --output /opt/mvt-iocs
+log "downloading public Amnesty Tech IOCs for MVT (best-effort)"
+sudo mkdir -p /opt/mvt-iocs
+sudo "${EL_DIR}/.venv/bin/mvt-ios" download-iocs 2>/dev/null \
+    || log "INFO: MVT IOC download skipped — run manually if needed (see Amnesty Tech investigations repo)"
+
 # --- Post-install snapshot --------------------------------------------------
 log "capturing post-install snapshot"
 dpkg -l 2>/dev/null > "${SNAP}/dpkg-post-${TS}.txt" || true

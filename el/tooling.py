@@ -131,9 +131,38 @@ def survey() -> list[ToolStatus]:
         probe_ezt("AmcacheParser.dll"),
         probe_memprocfs(),
         probe_hindsight(),
+        probe_mvt(),
         probe_uac(),
         probe_weasyprint(),
     ]
+
+
+def probe_mvt() -> ToolStatus:
+    """MVT (Mobile Verification Toolkit) — Pegasus / mercenary spyware detector."""
+    import sys
+    venv_bin = Path(sys.executable).parent
+    candidates = [
+        venv_bin / "mvt-ios",
+        venv_bin / "mvt-android",
+    ]
+    for c in candidates:
+        if c.is_file():
+            rc, out, err = _run([str(c), "version"], timeout=6)
+            if rc == 0 or out:
+                # `version` subcommand emits "MVT version: X.Y.Z" or similar
+                version = ""
+                for line in (out + "\n" + err).splitlines():
+                    if "version" in line.lower() and any(ch.isdigit() for ch in line):
+                        version = line.strip()
+                        break
+                return ToolStatus(
+                    "mvt", [str(c)], version or "present", True,
+                    note="Pegasus / mercenary spyware IOC matching",
+                )
+    return ToolStatus(
+        "mvt", None, None, False,
+        note="pip install mvt — provides mvt-ios and mvt-android",
+    )
 
 
 def probe_hindsight() -> ToolStatus:

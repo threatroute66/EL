@@ -177,6 +177,73 @@ class AndroidForensicatorAgent(Agent):
         # Finding per surfaced high-value artefact (contacts2,
         # mmssms, Chrome history, app-data DBs, Wi-Fi config).
         out.extend(self._run_aleapp(ctx, src))
+        # MVT mercenary-spyware (Pegasus / Predator) IOC matching.
+        out.extend(self._run_mvt(ctx, src))
+        return out
+
+    def _run_mvt(self, ctx: AgentContext, src: Path) -> list[Finding]:
+        """Run MVT against an Android artifact set.
+
+        Detects whether the input shape is a backup file (.ab) or an
+        AndroidQF / generic FS dir, dispatches accordingly. Activates
+        H_MOBILE_SPYWARE_PERSISTENCE on any IOC match.
+        """
+        from el.skills import mvt as mvt_skill
+        out: list[Finding] = []
+        out_dir = ctx.case_dir / "analysis" / self.name / "mvt"
+        out_dir.mkdir(parents=True, exist_ok=True)
+
+        iocs_path = None
+        for candidate in (
+            Path("/opt/mvt-iocs"),
+            Path.home() / ".mvt" / "indicators",
+        ):
+            if candidate.is_dir():
+                iocs_path = candidate
+                break
+
+        try:
+            if src.is_file() and src.suffix.lower() in (".ab", ".tar"):
+                run = mvt_skill.check_android_backup(src, out_dir,
+                                                       iocs_path=iocs_path)
+            elif src.is_dir():
+                run = mvt_skill.check_androidqf(src, out_dir,
+                                                  iocs_path=iocs_path)
+            else:
+                return out
+        except (mvt_skill.MVTError, OSError, TypeError, ValueError) as e:
+            # MVTError = mvt not installed; OSError = subprocess plumbing;
+            # TypeError/ValueError = upstream test fixtures monkeypatching
+            # subprocess.run with incompatible signatures (we still want
+            # the host agent to finish even if the optional MVT chain
+            # can't run in that scenario).
+            out.append(self.emit(ctx, Finding(
+                case_id=ctx.case_id, agent=self.name,
+                confidence="insufficient",
+                claim=f"MVT mercenary-spyware check skipped: {e}",
+            )))
+            return out
+
+        ev = run.as_evidence()
+        if run.has_hits():
+            out.append(self.emit(ctx, Finding(
+                case_id=ctx.case_id, agent=self.name, confidence="high",
+                claim=(f"MVT detected {len(run.detections)} IOC match(es) "
+                       f"in Android {run.subcommand} — mercenary-spyware "
+                       f"indicators ({run.detection_summary()})"),
+                evidence=[ev],
+                hypotheses_supported=["H_MOBILE_SPYWARE_PERSISTENCE"],
+                hypotheses_refuted=["H_BENIGN_NO_INCIDENT"],
+            )))
+        else:
+            out.append(self.emit(ctx, Finding(
+                case_id=ctx.case_id, agent=self.name, confidence="low",
+                claim=(f"MVT Android {run.subcommand}: "
+                       f"{len(run.modules_run)} module(s) ran with 0 IOC "
+                       f"matches (rc={run.rc})"
+                       + (f" — note: {run.note}" if run.note else "")),
+                evidence=[ev],
+            )))
         return out
 
     # ALEAPP TSV name → (display label, confidence, hypotheses).

@@ -148,6 +148,11 @@ class IOSForensicatorAgent(Agent):
         # app installs, Wi-Fi). Storage cost: ~tens of MB of TSV/HTML
         # under <case_dir>/exports/ileapp/.
         out.extend(self._run_ileapp(ctx, src))
+
+        # MVT (Amnesty Tech) — mercenary-spyware (Pegasus / Predator /
+        # Triangulation) IOC matching against the iOS filesystem. Activates
+        # the otherwise-dormant H_MOBILE_SPYWARE_PERSISTENCE scorer.
+        out.extend(self._run_mvt(ctx, src, mode="check-fs"))
         return out
 
     # Per-artifact display names + confidences. iLEAPP names its TSV
@@ -368,6 +373,75 @@ class IOSForensicatorAgent(Agent):
                        "ios_backup_parse.decrypt_manifest_db; the "
                        "device-metadata above is from the "
                        "always-readable Manifest.plist."),
+            )))
+        # MVT mercenary-spyware IOC matching against the backup.
+        out.extend(self._run_mvt(ctx, src, mode="check-backup"))
+        return out
+
+    # --- MVT mercenary-spyware IOC matching --------------------------
+
+    def _run_mvt(self, ctx: AgentContext, src: Path,
+                  *, mode: str) -> list[Finding]:
+        """Run MVT against an iOS filesystem dump or iTunes backup.
+
+        *mode*: "check-fs" (full filesystem) or "check-backup" (iTunes/Finder).
+        Activates H_MOBILE_SPYWARE_PERSISTENCE on any IOC hit; emits an
+        insufficient finding when MVT isn't installed.
+        """
+        from el.skills import mvt as mvt_skill
+        out: list[Finding] = []
+        out_dir = ctx.case_dir / "analysis" / self.name / "mvt"
+        out_dir.mkdir(parents=True, exist_ok=True)
+
+        # Locally-staged Amnesty Tech IOCs, if present.
+        iocs_path = None
+        for candidate in (
+            Path("/opt/mvt-iocs"),
+            Path.home() / ".mvt" / "indicators",
+        ):
+            if candidate.is_dir():
+                iocs_path = candidate
+                break
+
+        try:
+            if mode == "check-fs":
+                run = mvt_skill.check_ios_fs(src, out_dir, iocs_path=iocs_path,
+                                               fast=True)
+            elif mode == "check-backup":
+                run = mvt_skill.check_ios_backup(src, out_dir,
+                                                   iocs_path=iocs_path)
+            else:
+                return out
+        except (mvt_skill.MVTError, OSError, TypeError, ValueError) as e:
+            # See parallel handler in AndroidForensicatorAgent — broad catch
+            # keeps the host agent resilient when MVT is unavailable or when
+            # an upstream test fixture monkeypatches subprocess.run.
+            out.append(self.emit(ctx, Finding(
+                case_id=ctx.case_id, agent=self.name,
+                confidence="insufficient",
+                claim=f"MVT mercenary-spyware check skipped: {e}",
+            )))
+            return out
+
+        ev = run.as_evidence()
+        if run.has_hits():
+            out.append(self.emit(ctx, Finding(
+                case_id=ctx.case_id, agent=self.name, confidence="high",
+                claim=(f"MVT detected {len(run.detections)} IOC match(es) — "
+                       f"mercenary-spyware indicators "
+                       f"({run.detection_summary()})"),
+                evidence=[ev],
+                hypotheses_supported=["H_MOBILE_SPYWARE_PERSISTENCE"],
+                hypotheses_refuted=["H_BENIGN_NO_INCIDENT"],
+            )))
+        else:
+            out.append(self.emit(ctx, Finding(
+                case_id=ctx.case_id, agent=self.name, confidence="low",
+                claim=(f"MVT iOS {run.subcommand}: {len(run.modules_run)} "
+                       f"module(s) ran with 0 IOC matches "
+                       f"(rc={run.rc})"
+                       + (f" — note: {run.note}" if run.note else "")),
+                evidence=[ev],
             )))
         return out
 
