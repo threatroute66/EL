@@ -155,4 +155,33 @@ class LogAnalystAgent(Agent):
             evidence=[r.as_evidence()],
             hypotheses_supported=tags,
         )))
+
+        # Tier 4.4 — Hayabusa v3 Sigma correlation rules. A correlation
+        # rule combines multiple base-rule hits into a single composite
+        # detection (e.g. "5 failed logons + 1 success within 1 minute"
+        # = brute-force). When these fire, they're high-confidence by
+        # construction — Sigma already required N base-rule hits to
+        # trigger them.
+        if r.has_correlation_hits():
+            top_corr = ", ".join(
+                f"{name}×{count}" for name, count
+                in sorted(r.correlation_hits.items(), key=lambda kv: -kv[1])[:3]
+            )
+            sample = (r.correlation_samples[0]
+                      if r.correlation_samples else None)
+            sample_text = ""
+            if sample:
+                sample_text = (f" — sample: '{sample['rule'][:120]}' "
+                               f"(level={sample.get('level', '?')}, "
+                               f"computer={sample.get('computer', '')[:32]})")
+            total = sum(r.correlation_hits.values())
+            out.append(self.emit(ctx, Finding(
+                case_id=ctx.case_id, agent=self.name, confidence="high",
+                claim=(f"Hayabusa Sigma correlation: {total} composite "
+                       f"detection(s) across {len(r.correlation_hits)} "
+                       f"correlation rule(s) — top: {top_corr}{sample_text}"),
+                evidence=[r.as_evidence({"phase": "correlation"})],
+                hypotheses_supported=tags,
+                hypotheses_refuted=["H_BENIGN_NO_INCIDENT"],
+            )))
         return out
