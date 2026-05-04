@@ -115,6 +115,7 @@ def survey() -> list[ToolStatus]:
         probe_m365_collect(),
         probe_azurehound_triage(),
         probe_tracee(),
+        probe_dftimewolf_bundle(),
         probe_ti_push(),
         probe_simple("zeek", ["--version"]),
         probe_simple("suricata", ["-V"]),
@@ -229,6 +230,14 @@ def probe_tracee() -> ToolStatus:
         note=("eBPF runtime capture (requires root)"
               if os.geteuid() == 0
               else "eBPF runtime capture (run live-system step as root)"),
+    )
+
+
+def probe_dftimewolf_bundle() -> ToolStatus:
+    """In-process dfTimewolf bundle parser. Always available — pure Python."""
+    return ToolStatus(
+        "dftimewolf_bundle", None, "0.1.0", True,
+        note="recipe + sub-artifact inventory for dfTimewolf output dirs",
     )
 
 

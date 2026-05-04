@@ -22,6 +22,7 @@ from el.agents.browser_forensicator import BrowserForensicatorAgent
 from el.agents.credential_analyst import CredentialAnalystAgent
 from el.agents.powershell_analyst import PowerShellAnalystAgent
 from el.agents.sigma_analyst import SigmaAnalystAgent
+from el.agents.dftimewolf_dispatcher import DFTimewolfDispatcherAgent
 from el.agents.disk_forensicator import DiskForensicatorAgent
 from el.agents.email_forensicator import EmailForensicatorAgent
 from el.agents.bulk_extractor_features_agent import BulkExtractorFeaturesAgent
@@ -97,6 +98,7 @@ KIND_TO_AGENT: dict[str, type[Agent]] = {
     "k8s-audit-log": K8sAuditAnalystAgent,
     "live-linux-system": LiveResponseCollector,
     "uac-collection": LinuxForensicatorAgent,  # Process UAC artifacts with Linux forensicator
+    "dftimewolf-bundle": DFTimewolfDispatcherAgent,
 }
 
 

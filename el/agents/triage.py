@@ -309,6 +309,42 @@ class TriageAgent(Agent):
             )))
             return out
 
+        # dfTimewolf bundle — directory with a recipe JSON/YAML and / or
+        # a dftimewolf.log alongside collected artifacts. Run BEFORE the
+        # FS-shape detectors below (an aws_forensics recipe drops a Plaso
+        # storage + a CloudTrail JSON which would otherwise look like a
+        # generic mixed dir).
+        from el.skills import dftimewolf_bundle as dftw
+        if dftw.looks_like_dftimewolf_bundle(d):
+            try:
+                bundle = dftw.parse_bundle(d)
+            except dftw.DFTimewolfError:
+                bundle = None
+            if bundle is not None:
+                ctx.shared["evidence_kind"] = "dftimewolf-bundle"
+                ctx.shared["dftimewolf_bundle"] = bundle
+                ev = bundle.as_evidence()
+                recipe_name = (bundle.recipe.name if bundle.recipe
+                                else "(recipe not parsed)")
+                modules_str = (", ".join(bundle.recipe.module_names[:6])
+                                if bundle.recipe else "")
+                kinds_str = ", ".join(
+                    f"{k}×{v}" for k, v
+                    in sorted(bundle.artifact_kinds.items(),
+                              key=lambda kv: -kv[1])[:8]
+                )
+                out.append(self.emit(ctx, Finding(
+                    case_id=ctx.case_id, agent=self.name, confidence="high",
+                    claim=(f"Input directory looks like a dfTimewolf output "
+                           f"bundle (recipe='{recipe_name}'"
+                           + (f", modules: {modules_str}" if modules_str else "")
+                           + f"; {len(bundle.artifact_files)} sub-artifacts"
+                           + (f" — {kinds_str}" if kinds_str else "")
+                           + ")"),
+                    evidence=[ev],
+                )))
+                return out
+
         # iTunes / Finder backup directory — Manifest.plist + Manifest.db
         # at the top level. Distinct from a generic iOS FS tree because
         # it's blob-keyed-by-sha1, not a real filesystem.
