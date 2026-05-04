@@ -90,6 +90,68 @@ class NetworkAnalystAgent(Agent):
         out.extend(self._run_zeek(ctx, analysis))
         # tshark: deeper HTTP+TLS extraction (full URIs, cert subjects).
         out.extend(self._run_tshark(ctx, analysis))
+        # JA4+ family fingerprinting (FoxIO). Supplements JA3 — JA3 was
+        # deprecated by FoxIO in 2024 but many TI feeds still index by it,
+        # so both run side-by-side during the migration window.
+        out.extend(self._run_ja4(ctx, analysis))
+        return out
+
+    def _run_ja4(self, ctx: AgentContext, analysis) -> list[Finding]:
+        """FoxIO JA4+ family fingerprinting on the pcap."""
+        from el.skills import ja4 as ja4_skill
+        out: list[Finding] = []
+        ja4_dir = analysis / "ja4"
+        ja4_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            r = ja4_skill.scan_pcap(ctx.input_path, ja4_dir)
+        except (ja4_skill.JA4Error, OSError, TypeError, ValueError) as e:
+            out.append(self.emit(ctx, Finding(
+                case_id=ctx.case_id, agent=self.name, confidence="insufficient",
+                claim=f"JA4 fingerprinting skipped: {e}",
+            )))
+            return out
+
+        ev = r.as_evidence()
+        if r.flow_count == 0:
+            out.append(self.emit(ctx, Finding(
+                case_id=ctx.case_id, agent=self.name, confidence="low",
+                claim=("JA4: extraction completed with 0 flows — pcap may "
+                       "lack TLS/HTTP/SSH or tshark version is older than "
+                       "4.0.6 (the JA4 minimum)"),
+                evidence=[ev],
+            )))
+            return out
+
+        out.append(self.emit(ctx, Finding(
+            case_id=ctx.case_id, agent=self.name, confidence="high",
+            claim=(f"JA4 family fingerprints extracted: {r.flow_count} "
+                   f"flow(s) — {len(r.distinct_ja4)} JA4, "
+                   f"{len(r.distinct_ja4s)} JA4S, "
+                   f"{len(r.distinct_ja4h)} JA4H, "
+                   f"{len(r.distinct_ja4x)} JA4X, "
+                   f"{len(r.distinct_ja4ssh)} JA4SSH"),
+            evidence=[ev],
+        )))
+
+        # Curated bad-JA4 lookup. Mirror of the JA3 reputation flow but on
+        # the FoxIO-canonical fingerprint format. Empty table by default;
+        # populated only when an operator stages JA4 IOC entries.
+        bad_hits: list[tuple[str, str, str]] = []
+        for fp in r.all_distinct_fingerprints():
+            match = ja4_skill.lookup_ja4(fp)
+            if match:
+                family, source = match
+                bad_hits.append((fp, family, source))
+
+        for fp, family, source in bad_hits:
+            out.append(self.emit(ctx, Finding(
+                case_id=ctx.case_id, agent=self.name, confidence="high",
+                claim=(f"JA4 fingerprint {fp} matches known-bad family "
+                       f"'{family}' (source: {source})"),
+                evidence=[ev],
+                hypotheses_supported=["H_C2_BEACONING", "H_APT_ESPIONAGE"],
+            )))
+
         return out
 
     def _run_suricata(self, ctx: AgentContext, analysis) -> list[Finding]:

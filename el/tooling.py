@@ -110,6 +110,7 @@ def survey() -> list[ToolStatus]:
         probe_simple("bulk_extractor", ["-V"]),
         probe_simple("yara", ["--version"]),
         probe_yara_x(),
+        probe_ja4(),
         probe_simple("zeek", ["--version"]),
         probe_simple("suricata", ["-V"]),
         probe_simple("tshark", ["-v"]),
@@ -137,6 +138,25 @@ def survey() -> list[ToolStatus]:
         probe_uac(),
         probe_weasyprint(),
     ]
+
+
+def probe_ja4() -> ToolStatus:
+    """FoxIO JA4+ family TLS/HTTP/SSH/QUIC fingerprinting (BSD-3 + FoxIO 1.1).
+    Supplements existing JA3 reputation skill."""
+    candidates = [
+        Path("/opt/ja4-tools/python/ja4.py"),
+        Path("/opt/ja4/python/ja4.py"),
+    ]
+    for p in candidates:
+        if p.is_file():
+            return ToolStatus(
+                "ja4", ["python3", str(p)], "foxio-ja4 (git)", True,
+                note="JA4+ family fingerprinting (supplements JA3)",
+            )
+    return ToolStatus(
+        "ja4", None, None, False,
+        note="install via install.sh; clone github.com/FoxIO-LLC/ja4 to /opt/ja4-tools/",
+    )
 
 
 def probe_yara_x() -> ToolStatus:

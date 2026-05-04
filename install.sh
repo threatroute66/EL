@@ -298,6 +298,32 @@ else
     log "skipping YARA-X installation (--no-apt specified)"
 fi
 
+# --- FoxIO JA4 tools phase -------------------------------------------------
+# Clone FoxIO/ja4 (BSD-3-Clause + FoxIO License 1.1) for JA4+ family
+# fingerprinting. Depends on tshark >= 4.0.6 (already on SIFT).
+install_ja4_tools() {
+    if [[ -f /opt/ja4-tools/python/ja4.py ]]; then
+        log "FoxIO ja4 tools already present at /opt/ja4-tools/ — skipping"
+        return 0
+    fi
+    log "cloning FoxIO ja4 tools to /opt/ja4-tools"
+    if sudo git clone --quiet --depth 1 \
+        https://github.com/FoxIO-LLC/ja4.git /tmp/foxio-ja4 2>/dev/null; then
+        sudo mkdir -p /opt/ja4-tools
+        sudo cp -r /tmp/foxio-ja4/python /opt/ja4-tools/python
+        sudo rm -rf /tmp/foxio-ja4
+        log "FoxIO ja4 tools installed at /opt/ja4-tools/python/"
+    else
+        log "WARN: FoxIO ja4 clone failed — JA4 fingerprinting unavailable (JA3 still works)"
+    fi
+}
+
+if [[ ${skip_apt} -eq 0 ]]; then
+    install_ja4_tools
+else
+    log "skipping FoxIO ja4 install (--no-apt specified)"
+fi
+
 # --- venv phase -------------------------------------------------------------
 if [[ ! -d "${EL_DIR}/.venv" ]]; then
     log "creating Python venv at ${EL_DIR}/.venv"
