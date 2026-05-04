@@ -114,6 +114,7 @@ def survey() -> list[ToolStatus]:
         probe_cape(),
         probe_m365_collect(),
         probe_azurehound_triage(),
+        probe_tracee(),
         probe_simple("zeek", ["--version"]),
         probe_simple("suricata", ["-V"]),
         probe_simple("tshark", ["-v"]),
@@ -192,6 +193,41 @@ def probe_m365_collect() -> ToolStatus:
     return ToolStatus(
         "m365_collect", [pwsh], f"Microsoft-Extractor-Suite {version}", True,
         note=note,
+    )
+
+
+def probe_tracee() -> ToolStatus:
+    """Aqua Security Tracee — eBPF runtime forensics for live Linux systems.
+    Requires root + kernel ≥4.18 with BTF; chains off live-linux-system."""
+    candidates = [
+        "/opt/tracee/dist/tracee",
+        "/usr/local/bin/tracee",
+    ]
+    p = shutil.which("tracee")
+    if p:
+        candidates.insert(0, p)
+    found = None
+    for c in candidates:
+        if Path(c).is_file():
+            found = c
+            break
+    if not found:
+        return ToolStatus(
+            "tracee", None, None, False,
+            note="install from github.com/aquasecurity/tracee/releases",
+        )
+    rc, out, err = _run([found, "version"], timeout=6)
+    text = (out + "\n" + err).strip()
+    version = ""
+    for line in text.splitlines():
+        if "version" in line.lower() or line.startswith("v"):
+            version = line.strip()
+            break
+    return ToolStatus(
+        "tracee", [found], version or "present", True,
+        note=("eBPF runtime capture (requires root)"
+              if os.geteuid() == 0
+              else "eBPF runtime capture (run live-system step as root)"),
     )
 
 

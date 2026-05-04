@@ -350,6 +350,13 @@ export EL_M365_APP_SECRET=<app-secret>
 # or (less secure):
 # export EL_M365_USERNAME=alice@contoso.onmicrosoft.com
 # export EL_M365_PASSWORD=$(pass m365/alice)
+
+# Tracee eBPF runtime capture — chains off live-linux-system evidence
+# kind. Captures syscall/file/network events for a bounded duration during
+# live-response collection. Default 60s; tune via env var. Requires root
+# + kernel ≥4.18 + BTF (modern SIFT 22.04+ supports it natively).
+export EL_TRACEE_DURATION=60                          # seconds (5..600)
+sudo el investigate /                                 # live-system mode
 ```
 
 Each case workspace lives at `cases/<case_id>/`:

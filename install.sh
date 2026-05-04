@@ -351,6 +351,39 @@ else
     log "skipping Microsoft-Extractor-Suite install (--no-apt specified)"
 fi
 
+# --- Tracee (eBPF runtime forensics) phase --------------------------------
+# Install Aqua Security Tracee (Apache-2.0) to /opt/tracee. Needed for
+# live-system runtime capture (chains off live-linux-system evidence kind).
+# Does not run at install time; just stages the binary.
+install_tracee() {
+    if [[ -x /opt/tracee/dist/tracee || -x /usr/local/bin/tracee ]]; then
+        log "Tracee already installed — skipping"
+        return 0
+    fi
+    log "installing Tracee v0.24.1"
+    local url="https://github.com/aquasecurity/tracee/releases/download/v0.24.1/tracee-x86_64.v0.24.1.tar.gz"
+    local temp="/tmp/tracee.tar.gz"
+    if curl -L -s -o "$temp" "$url"; then
+        sudo mkdir -p /opt/tracee
+        sudo tar -xzf "$temp" -C /opt/tracee
+        if [[ -x /opt/tracee/dist/tracee ]]; then
+            sudo ln -sf /opt/tracee/dist/tracee /usr/local/bin/tracee
+            log "Tracee installed at /opt/tracee/dist/tracee (symlink in /usr/local/bin)"
+        else
+            log "WARN: Tracee extracted but binary not where expected"
+        fi
+        rm -f "$temp"
+    else
+        log "WARN: Tracee download failed — eBPF runtime capture unavailable"
+    fi
+}
+
+if [[ ${skip_apt} -eq 0 ]]; then
+    install_tracee
+else
+    log "skipping Tracee install (--no-apt specified)"
+fi
+
 # --- venv phase -------------------------------------------------------------
 if [[ ! -d "${EL_DIR}/.venv" ]]; then
     log "creating Python venv at ${EL_DIR}/.venv"

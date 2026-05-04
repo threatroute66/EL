@@ -97,7 +97,69 @@ class LiveResponseCollector(Agent):
                 hypotheses_refuted=[]
             )))
 
+        # Tracee eBPF runtime capture — complements UAC's snapshot model
+        # with a time-bounded behavioural capture. Opt-in via duration env
+        # var; skipped unless tracee is installed AND we're root.
+        findings.extend(self._maybe_capture_with_tracee(ctx))
+
         return findings
+
+    def _maybe_capture_with_tracee(self, ctx: AgentContext) -> list[Finding]:
+        """Run a bounded Tracee capture if the host supports it."""
+        from el.skills import tracee as tracee_skill
+        out: list[Finding] = []
+
+        ok, reason = tracee_skill.is_runnable()
+        if not ok:
+            out.append(self.emit(ctx, Finding(
+                agent=self.name, confidence="insufficient",
+                claim=f"Tracee eBPF capture skipped — {reason}",
+                evidence=[], hypotheses_supported=[], hypotheses_refuted=[],
+            )))
+            return out
+
+        # Operator-tunable duration; default 60s gives meaningful coverage
+        # without unbounded JSONL growth on a busy box.
+        try:
+            duration = int(os.environ.get("EL_TRACEE_DURATION", "60"))
+        except ValueError:
+            duration = 60
+        duration = max(5, min(duration, 600))
+
+        out_dir = ctx.case_dir / "analysis" / self.name / "tracee"
+        try:
+            run = tracee_skill.capture(out_dir, duration_seconds=duration)
+        except (tracee_skill.TraceeError, OSError, TypeError, ValueError) as e:
+            out.append(self.emit(ctx, Finding(
+                agent=self.name, confidence="insufficient",
+                claim=f"Tracee capture errored: {e}",
+                evidence=[], hypotheses_supported=[], hypotheses_refuted=[],
+            )))
+            return out
+
+        ev = run.as_evidence()
+        if run.event_count == 0:
+            out.append(self.emit(ctx, Finding(
+                agent=self.name, confidence="low",
+                claim=(f"Tracee captured 0 events over {run.duration_seconds:.1f}s "
+                       f"(rc={run.rc}; "
+                       + (run.note or "system was idle in the capture window")
+                       + ")"),
+                evidence=[ev],
+                hypotheses_supported=[], hypotheses_refuted=[],
+            )))
+            return out
+
+        out.append(self.emit(ctx, Finding(
+            agent=self.name, confidence="high",
+            claim=(f"Tracee eBPF capture: {run.event_count:,} event(s) over "
+                   f"{run.duration_seconds:.1f}s across "
+                   f"{run.distinct_processes} process(es) "
+                   f"({len(run.events_by_type)} event type(s))"),
+            evidence=[ev],
+            hypotheses_supported=[], hypotheses_refuted=[],
+        )))
+        return out
 
     def _is_live_system(self, path: Path) -> bool:
         """
