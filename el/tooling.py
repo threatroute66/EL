@@ -117,6 +117,7 @@ def survey() -> list[ToolStatus]:
         probe_tracee(),
         probe_dftimewolf_bundle(),
         probe_falco_events(),
+        probe_macos_unifiedlogs(),
         probe_sigma_export(),
         probe_ti_push(),
         probe_simple("zeek", ["--version"]),
@@ -232,6 +233,30 @@ def probe_tracee() -> ToolStatus:
         note=("eBPF runtime capture (requires root)"
               if os.geteuid() == 0
               else "eBPF runtime capture (run live-system step as root)"),
+    )
+
+
+def probe_macos_unifiedlogs() -> ToolStatus:
+    """Mandiant macos-UnifiedLogs Rust parser (Apache-2.0)."""
+    candidates = [
+        "/opt/macos-unifiedlogs/unifiedlog_iterator",
+        "/usr/local/bin/unifiedlog_iterator",
+    ]
+    p = shutil.which("unifiedlog_iterator")
+    if p:
+        candidates.insert(0, p)
+    for c in candidates:
+        if Path(c).is_file():
+            rc, out, err = _run([c, "--version"], timeout=5)
+            text = (out or err).strip()
+            version = text.splitlines()[0] if text else "present"
+            return ToolStatus(
+                "unifiedlog_iterator", [c], version, True,
+                note="macOS unified logs (tracev3) parser",
+            )
+    return ToolStatus(
+        "unifiedlog_iterator", None, None, False,
+        note="install from github.com/mandiant/macos-UnifiedLogs/releases",
     )
 
 

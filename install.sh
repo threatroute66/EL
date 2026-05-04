@@ -384,6 +384,46 @@ else
     log "skipping Tracee install (--no-apt specified)"
 fi
 
+# --- Mandiant macos-UnifiedLogs (Rust parser) phase -----------------------
+# Install unifiedlog_iterator for parsing macOS tracev3 / .logarchive
+# bundles on Linux. ~100x faster than Apple's `log show` and runs natively.
+install_macos_unifiedlogs() {
+    if [[ -x /opt/macos-unifiedlogs/unifiedlog_iterator ]]; then
+        log "macos-UnifiedLogs parser already installed — skipping"
+        return 0
+    fi
+    log "installing Mandiant macos-UnifiedLogs v0.5.1 (Rust)"
+    local url="https://github.com/mandiant/macos-UnifiedLogs/releases/download/v0.5.1/unifiedlog_iterator-v0.5.1-x86_64-unknown-linux-gnu.tar.gz"
+    local temp="/tmp/macos_ulogs.tar.gz"
+    if curl -L -s -o "$temp" "$url"; then
+        local extract_dir="/tmp/macos_ulogs_x"
+        mkdir -p "$extract_dir"
+        if tar -xzf "$temp" -C "$extract_dir" 2>/dev/null; then
+            local binary
+            binary=$(find "$extract_dir" -name unifiedlog_iterator -type f | head -1)
+            if [[ -n "$binary" ]]; then
+                sudo mkdir -p /opt/macos-unifiedlogs
+                sudo mv "$binary" /opt/macos-unifiedlogs/unifiedlog_iterator
+                sudo chmod +x /opt/macos-unifiedlogs/unifiedlog_iterator
+                log "macos-UnifiedLogs installed at /opt/macos-unifiedlogs/unifiedlog_iterator"
+            else
+                log "WARN: macos-UnifiedLogs binary not found in archive"
+            fi
+        else
+            log "WARN: macos-UnifiedLogs archive extraction failed"
+        fi
+        rm -rf "$temp" "$extract_dir"
+    else
+        log "WARN: macos-UnifiedLogs download failed"
+    fi
+}
+
+if [[ ${skip_apt} -eq 0 ]]; then
+    install_macos_unifiedlogs
+else
+    log "skipping macos-UnifiedLogs install (--no-apt specified)"
+fi
+
 # --- venv phase -------------------------------------------------------------
 if [[ ! -d "${EL_DIR}/.venv" ]]; then
     log "creating Python venv at ${EL_DIR}/.venv"

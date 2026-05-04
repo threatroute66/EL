@@ -109,4 +109,77 @@ class MacOSForensicatorAgent(Agent):
                 hypotheses_supported=mt.hypotheses_for(h.family)
                                        or ["H_APT_ESPIONAGE"],
             )))
+
+        # Tier 4.3 — macOS Unified Logs (tracev3) deep-dive via Mandiant's
+        # Rust parser. Walks for a .logarchive bundle or a Persist tracev3
+        # tree under the extracted filesystem; runs unifiedlog_iterator;
+        # emits a high-signal-event summary finding when something fires.
+        out.extend(self._run_unified_logs(ctx, exports))
+        return out
+
+    def _run_unified_logs(self, ctx: AgentContext,
+                            exports: Path) -> list[Finding]:
+        """Drive macos_unifiedlogs against any tracev3 / .logarchive found
+        under *exports*. No-op silently if the parser isn't installed or
+        no unified-log artifacts are present."""
+        from el.skills import macos_unifiedlogs as mul
+        out: list[Finding] = []
+        target = mul.find_unified_logs(exports)
+        if target is None:
+            return out
+        analysis = ctx.case_dir / "analysis" / self.name / "unified_logs"
+        try:
+            run = mul.parse(target, analysis)
+        except (mul.MacOSUnifiedLogsError, OSError, TypeError, ValueError) as e:
+            out.append(self.emit(ctx, Finding(
+                case_id=ctx.case_id, agent=self.name,
+                confidence="insufficient",
+                claim=f"macOS Unified Logs parse skipped: {e}",
+            )))
+            return out
+
+        ev = run.as_evidence()
+        if run.event_count == 0:
+            out.append(self.emit(ctx, Finding(
+                case_id=ctx.case_id, agent=self.name, confidence="low",
+                claim=(f"macOS Unified Logs: parser ran on {target.name} "
+                       f"with rc={run.rc} and produced 0 events"
+                       + (f" — note: {run.note}" if run.note else "")),
+                evidence=[ev],
+            )))
+            return out
+
+        # Headline summary.
+        out.append(self.emit(ctx, Finding(
+            case_id=ctx.case_id, agent=self.name, confidence="high",
+            claim=(f"macOS Unified Logs parsed: "
+                   f"{run.event_count:,} event(s) across "
+                   f"{run.distinct_processes} process(es) and "
+                   f"{len(run.by_subsystem)} subsystem(s); "
+                   f"{run.high_signal_count} high-signal event(s) "
+                   "(TCC / AMFI / Gatekeeper / Sandbox / kextd)"),
+            evidence=[ev],
+        )))
+
+        # If high-signal events are present, surface a TCC/AMFI/Gatekeeper
+        # cluster finding so the analyst sees the anomaly without trawling
+        # the full JSONL.
+        if run.high_signal_count > 0:
+            samples = list(run.iter_high_signal(max_count=5))
+            sample_str = ""
+            if samples:
+                sample_event = samples[0]
+                sample_str = (f" — sample: subsystem='{sample_event.subsystem}' "
+                              f"process='{sample_event.process}' "
+                              f"type='{sample_event.log_type}'")
+            out.append(self.emit(ctx, Finding(
+                case_id=ctx.case_id, agent=self.name, confidence="medium",
+                claim=(f"macOS Unified Logs flagged "
+                       f"{run.high_signal_count} high-signal event(s) "
+                       f"(security-subsystem hits or fault/error/alert "
+                       f"log-types){sample_str}"),
+                evidence=[ev],
+                hypotheses_supported=["H_MAC_TCC_BYPASS",
+                                       "H_MAC_FILELESS_AMFI_BYPASS"],
+            )))
         return out
