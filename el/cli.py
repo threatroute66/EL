@@ -426,6 +426,12 @@ def combined_report_cmd(
              "graph, and per-case narrative blocks; links into each "
              "host's case.html for drill-down. Pass `--no-html` to "
              "skip the HTML render (Markdown-only output)."),
+    render_pdf: bool = typer.Option(
+        False, "--pdf/--no-pdf",
+        help="Also render combined.pdf via WeasyPrint by paginating the "
+             "combined.html dashboard. Off by default — large multi-host "
+             "HTML can take minutes to paginate and adds a ~500KB-1MB "
+             "PDF. Implies --html (the PDF is rendered FROM the HTML)."),
 ) -> None:
     """Stitch N per-case ledgers into a single multi-host report.
 
@@ -468,11 +474,72 @@ def combined_report_cmd(
     console.print(
         f"[green]wrote combined report:[/green] {written}\n"
         f"  cases: {len(dirs)}")
-    if render_html:
+    # Always emit the multi-host executive report (HTML + PDF) when
+    # weasyprint is available. This is the equivalent of single-case
+    # executive.html / executive.pdf — focused, non-technical,
+    # stakeholder-friendly. Wired in by default so the combined dashboard
+    # has something to link the "download executive PDF" icon to.
+    exec_html_path = out_path.with_name("combined_executive.html")
+    exec_pdf_path: Path | None = None
+    try:
+        from el.reporting.combined_executive import (
+            render_combined_executive, render_combined_executive_pdf,
+        )
+        render_combined_executive(dirs, exec_html_path, name=name)
+        console.print(
+            f"[green]wrote combined executive HTML:[/green] {exec_html_path}")
+        try:
+            exec_pdf_path = render_combined_executive_pdf(exec_html_path)
+            kb = exec_pdf_path.stat().st_size // 1024
+            console.print(
+                f"[green]wrote combined executive PDF:[/green] "
+                f"{exec_pdf_path} ({kb} KB)")
+        except ImportError:
+            console.print(
+                "[yellow]combined_executive.pdf skipped — "
+                "weasyprint not installed[/yellow]")
+        except Exception as e:
+            console.print(
+                f"[yellow]combined_executive.pdf render failed:[/yellow] "
+                f"{e} — HTML at {exec_html_path} is still valid")
+    except Exception as e:
+        console.print(
+            f"[yellow]combined executive report skipped:[/yellow] {e}")
+
+    if render_html or render_pdf:
         from el.reporting.combined_html import render_combined_html
         html_path = out_path.with_name("combined.html")
-        render_combined_html(dirs, html_path, name=name)
+        # Pass the executive PDF path so combined.html embeds a download
+        # icon in its top nav (matching the per-case case.html pattern).
+        try:
+            render_combined_html(
+                dirs, html_path, name=name,
+                executive_pdf_path=exec_pdf_path,
+            )
+        except TypeError:
+            # Older signature without executive_pdf_path — fall through.
+            render_combined_html(dirs, html_path, name=name)
         console.print(f"[green]wrote combined HTML:[/green] {html_path}")
+    if render_pdf:
+        try:
+            from weasyprint import HTML  # type: ignore
+        except ImportError as e:
+            console.print(
+                f"[red]--pdf requires weasyprint:[/red] {e}\n"
+                "  pip install weasyprint")
+            raise typer.Exit(2)
+        pdf_path = out_path.with_name("combined.pdf")
+        try:
+            HTML(filename=str(html_path)).write_pdf(str(pdf_path))
+        except Exception as e:
+            console.print(
+                f"[red]combined.pdf (full dashboard) render failed:[/red] "
+                f"{e}\n  the combined.html at {html_path} is still valid")
+            raise typer.Exit(2)
+        size_kb = pdf_path.stat().st_size // 1024
+        console.print(
+            f"[green]wrote combined PDF (full dashboard):[/green] "
+            f"{pdf_path} ({size_kb} KB)")
 
 
 _SYSTEMD_UNIT_TEMPLATE = """\

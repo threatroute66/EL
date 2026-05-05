@@ -166,8 +166,23 @@ def test_combined_html_skips_pdf_link_when_pdf_missing(tmp_path, monkeypatch):
 
     combined_html = out_md.with_name("combined.html")
     html = combined_html.read_text()
-    # The CSS class definition lives in the embedded stylesheet (small
-    # and harmless), but no actual <a class='pdf-download'> link element
-    # should be rendered when none of the cases have an exec PDF.
-    assert "class='pdf-download'" not in html
-    assert 'class="pdf-download"' not in html
+    # No PER-HOST executive-PDF link should be rendered (those live in
+    # the #hosts table and target each case's reports/executive.pdf).
+    # The combined topbar icon (added later for the multi-host
+    # combined_executive.pdf) is a different element — wired separately
+    # by the CLI when --executive-pdf is rendered. Scope the per-host
+    # check to the hosts section.
+    import re
+    hosts_section = re.search(
+        r"<section\s+id=['\"]hosts['\"][^>]*>(.*?)</section>",
+        html, re.DOTALL,
+    )
+    assert hosts_section, "expected #hosts section in combined.html"
+    hosts_html = hosts_section.group(1)
+    assert "class='pdf-download'" not in hosts_html
+    assert 'class="pdf-download"' not in hosts_html
+    # Each per-host case_dir's executive.pdf reference should also be
+    # absent since none of them produced one.
+    for cid in ("phase5-c", "phase5-d"):
+        assert f"href=\"{cid}/reports/executive.pdf\"" not in hosts_html
+        assert f"href='{cid}/reports/executive.pdf'" not in hosts_html

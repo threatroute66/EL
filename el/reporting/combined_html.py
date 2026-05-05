@@ -1188,7 +1188,15 @@ window.addEventListener("DOMContentLoaded", () => {
 
 def render_combined_html(
     case_dirs: list[Path], out_path: Path, name: str = "combined-case",
+    *, executive_pdf_path: Path | None = None,
 ) -> Path:
+    """Render the combined multi-host HTML dashboard.
+
+    *executive_pdf_path* (optional) — when supplied, the dashboard's top
+    navigation gains a download icon linking to the per-bundle executive
+    (non-technical) PDF. Mirrors the per-case ``case.html`` ↔ ``executive.pdf``
+    pairing.
+    """
     out_path = Path(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     cases = [load_case(Path(d)) for d in case_dirs]
@@ -1291,6 +1299,33 @@ def render_combined_html(
     now = data["generated_utc"]
     counts = data["counts"]
 
+    # Executive-PDF download icon for the top-bar — wired only when the
+    # caller supplied a path AND the file actually exists. Use a relative
+    # path so the rendered HTML is portable (analyst can copy the
+    # combined/ dir anywhere).
+    exec_link_html = ""
+    if executive_pdf_path is not None:
+        exec_pdf = Path(executive_pdf_path)
+        if exec_pdf.is_file():
+            try:
+                rel = exec_pdf.relative_to(out_path.parent)
+            except ValueError:
+                rel = exec_pdf
+            exec_link_html = (
+                f"<a href='{html.escape(str(rel))}' download "
+                "class='pdf-download' "
+                "title='Download the combined executive (non-expert) "
+                "report as PDF' "
+                "aria-label='Download combined executive PDF'>"
+                "<svg width='12' height='12' viewBox='0 0 16 16' "
+                "fill='currentColor' aria-hidden='true'>"
+                "<path d='M8 0a1 1 0 011 1v8.586l2.293-2.293a1 1 0 111.414 "
+                "1.414l-4 4a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L7 "
+                "9.586V1a1 1 0 011-1zM2 13a1 1 0 011 1v1h10v-1a1 1 0 "
+                "112 0v2a1 1 0 01-1 1H2a1 1 0 01-1-1v-2a1 1 0 011-1z'/>"
+                "</svg>Executive PDF</a>"
+            )
+
     body = f"""<!doctype html>
 <html lang="en"><head>
 <meta charset="utf-8">
@@ -1298,7 +1333,7 @@ def render_combined_html(
 <style>{_CSS}</style>
 </head><body>
 <header class="topbar">
-  <h1>EL Combined Report <span class="badge">{html.escape(name)}</span></h1>
+  <h1>EL Combined Report <span class="badge">{html.escape(name)}</span>{exec_link_html}</h1>
   <div class="meta">
     {counts['cases']} cases · {counts['findings']:,} findings
     ({counts['high']:,} high) · {counts['techniques']} ATT&amp;CK techniques ·
