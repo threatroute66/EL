@@ -191,6 +191,12 @@ def _h_insider_email_exfil(f: Finding) -> int:
 
 def _h_insider(f: Finding) -> int:
     s = 0
+    # Explicit tag from UserActivityAgent (memory-only project-access
+    # timeline) — Office MRU path resolves to a removable USB letter
+    # AND the path contains corporate-project fragments. Higher-fidelity
+    # than the keyword scorer below; tag-only finding still lifts.
+    if _has_tag("H_INSIDER_DATA_STAGING")(f):
+        s += 3
     # Filename-leak guard — pcap corpora occasionally include "exfil"
     # or "upload" in ground-truth labels; threat_hunter / triage claims
     # would echo them.

@@ -43,6 +43,7 @@ el/
 │   ├── base.py            # Agent ABC + AgentContext (case_id, case_dir, input_path, manifest, shared)
 │   ├── triage.py          # routing — sets ctx.shared['evidence_kind']
 │   ├── memory_forensicator.py     # vol3 plugins + hidden-process diff + PE-header + credential-access carve-out + process anomalies
+│   ├── user_activity.py           # chained after memory_forensicator on Windows — per-user Office MRU FILETIME timeline + drive-letter↔USB map + removable-staging detector (tags H_INSIDER_DATA_STAGING + H_INSIDER_DATA_EXFIL)
 │   ├── disk_forensicator.py       # ewfmount + mmls + per-partition fls + mactime + disk anomaly + NTFS mount + artifact extraction
 │   ├── windows_artifact.py        # auto-chained after disk extracts: MFTECmd, RECmd, AmcacheParser, EvtxECmd, etc.
 │   ├── network_analyst.py
@@ -66,6 +67,7 @@ el/
 │   ├── yara_hunt.py
 │   ├── dump_analysis.py   # ASCII + UTF-16LE strings extraction + structural fingerprints
 │   ├── memory_baseliner.py        # supports both image (-b) and JSON baselines; vol3-2.27 patched
+│   ├── user_activity_memory.py    # decodes Office MRU [F…][T<filetime>][O…]*path + MountedDevices ASCII column → drive-letter↔USB-serial map; corporate-staging detector (project fragment ∧ removable letter)
 │   ├── disk_anomaly.py    # 9 SKILL/MITRE-grounded path patterns
 │   └── (challengers/rules.py — adversarial review baseline)
 ├── intel/

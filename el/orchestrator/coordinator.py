@@ -38,6 +38,7 @@ from el.agents.malware_triage import MalwareTriageAgent
 from el.agents.windows_artifact import WindowsArtifactAgent
 from el.agents.memory_forensicator import MemoryForensicatorAgent
 from el.agents.network_analyst import NetworkAnalystAgent
+from el.agents.user_activity import UserActivityAgent
 from el.agents.red_reviewer import RedReviewerAgent
 from el.agents.threat_hunter import ThreatHunterAgent
 from el.agents.timeline_synthesist import TimelineSynthesistAgent
@@ -426,6 +427,13 @@ class Coordinator:
         # fls bodyfiles). Always run — it'll emit insufficient if neither
         # pool has anything to attribute.
         self._run_agent(MalwareTriageAgent(), ctx)
+
+        # UserActivity reconstructs the per-user project-access timeline
+        # from in-memory NTUSER hives (Office MRU FILETIMEs, TypedPaths,
+        # MountedDevices↔USB correlation). Self-gates to Windows memory;
+        # emits 'insufficient' on Linux / disk / cloud inputs.
+        if ctx.shared.get("mem_os") == "windows":
+            self._run_agent(UserActivityAgent(), ctx)
 
         # If DiskForensicator extracted Linux artifacts (ext2/3/4), chain
         # LinuxForensicatorAgent for the triage-detector sweep.
