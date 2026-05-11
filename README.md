@@ -83,9 +83,11 @@ flowchart TB
 
     INPUTS --> INTAKE --> TRIAGE --> COORD
 
-    subgraph AGENTS["27 specialist agents (one per evidence kind, chained as applicable)"]
+    subgraph AGENTS["29 specialist agents (one per evidence kind, chained as applicable)"]
         direction TB
         A_MEM["MemoryForensicator<br/>18 vol3 plugins + Baseliner<br/>+ MemProcFS FindEvil corroboration"]
+        A_USR["<b>UserActivityAgent</b><br/>Office MRU FILETIMEs + TypedPaths<br/>+ drive-letter↔USB map<br/>+ removable-staging detector"]
+        A_RDP["<b>RDPBruteForceAnalyst</b><br/>inbound :3389 from external IPs<br/>brute-force cluster + breach"]
         A_DISK["DiskForensicator<br/>Sleuth Kit + EWF + NTFS/ext4/APFS mount"]
         A_WIN["WindowsArtifactAgent<br/>11 EZ Tools + BAM/DAM + IE5 + XP .evt"]
         A_LIN["LinuxForensicator<br/>utmp/wtmp/btmp + systemd-journal +<br/>cron + SSH + Father rootkit + UAC mode"]
@@ -165,6 +167,8 @@ flowchart TB
 |---|---|
 | `Triage` | First-touch: hash, file-magic, evidence-kind classification, vol3 banner OS detection, directory-shape recognition (Windows-artifacts / Velociraptor / Android / iOS / macOS — mobile shapes detected by cheap `is_dir()` probes before the expensive filesystem walk) |
 | `MemoryForensicator` | Volatility 3 plugins (`pslist`, `psscan`, `pstree`, `cmdline`, `malfind --dump`, `netstat`, `netscan`, `dlllist`, `svcscan`, `modules`, `modscan`, `ldrmodules`, `handles`, `getsids`, `ssdt`, `driverirp`, `filescan`, `mftscan`); psscan-pslist hidden-process diff; modules-vs-modscan unlinked-driver diff; ldrmodules three-list reflective-injection diff; PE-header / process-anomaly detection; credential-access carve-out (lsass / winlogon / csrss); optional Memory Baseliner image-vs-image diff; **MemProcFS FindEvil corroboration** (mounts the image as a virtual FS, runs Ulf Frisk's built-in injection scanner — independent second tool satisfies Red Reviewer's single-tool challenger automatically) |
+| `UserActivityAgent` | Chains after MemoryForensicator on Windows. Reconstructs the per-user project-access timeline from in-memory NTUSER hives — Office MRU FILETIME decoder (`[F…][T<filetime>][O…]*path` REG_SZ values), TypedPaths (Explorer address-bar history), MountedDevices ASCII-column → drive-letter↔USB-serial map. **Removable-staging detector** flags Office-MRU paths that resolve to a USB drive letter AND contain corporate-project fragments — emits findings tagged `H_INSIDER_DATA_STAGING` + `H_INSIDER_DATA_EXFIL` (proves intentional collection, not accidental sync) |
+| `RDPBruteForceAnalyst` | Chains after UserActivityAgent on Windows. Walks the netscan JSONL the memory forensicator already produced; clusters inbound TCP/3389 connections per external (non-RFC1918) source IP with CLOSED / SYN_RCVD / ESTABLISHED breakdown. ≥10 connections per source = brute-force cluster (`H_BRUTE_FORCE`); ESTABLISHED > 0 = breach (separate Finding so attempted vs. authenticated edges are visible at a glance). Disjoint from `LateralMovementAnalyst` which scores RFC1918↔RFC1918 RDP |
 | `DiskForensicator` | Sleuth Kit (`mmls`, `fls`, `mactime`); EWF integrity verification + `ewfmount` + per-partition (and no-partition fallback) walk; NTFS mount + artifact extraction; ext4 mount; APFS mount via `fsapfsmount`; disk anomaly scoring (PsExec service binary, PyInstaller `_MEI` temp dirs, svchost/lsass outside System32, exe-in-Temp, non-MS scheduled tasks, mimikatz-named binaries, vssadmin shadow-copy deletion traces) |
 | `WindowsArtifactAgent` | Extracted-artifacts directory pipeline — auto-chained after DiskForensicator extracts: MFTECmd, RECmd-Kroll-batch, AmcacheParser, AppCompatCacheParser, PECmd, EvtxECmd, SrumECmd, SBECmd, JLECmd, LECmd, RBCmd, BAM/DAM registry subtree decoding, ActivitiesCache.db (Windows Timeline) parsing |
 | `LinuxForensicator` | Extracted Linux filesystem tree (ext4 mount or pre-extracted) — pulls `/etc`, `/var/log`, `/var/spool/cron`, per-user histories + SSH. 5 detectors: shell-history malicious (reverse shell / download cradle / base64 pipe / persistence / defense evasion / priv esc / credential access), `/etc/ld.so.preload`, auth-log failure burst, `authorized_keys` anomaly, cron suspicious. **Father-rootkit detection** (multi-directory LD_PRELOAD + magic GID + backdoor-port pattern matcher). Also accepts **UAC collection** evidence shape with the same detectors |
@@ -220,6 +224,8 @@ windows-artifacts, yara-hunting).
 | `memory_baseliner` | Memory Baseliner `-proc/-drv/-svc` comparisons; supports both image-vs-image (`-b <baseline.img>`) and JSON baseline workflows; auto-patched for vol3 ≥ 2.5 API |
 | `capa` / `floss` | `capa` rule-pack resolver + shellcode-mode dispatch + FLOSS decoded-string extraction — ATT&CK technique attribution on PE / shellcode dumps |
 | `bam_dam` / `win_timeline` | BAM/DAM registry subtree decoding via `regipy` + ActivitiesCache.db (Windows Timeline) via `sqlite3 ro=immutable` |
+| `user_activity_memory` | Office MRU FILETIME decoder (`[F…][T<filetime>][O…]*path` REG_SZ in `Software\Microsoft\Office\<ver>\<App>\User MRU\<acct>\File MRU`) + MountedDevices REG_BINARY hex-ASCII column reassembly + USBSTOR vendor/product/serial regex. Joins drive letters to physical USB devices, decodes per-file last-open timestamps tied to Microsoft account identities (ADAL/LiveId), surfaces corporate-project paths on removable media as a staging signal |
+| `rdp_brute_force` | Walks vol3 netscan JSONL for inbound TCP/3389 from external IPs, clusters per source-IP with CLOSED / SYN_RCVD / ESTABLISHED breakdown. Threshold of 10 connections/source separates brute-force from port-scan noise; ESTABLISHED > 0 = breach. RFC1918 source filter so internal lateral-movement RDP is left to `lateral_movement_analyst` |
 | `linux_artifacts` / `linux_triage` | Extract + detect on Linux filesystem trees — 5 detectors keyed on the Linux pattern library (reverse shell / download cradle / base64 pipe / persistence / defense evasion / priv esc / credential access) |
 | `macos_artifacts` / `macos_triage` | Extract + detect on macOS filesystem trees — 4 detectors on LaunchAgents, Quarantine events, Safari downloads, shell history (delegates to Linux library) |
 | `android_artifacts` / `android_triage` | Extract + detect on Android filesystem trees — 4 detectors (rooted device, sideloaded APK, `/data/local/tmp` staging, messenger presence) |
@@ -411,6 +417,26 @@ export EL_OPENCTI_TOKEN=<opencti-api-token>
 export EL_MISP_URL=https://misp.internal.lab
 export EL_MISP_KEY=<misp-api-key>
 # (export EL_MISP_VERIFY=0 to disable TLS verification for self-signed)
+
+# AI executive brief — the executive HTML/PDF carries an AI-generated
+# six-section brief above the deterministic Findings (what_happened /
+# what_was_taken / where_it_went / when_timeline / risk_implications /
+# confidence_and_limits). Two auth paths:
+#
+#  Path 1 — direct API:
+export ANTHROPIC_API_KEY=sk-ant-...                  # console.anthropic.com
+el investigate /cases/<input>                         # brief renders inline
+#
+#  Path 2 — defer to Claude Code (no API key required):
+el investigate /cases/<input> --defer-ai-brief        # writes request file
+# then in a Claude Code session:
+#   /el-ai-brief                                       # skill fulfils request,
+                                                       # re-renders HTML+PDF
+#
+# Without either path, the deterministic single-paragraph digest renders.
+# The AI brief is non-court-admissible; the Findings, Conclusion, and
+# Recommendations sections of the report stay deterministic projections
+# of findings.sqlite either way.
 ```
 
 Each case workspace lives at `cases/<case_id>/`:
