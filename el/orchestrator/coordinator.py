@@ -38,6 +38,7 @@ from el.agents.malware_triage import MalwareTriageAgent
 from el.agents.windows_artifact import WindowsArtifactAgent
 from el.agents.memory_forensicator import MemoryForensicatorAgent
 from el.agents.network_analyst import NetworkAnalystAgent
+from el.agents.rdp_brute_force import RDPBruteForceAnalyst
 from el.agents.user_activity import UserActivityAgent
 from el.agents.red_reviewer import RedReviewerAgent
 from el.agents.threat_hunter import ThreatHunterAgent
@@ -434,6 +435,12 @@ class Coordinator:
         # emits 'insufficient' on Linux / disk / cloud inputs.
         if ctx.shared.get("mem_os") == "windows":
             self._run_agent(UserActivityAgent(), ctx)
+            # External-RDP brute-force pattern from the netscan JSONL
+            # the memory forensicator already produced. Disjoint from
+            # lateral_movement_analyst (which scores RFC1918 → RFC1918
+            # RDP); this scores public-internet → host RDP attempts +
+            # ESTABLISHED breaches.
+            self._run_agent(RDPBruteForceAnalyst(), ctx)
 
         # If DiskForensicator extracted Linux artifacts (ext2/3/4), chain
         # LinuxForensicatorAgent for the triage-detector sweep.
