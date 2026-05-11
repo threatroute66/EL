@@ -341,9 +341,17 @@ def report_cmd(
     regenerate_ai_summary: bool = typer.Option(
         False, "--regenerate-ai-summary",
         help="Force regeneration of the AI-generated executive "
-             "summary (gated on ANTHROPIC_API_KEY). Default uses the "
-             "cached summary at reports/executive_ai_summary.md when "
-             "the underlying findings haven't changed."),
+             "brief (gated on ANTHROPIC_API_KEY OR on the deferred "
+             "path via --defer-ai-brief). Default uses the cached "
+             "brief at reports/executive_ai_brief.json when the "
+             "underlying findings haven't changed."),
+    defer_ai_brief: bool = typer.Option(
+        False, "--defer-ai-brief",
+        help="When ANTHROPIC_API_KEY is absent, write a request file "
+             "(reports/_ai_brief_request.json) and let the Claude Code "
+             "`el-ai-brief` skill fulfil it out-of-band. The next "
+             "render picks up the cached response. Equivalent to "
+             "exporting EL_AI_BRIEF_DEFER=1 for this run."),
     watch: bool = typer.Option(
         False, "--watch",
         help="Re-render whenever findings.sqlite changes; run until "
@@ -363,6 +371,11 @@ def report_cmd(
     if not (cd / "manifest.json").exists():
         console.print(f"[red]not a case directory: missing manifest.json[/red]")
         raise typer.Exit(2)
+
+    if defer_ai_brief:
+        import os as _os
+        from el.reporting.executive_ai import DEFER_ENV as _DEFER_ENV
+        _os.environ[_DEFER_ENV] = "1"
 
     _render_case_once(cd, html=html, executive=executive, pdf=pdf,
                        regenerate_ai_summary=regenerate_ai_summary)
@@ -829,8 +842,19 @@ def investigate(
     incident_date: str = typer.Option(None, "--incident-date",
                                        help="ISO date (YYYY-MM-DD) when the incident is believed to "
                                             "have occurred, if known."),
+    defer_ai_brief: bool = typer.Option(
+        False, "--defer-ai-brief",
+        help="When ANTHROPIC_API_KEY is absent, write a request file "
+             "(reports/_ai_brief_request.json) at REPORT time and let "
+             "the Claude Code `el-ai-brief` skill fulfil it out-of-band. "
+             "On completion the CLI prints how to invoke the skill. "
+             "Equivalent to exporting EL_AI_BRIEF_DEFER=1 for this run."),
 ) -> None:
     """Run the EL coordinator end-to-end on an evidence file."""
+    if defer_ai_brief:
+        import os as _os
+        from el.reporting.executive_ai import DEFER_ENV as _DEFER_ENV
+        _os.environ[_DEFER_ENV] = "1"
     result = Coordinator(run_timeline=timeline,
                          memory_baseline=baseline).investigate(input_path, case_id=case_id)
     if any([investigator, objective, case_number, incident_date]):
@@ -856,6 +880,41 @@ def investigate(
     if result.final_state == State.BLOCKED:
         console.print("[yellow]final state is BLOCKED — adversarial review left findings unresolved; "
                       "see report for the disconfirming-evidence checklist.[/yellow]")
+    _notify_pending_ai_brief(result.case_dir)
+
+
+def _notify_pending_ai_brief(case_dir: str | Path) -> None:
+    """Print an end-of-run notification when an AI-brief request file
+    is sitting on disk waiting to be fulfilled.
+
+    Two readers in mind:
+      1. **Inside Claude Code** — tell them to run `/el-ai-brief`;
+         the skill picks the request up, generates the six-section
+         brief using Claude Code's own auth, re-renders the report.
+      2. **Outside Claude Code** — the same file is still actionable:
+         a user can hand it to any AI / scripted responder that
+         respects the schema. We surface the path either way.
+
+    Silent when no request file is present. The file only exists
+    when `EL_AI_BRIEF_DEFER=1` (or `el report --defer-ai-brief`)
+    fired AND `ANTHROPIC_API_KEY` was absent — so this notification
+    appears exactly when the operator has opted into the deferred
+    path and there's actually work waiting.
+    """
+    from el.reporting.executive_ai import _REQUEST_FILENAME
+    req = Path(case_dir) / "reports" / _REQUEST_FILENAME
+    if not req.is_file():
+        return
+    console.print()
+    console.print(
+        "[cyan]Pending AI executive brief[/cyan] — the deterministic "
+        "digest is in your report now; the six-section AI brief is "
+        "deferred to a Claude Code skill.\n"
+        f"  Request file: [bold]{req}[/bold]\n"
+        "  To fulfil it: run [bold]/el-ai-brief[/bold] inside a "
+        "Claude Code session. The skill will generate the brief, "
+        "re-render the executive HTML+PDF, and delete the request file."
+    )
 
 
 def _parse_device_spec(spec: str) -> tuple[str, str]:
@@ -990,6 +1049,8 @@ def investigate_bundle_cmd(
     except Exception as e:
         console.print(
             f"[yellow]bundle report render failed: {e}[/yellow]")
+
+    _notify_pending_ai_brief(bundle_dir)
 
     # Bundle-level seal — covers everything under cases/<bundle>/,
     # including per-device subcases (which skipped their own seal

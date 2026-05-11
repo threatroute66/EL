@@ -44,6 +44,7 @@ el/
 │   ├── triage.py          # routing — sets ctx.shared['evidence_kind']
 │   ├── memory_forensicator.py     # vol3 plugins + hidden-process diff + PE-header + credential-access carve-out + process anomalies
 │   ├── user_activity.py           # chained after memory_forensicator on Windows — per-user Office MRU FILETIME timeline + drive-letter↔USB map + removable-staging detector (tags H_INSIDER_DATA_STAGING + H_INSIDER_DATA_EXFIL)
+│   ├── rdp_brute_force.py         # chained after memory_forensicator on Windows — inbound TCP/3389 brute-force pattern from external IPs with CLOSED→SYN_RCVD→ESTABLISHED ladder; tags H_BRUTE_FORCE; disjoint from lateral_movement_analyst (which scores RFC1918↔RFC1918 RDP)
 │   ├── disk_forensicator.py       # ewfmount + mmls + per-partition fls + mactime + disk anomaly + NTFS mount + artifact extraction
 │   ├── windows_artifact.py        # auto-chained after disk extracts: MFTECmd, RECmd, AmcacheParser, EvtxECmd, etc.
 │   ├── network_analyst.py
@@ -68,6 +69,7 @@ el/
 │   ├── dump_analysis.py   # ASCII + UTF-16LE strings extraction + structural fingerprints
 │   ├── memory_baseliner.py        # supports both image (-b) and JSON baselines; vol3-2.27 patched
 │   ├── user_activity_memory.py    # decodes Office MRU [F…][T<filetime>][O…]*path + MountedDevices ASCII column → drive-letter↔USB-serial map; corporate-staging detector (project fragment ∧ removable letter)
+│   ├── rdp_brute_force.py         # walks vol3 netscan JSONL for inbound TCP/3389 from external IPs, clusters per source-IP with CLOSED/SYN_RCVD/ESTABLISHED breakdown; threshold=10 connections/source for a brute-force cluster, ESTABLISHED>0 = breach
 │   ├── disk_anomaly.py    # 9 SKILL/MITRE-grounded path patterns
 │   └── (challengers/rules.py — adversarial review baseline)
 ├── intel/
@@ -86,7 +88,8 @@ el/
 │   ├── render.py          # Markdown report rendering (deterministic projection)
 │   ├── html.py            # Self-contained case.html web view generation
 │   ├── combined_html.py   # Multi-case combined.html dashboard
-│   ├── executive.py       # Executive-level HTML reports
+│   ├── executive.py       # Executive-level HTML reports — when ANTHROPIC_API_KEY is set, renders a 6-section AI-generated brief (schema_version=2) above the deterministic Findings; otherwise falls back to the deterministic digest
+│   ├── executive_ai.py    # ExecutiveBrief schema (Pydantic) + JSON-validated LLM call producing what_happened / what_was_taken / where_it_went / when_timeline / risk_implications / confidence_and_limits; cached at reports/executive_ai_brief.json keyed by (schema_version, case_id, leading_hypothesis, finding_ids). When ANTHROPIC_API_KEY is absent + EL_AI_BRIEF_DEFER=1 (or `el report --defer-ai-brief`), writes reports/_ai_brief_request.json for the .claude/skills/el-ai-brief/ skill to fulfil out-of-band — the response lands in the same cache file the renderer already consumes
 │   ├── executive_pdf.py   # PDF report generation
 │   └── stix.py            # STIX 2.1 bundle emission
 ├── schemas/

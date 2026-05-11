@@ -1,4 +1,4 @@
-"""AI-generated executive-summary prose for the non-expert report tier.
+"""AI-generated executive brief for the non-expert report tier.
 
 The deterministic projection (synthesize_executive in narrative.py)
 produces a structurally correct digest, but on real cases it leaks
@@ -7,23 +7,42 @@ beat sentences quote raw findings prose, and even with the glossary
 the reader can tell it was machine-templated.
 
 For the executive HTML/PDF — which is explicitly NOT court-admissible
-per the project agreement — an LLM-rendered prose summary is a better
-fit for the audience. The analyst report (case.html, report.md) and
-all sections AFTER the summary stay deterministic projections of
+per the project agreement — an LLM-rendered structured brief is a
+better fit for the audience. The analyst report (case.html, report.md)
+and all sections AFTER the brief stay deterministic projections of
 findings.sqlite; only this single section uses the LLM.
+
+What the LLM produces (schema_version=2):
+
+  An ``ExecutiveBrief`` with six sections, each a markdown blob the
+  renderer turns into HTML. The schema is enforced server-side (the
+  LLM is asked for strict JSON; we json-load + Pydantic-validate);
+  if any single section is missing or empty we throw the whole
+  payload away and the deterministic digest renders instead — no
+  half-rendered briefs.
+
+  1. ``what_happened``         — 1-2 plain-English paragraphs
+  2. ``what_was_taken``        — markdown bullet list of confirmed loss
+  3. ``where_it_went``         — markdown table (channel | destination | evidence)
+  4. ``when_timeline``         — markdown table (date | window | what)
+  5. ``risk_implications``     — numbered list, executive-tier framing
+  6. ``confidence_and_limits`` — explicit "what memory cannot prove"
 
 Forensic discipline that survives the LLM hop:
   * The LLM gets only the structured Finding payload (claim, confidence,
     evidence facts) — never the raw evidence files, never the case
-    metadata, never anything that isn't already in the ledger.
-  * Output is capped at ~250 words, single paragraph, plain language.
-  * Output is cached at reports/executive_ai_summary.md with a sha256
-    cache key over (case_id, leading_hypothesis, sorted finding_ids)
-    so re-renders are deterministic unless the underlying ledger
-    changed or the operator passed --regenerate-ai-summary.
+    metadata beyond what the operator typed in.
+  * Output is JSON-validated. Schema mismatch ⇒ deterministic fallback,
+    not silent half-renders.
+  * Output is cached at reports/executive_ai_brief.json with a sha256
+    cache key over (schema_version, case_id, leading_hypothesis,
+    sorted finding_ids) so re-renders are deterministic unless the
+    underlying ledger changed or the operator passed
+    ``--regenerate-ai-summary``.
   * The renderer that consumes this output stamps a non-removable
-    disclaimer label so a reader of the document can't mistake the
-    AI prose for the deterministic Findings section.
+    disclaimer banner ABOVE the brief and a per-section AI chip on
+    each rendered section so a reader can't mistake the AI prose for
+    the deterministic Findings section.
 
 Falls back cleanly when the API key is absent — returns None and
 the renderer falls back to the deterministic digest.
@@ -33,27 +52,118 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-import re
 from datetime import datetime, timezone
 from pathlib import Path
+
+from pydantic import BaseModel, Field, ValidationError
 
 from el.case_metadata import CaseMetadata
 from el.reporting.narrative import NarrativeReport
 from el.schemas.finding import Finding
 
 
-_CACHE_FILENAME = "executive_ai_summary.md"
+# ----- Cache + schema constants ---------------------------------------------
+
+# Bumped from 1 → 2 when the contract changed from a single-paragraph
+# string to the six-section ExecutiveBrief. Bumping invalidates every
+# cache file from the previous schema (different cache key bytes →
+# different sha256 → cache miss → re-render under the new schema).
+SCHEMA_VERSION = 2
+
+_CACHE_FILENAME = "executive_ai_brief.json"
+_LEGACY_CACHE_FILENAME = "executive_ai_summary.md"   # schema_version=1
+_REQUEST_FILENAME = "_ai_brief_request.json"
 _DEFAULT_MODEL = os.environ.get("EL_AI_SUMMARY_MODEL", "claude-sonnet-4-6")
-_MAX_TOKENS = 600   # ~450 words ceiling; we ask for ~250 so this is slack.
+# When this env var is set ("1"/"true"/"yes") AND ANTHROPIC_API_KEY is
+# absent, synthesize_executive_ai writes a request file under
+# reports/_ai_brief_request.json instead of returning None silently.
+# The Claude Code skill `el-ai-brief` then fulfils the request on
+# behalf of the user, writing the response back to the standard
+# cache file (executive_ai_brief.json) which the renderer already
+# consumes. See .claude/skills/el-ai-brief/SKILL.md.
+DEFER_ENV = "EL_AI_BRIEF_DEFER"
+# Six sections × ~150 words each + JSON envelope overhead. Generous
+# slack so a verbose case doesn't truncate mid-table-row.
+_MAX_TOKENS = 4000
+
+
+# ----- ExecutiveBrief schema ------------------------------------------------
+
+class ExecutiveBrief(BaseModel):
+    """Six-section non-expert brief. Every field is markdown the
+    renderer turns into HTML. Empty fields are rejected by the
+    validator below so a partial brief never reaches the renderer.
+    """
+
+    schema_version: int = SCHEMA_VERSION
+    what_happened: str = Field(
+        description="1-2 plain-English paragraphs explaining what occurred. "
+                    "No ATT&CK IDs, no hypothesis tags, no agent names.",
+    )
+    what_was_taken: str = Field(
+        description="Markdown bullet list of confirmed data loss. Each "
+                    "bullet names a project / file / artifact and the "
+                    "confidence level in plain words.",
+    )
+    where_it_went: str = Field(
+        description="Markdown table with columns: Channel, Destination, "
+                    "Evidence. List each transfer destination on its own "
+                    "row. Use 'plausible' / 'confirmed' in the Evidence "
+                    "column.",
+    )
+    when_timeline: str = Field(
+        description="Markdown table with columns: Date (UTC), Window, "
+                    "What. Chronological. Highlight the exfiltration "
+                    "window and any concurrent threat-actor activity.",
+    )
+    risk_implications: str = Field(
+        description="Numbered markdown list of executive-tier risk "
+                    "implications. Each item ≤ 2 sentences. No DFIR "
+                    "jargon.",
+    )
+    confidence_and_limits: str = Field(
+        description="One paragraph explicitly naming what the memory "
+                    "image cannot prove and what disk-side artifacts "
+                    "would close those gaps.",
+    )
+
+    def reject_empty_sections(self) -> None:
+        """Raise ValueError if any section field is empty / whitespace.
+
+        Called separately from Pydantic validation so the LLM-side
+        validator can produce a single combined error message instead
+        of Pydantic's per-field one.
+        """
+        empty = [name for name, val in self.model_dump(
+            exclude={"schema_version"}).items() if not (val or "").strip()]
+        if empty:
+            raise ValueError(
+                f"ExecutiveBrief rejected — empty section(s): "
+                f"{', '.join(empty)}"
+            )
+
+
+# ----- LLM payload + prompt -------------------------------------------------
 
 _SYSTEM_PROMPT = (
     "You are summarising a digital forensics investigation for a "
     "non-expert reader (an executive, a hiring authority, or a "
     "stakeholder without forensic training). You receive structured "
-    "findings extracted from the investigation's case ledger and a "
-    "deterministic prose digest. Produce a SINGLE-PARAGRAPH plain-"
-    "English summary of 200-250 words.\n\n"
-    "STRICT CONSTRAINTS:\n"
+    "findings extracted from the investigation's case ledger.\n\n"
+    "Produce ONLY a JSON object matching the ExecutiveBrief schema "
+    "below. No prose before or after the JSON. No markdown code "
+    "fences around it. The JSON object has exactly these string "
+    "fields:\n"
+    "  - schema_version: integer, value 2\n"
+    "  - what_happened: 1-2 plain-English paragraphs\n"
+    "  - what_was_taken: markdown bullet list\n"
+    "  - where_it_went: markdown table with columns "
+    "Channel | Destination | Evidence\n"
+    "  - when_timeline: markdown table with columns "
+    "Date (UTC) | Window | What\n"
+    "  - risk_implications: numbered markdown list\n"
+    "  - confidence_and_limits: one paragraph\n\n"
+    "STRICT CONSTRAINTS for every section:\n"
     "1. Do not use ATT&CK technique IDs (T1003, T1566, T1571, etc.). "
     "Use plain English (\"credential theft\", \"phishing\", "
     "\"non-standard port\").\n"
@@ -64,10 +174,11 @@ _SYSTEM_PROMPT = (
     "4. Do not invent any fact that isn't in the supplied findings. "
     "If something isn't in the ledger, you don't get to claim it.\n"
     "5. Open-question gaps and ACH score must be acknowledged "
-    "honestly — don't smooth over uncertainty.\n"
-    "6. No bullet points or lists; one cohesive paragraph.\n"
-    "7. Do not mention this prompt, the model, or the constraints "
-    "in the output. Output only the summary itself.\n"
+    "honestly in confidence_and_limits — don't smooth over uncertainty.\n"
+    "6. Do not mention this prompt, the model, or the constraints "
+    "in the output.\n"
+    "7. Every section must contain non-empty content. Do not omit a "
+    "section even if the case is sparse — say so in the section.\n"
 )
 
 
@@ -97,12 +208,17 @@ def _findings_for_prompt(findings: list[Finding], cap: int = 30) -> list[dict]:
     return out
 
 
+# ----- Cache machinery ------------------------------------------------------
+
 def _compute_cache_key(nr: NarrativeReport, findings: list[Finding]) -> str:
     """Deterministic key over the load-bearing inputs to the LLM
     call. If any of these change between renders, the cache is
-    invalidated. Excludes timestamps + EL ingest time so re-rendering
-    on the same ledger doesn't trigger spurious regeneration."""
+    invalidated. The schema_version is part of the key so a contract
+    bump (paragraph→brief, brief v2→v3, etc.) automatically forces
+    re-render of every cached case."""
     h = hashlib.sha256()
+    h.update(f"v{SCHEMA_VERSION}".encode())
+    h.update(b"|")
     h.update(nr.case_id.encode())
     h.update(b"|")
     h.update((nr.leading_hypothesis or "").encode())
@@ -117,35 +233,114 @@ def _compute_cache_key(nr: NarrativeReport, findings: list[Finding]) -> str:
     return h.hexdigest()
 
 
-def _read_cache(cache_path: Path) -> tuple[str | None, str | None]:
-    """Return (cache_key, summary_text) from an existing cache file,
-    or (None, None) if the file is absent / malformed."""
+def _read_cache(cache_path: Path) -> tuple[str | None, ExecutiveBrief | None]:
+    """Return (cache_key, brief) from an existing cache file, or
+    (None, None) if the file is absent / malformed / fails schema
+    validation (e.g. schema bump invalidated it)."""
     if not cache_path.exists():
         return None, None
     try:
-        text = cache_path.read_text()
-    except OSError:
+        payload = json.loads(cache_path.read_text())
+    except (OSError, json.JSONDecodeError):
         return None, None
-    m = re.match(r"<!-- ai-cache-key: ([0-9a-f]{64}) -->", text)
-    if not m:
+    cache_key = payload.get("__cache_key")
+    brief_dict = payload.get("brief")
+    if not cache_key or not isinstance(brief_dict, dict):
         return None, None
-    cache_key = m.group(1)
-    # Body is everything after the metadata header lines
-    body_start = text.find("\n\n")
-    body = text[body_start + 2:].strip() if body_start > 0 else ""
-    return cache_key, body
+    try:
+        brief = ExecutiveBrief.model_validate(brief_dict)
+        brief.reject_empty_sections()
+    except (ValidationError, ValueError):
+        return None, None
+    return cache_key, brief
 
 
-def _write_cache(cache_path: Path, cache_key: str, summary: str,
-                  model: str) -> None:
+def _write_cache(cache_path: Path, cache_key: str,
+                  brief: ExecutiveBrief, model: str) -> None:
     cache_path.parent.mkdir(parents=True, exist_ok=True)
-    header = (
-        f"<!-- ai-cache-key: {cache_key} -->\n"
-        f"<!-- model: {model} -->\n"
-        f"<!-- generated_utc: {datetime.now(timezone.utc).isoformat()} -->\n"
-    )
-    cache_path.write_text(f"{header}\n{summary.strip()}\n")
+    payload = {
+        "__cache_key": cache_key,
+        "__model": model,
+        "__generated_utc": datetime.now(timezone.utc).isoformat(),
+        "brief": brief.model_dump(),
+    }
+    cache_path.write_text(json.dumps(payload, indent=2))
 
+
+def _defer_enabled() -> bool:
+    val = (os.environ.get(DEFER_ENV) or "").strip().lower()
+    return val in {"1", "true", "yes", "on"}
+
+
+def _write_request_file(reports_dir: Path, cache_key: str,
+                          context: dict, output_path: Path) -> Path:
+    """Emit the request payload the Claude Code skill consumes.
+
+    The schema is deliberately self-describing — the system prompt
+    and the cache key both ride along — so the skill never has to
+    import any EL Python code. The skill's contract: produce a
+    response file at ``output_path`` whose ``__cache_key`` matches
+    ``cache_key``, then delete this request file.
+    """
+    reports_dir.mkdir(parents=True, exist_ok=True)
+    request_path = reports_dir / _REQUEST_FILENAME
+    payload = {
+        "request_version": 1,
+        "cache_key": cache_key,
+        "schema_version": SCHEMA_VERSION,
+        "output_path": str(output_path),
+        "model_hint": _DEFAULT_MODEL,
+        "system_prompt": _SYSTEM_PROMPT,
+        "context": context,
+        "instructions_for_responder": (
+            "Generate a JSON object matching the ExecutiveBrief "
+            "schema (six string fields plus schema_version). Write "
+            "it to `output_path` wrapped in the cache envelope "
+            "{__cache_key, __model, __generated_utc, brief}. Then "
+            "delete this request file. The `el-ai-brief` skill in "
+            ".claude/skills/ has the full procedure."
+        ),
+        "generated_utc": datetime.now(timezone.utc).isoformat(),
+    }
+    request_path.write_text(json.dumps(payload, indent=2))
+    return request_path
+
+
+# ----- LLM response parsing -------------------------------------------------
+
+def _strip_codefence(text: str) -> str:
+    """Some models still wrap JSON in ```json … ``` despite instructions.
+    Trim that without trying to be clever — first/last ``` lines only."""
+    s = text.strip()
+    if s.startswith("```"):
+        # drop the opening fence line + optional language tag
+        s = s.split("\n", 1)[1] if "\n" in s else ""
+    if s.endswith("```"):
+        s = s.rsplit("\n", 1)[0] if "\n" in s else ""
+    return s.strip()
+
+
+def _parse_brief(text: str) -> ExecutiveBrief | None:
+    """Return a validated ExecutiveBrief or None on any parse / schema
+    failure. Defensive: malformed payloads must not surface to the
+    renderer — better the deterministic fallback than a half-rendered
+    brief.
+    """
+    try:
+        data = json.loads(_strip_codefence(text))
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(data, dict):
+        return None
+    try:
+        brief = ExecutiveBrief.model_validate(data)
+        brief.reject_empty_sections()
+    except (ValidationError, ValueError):
+        return None
+    return brief
+
+
+# ----- Public entry point ---------------------------------------------------
 
 def synthesize_executive_ai(
     nr: NarrativeReport,
@@ -154,36 +349,49 @@ def synthesize_executive_ai(
     case_metadata: CaseMetadata | None = None,
     regenerate: bool = False,
     model: str | None = None,
-) -> tuple[str, dict] | None:
-    """Generate a non-expert-grade executive summary via the
-    Anthropic API. Returns (summary_text, metadata) or None when:
-      * ANTHROPIC_API_KEY is not set
-      * anthropic SDK is not importable
+) -> tuple[ExecutiveBrief, dict] | None:
+    """Produce a non-expert-grade executive brief. Returns
+    (brief, metadata) or None.
+
+    Three auth paths, in order of preference:
+
+      1. **Cache hit** — if reports/executive_ai_brief.json already
+         carries the matching cache key, return it (skips network + LLM).
+         A previous run, OR the Claude Code skill from path 3, may
+         have populated it.
+
+      2. **Direct API** — if ``ANTHROPIC_API_KEY`` is set and the
+         ``anthropic`` SDK is importable, call the API directly.
+
+      3. **Defer to Claude Code** — if ``EL_AI_BRIEF_DEFER`` is set
+         AND there's no API key, write a request file to
+         reports/_ai_brief_request.json and return None. The
+         ``el-ai-brief`` skill in .claude/skills/ then fulfils it
+         out-of-band; the next render picks up the cache hit (path 1).
+
+    Returns None when:
+      * No API key AND defer is disabled
+      * anthropic SDK missing (with API key set)
       * The API call fails for any reason
-
-    Cached at <case_dir>/reports/executive_ai_summary.md. Cache hits
-    skip the API call entirely.
+      * The model returns malformed JSON or a brief that fails
+        schema validation (any empty section)
     """
-    api_key = os.environ.get("ANTHROPIC_API_KEY")
-    if not api_key:
-        return None
-    try:
-        import anthropic
-    except ImportError:
-        return None
-
     cache_path = Path(case_dir) / "reports" / _CACHE_FILENAME
+    reports_dir = cache_path.parent
     desired_key = _compute_cache_key(nr, findings)
+
+    # Path 1: cache check — runs first, regardless of auth posture.
     if not regenerate:
-        existing_key, existing_body = _read_cache(cache_path)
-        if existing_key == desired_key and existing_body:
-            return existing_body, {
+        existing_key, existing_brief = _read_cache(cache_path)
+        if existing_key == desired_key and existing_brief is not None:
+            return existing_brief, {
                 "model": model or _DEFAULT_MODEL,
                 "cache": "hit", "cache_key": desired_key,
                 "cache_path": str(cache_path),
             }
 
-    # Build the user-message context — small enough for a fast call.
+    # Build context payload once — both the API path and the defer
+    # path send the same dict.
     plain_leading = nr.leading_hypothesis or "no leading theory"
     context = {
         "case_id": nr.case_id,
@@ -207,6 +415,24 @@ def synthesize_executive_ai(
         ],
     }
 
+    api_key = os.environ.get("ANTHROPIC_API_KEY")
+
+    # Path 3: defer to Claude Code skill. Triggered when caller opted
+    # in via EL_AI_BRIEF_DEFER AND no API key is available. Writing
+    # the request file does NOT promise the brief will appear in this
+    # render — the renderer will fall back to the deterministic
+    # digest. The brief lands on the NEXT render once the skill has
+    # populated executive_ai_brief.json.
+    if not api_key:
+        if _defer_enabled():
+            _write_request_file(reports_dir, desired_key, context, cache_path)
+        return None
+
+    # Path 2: direct API.
+    try:
+        import anthropic
+    except ImportError:
+        return None
     client = anthropic.Anthropic(api_key=api_key)
     chosen = model or _DEFAULT_MODEL
     try:
@@ -223,11 +449,12 @@ def synthesize_executive_ai(
     except Exception:
         return None
 
-    if not text:
+    brief = _parse_brief(text)
+    if brief is None:
         return None
 
-    _write_cache(cache_path, desired_key, text, chosen)
-    return text, {
+    _write_cache(cache_path, desired_key, brief, chosen)
+    return brief, {
         "model": chosen,
         "cache": "miss",
         "cache_key": desired_key,
@@ -236,16 +463,25 @@ def synthesize_executive_ai(
 
 
 # Disclaimer string the renderer is required to display alongside the
-# AI summary. Hard-coded here so a renderer change can't drop the
+# AI brief. Hard-coded here so a renderer change can't drop the
 # disclaimer; the test for the disclaimer label imports this constant.
 DISCLAIMER_LABEL = (
-    "AI-generated summary — not court-admissible. The Findings, "
+    "AI-generated executive brief — not court-admissible. The Findings, "
     "Conclusion, and Recommendations sections below are deterministic "
     "projections of the analyst ledger."
 )
 
+# Per-section chip text rendered next to each section header so a
+# reader scanning a single section still sees the AI provenance.
+SECTION_AI_CHIP = "AI-rendered"
+
 
 __all__ = [
     "synthesize_executive_ai",
+    "ExecutiveBrief",
+    "SCHEMA_VERSION",
     "DISCLAIMER_LABEL",
+    "SECTION_AI_CHIP",
+    "DEFER_ENV",
+    "_REQUEST_FILENAME",
 ]

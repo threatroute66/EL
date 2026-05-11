@@ -94,6 +94,28 @@ table.kv td.k { width: 30%; color: #555; font-weight: 600; }
   font-family: "Helvetica Neue", Arial, sans-serif;
 }
 .ai-meta code { font-family: "Courier New", monospace; color: #555; }
+.ai-brief section.ai-section { margin: 14pt 0 6pt 0; }
+.ai-brief section.ai-section h3 {
+  font-size: 12pt; margin: 0 0 6pt 0; color: #14213d;
+  display: flex; align-items: center; gap: 8pt;
+}
+.ai-brief section.ai-section table {
+  border-collapse: collapse; margin: 6pt 0; font-size: 9.5pt; width: 100%;
+}
+.ai-brief section.ai-section th,
+.ai-brief section.ai-section td {
+  border: 1px solid #ddd; padding: 4pt 7pt; text-align: left; vertical-align: top;
+}
+.ai-brief section.ai-section th { background: #ebeef3; font-weight: 600; }
+.ai-brief section.ai-section ol,
+.ai-brief section.ai-section ul { margin: 4pt 0 4pt 18pt; }
+.ai-brief section.ai-section p { margin: 4pt 0; }
+.ai-chip {
+  display: inline-block; padding: 1pt 6pt;
+  font-size: 8pt; font-weight: 600; border-radius: 3pt;
+  background: #fff8e1; color: #5b4400; border: 1px dashed #d4a017;
+  text-transform: uppercase; letter-spacing: 0.4pt;
+}
 .confidence-tag {
   display: inline-block; padding: 1pt 8pt;
   font-size: 9pt; font-weight: 600; border-radius: 3pt;
@@ -278,47 +300,28 @@ def _render_objective(meta: CaseMetadata) -> str:
 
 
 def _render_executive_summary(digest: ExecutiveDigest, score: int, gap: int,
-                                ai_summary: str | None = None,
+                                ai_brief=None,
                                 ai_metadata: dict | None = None) -> str:
     """Render the Executive Summary section.
 
-    When `ai_summary` is supplied (Phase 10), the AI prose replaces
-    the deterministic digest in the visible body and the section
-    carries a non-removable disclaimer (DISCLAIMER_LABEL from
-    el.reporting.executive_ai). The deterministic digest still feeds
-    the confidence tag so the colour-coded badge stays grounded in
-    the ACH score, not LLM judgement.
+    When `ai_brief` is an ``ExecutiveBrief`` (Phase 10 / schema_version=2),
+    the brief's six sections render under the section header with a
+    non-removable disclaimer banner above them and a per-section
+    "AI-rendered" chip. The deterministic digest still feeds the
+    confidence tag so the colour-coded badge stays grounded in the
+    ACH score, not LLM judgement.
 
-    When `ai_summary` is None (no API key, API call failed, or
-    operator disabled it), the deterministic digest renders as
-    before and a small note explains the AI-summary is unavailable —
-    no silent feature loss.
+    When `ai_brief` is None (no API key, API call failed, model
+    returned malformed JSON, or operator disabled it), the
+    deterministic digest renders as before — no silent feature loss.
     """
     tag = _confidence_tag(score, gap)
     tag_label = {"strong": "Strong evidence",
                  "moderate": "Moderate evidence",
                  "preliminary": "Preliminary",
                  "thin": "Inconclusive"}[tag]
-    if ai_summary:
-        from el.reporting.executive_ai import DISCLAIMER_LABEL
-        cache_status = (ai_metadata or {}).get("cache", "")
-        model = (ai_metadata or {}).get("model", "")
-        meta_line = ""
-        if model:
-            meta_line = (f"<div class='ai-meta'>Model: "
-                         f"<code>{_e(model)}</code> · "
-                         f"cache: {_e(cache_status)}</div>")
-        return (
-            "<h2>Executive Summary</h2>"
-            f"<div class='ai-disclaimer' role='note'>"
-            f"<strong>{_e(DISCLAIMER_LABEL)}</strong>"
-            f"</div>"
-            f"<div class='summary-box'>"
-            f"<span class='confidence-tag {tag}'>{tag_label}</span>"
-            f"<p style='margin-top:8pt'>{_e(ai_summary)}</p>"
-            f"{meta_line}"
-            f"</div>"
-        )
+    if ai_brief is not None:
+        return _render_ai_brief(ai_brief, tag, tag_label, ai_metadata)
 
     paragraph = " ".join(_e(s) for s in digest.summary_sentences)
     # restore bold for the headline form (embedded as **headline**)
@@ -331,6 +334,85 @@ def _render_executive_summary(digest: ExecutiveDigest, score: int, gap: int,
         f"<div class='summary-box'>"
         f"<span class='confidence-tag {tag}'>{tag_label}</span>"
         f"<p style='margin-top:8pt'>{paragraph}</p>"
+        f"</div>"
+    )
+
+
+# Section ordering + display titles for the AI-rendered brief. The
+# tuple shape — (field_name, display_title) — keeps the renderer's
+# section list authoritative even if the schema later grows extra
+# fields the renderer doesn't yet know about.
+_AI_BRIEF_SECTIONS: tuple[tuple[str, str], ...] = (
+    ("what_happened", "What happened"),
+    ("what_was_taken", "What was taken"),
+    ("where_it_went", "Where it went"),
+    ("when_timeline", "When"),
+    ("risk_implications", "Risk implications"),
+    ("confidence_and_limits", "Confidence and limits"),
+)
+
+
+def _markdown_to_html(text: str) -> str:
+    """Render a markdown blob to HTML for one ExecutiveBrief section.
+    Tables are enabled; raw HTML is enabled because the LLM may have
+    embedded escape sequences for filenames containing < or > —
+    the surrounding ``<div class='ai-section'>`` already isolates the
+    payload from the page's structural elements."""
+    try:
+        import markdown_it
+    except ImportError:
+        # Defensive: if markdown_it is unavailable for some reason,
+        # at least show the raw text — keeps the brief visible rather
+        # than swallowing it. Wrap in <pre> so it's legible.
+        return f"<pre>{_e(text)}</pre>"
+    md = markdown_it.MarkdownIt("commonmark", {"html": True})
+    md.enable("table")
+    return md.render(text)
+
+
+def _render_ai_brief(ai_brief, tag: str, tag_label: str,
+                       ai_metadata: dict | None) -> str:
+    """Render an ExecutiveBrief as the multi-section HTML payload.
+
+    Each section gets a header + an "AI-rendered" chip + the
+    markdown-converted body. A non-removable disclaimer banner sits
+    above the whole block. Confidence pill stays grounded in ACH score.
+    """
+    from el.reporting.executive_ai import DISCLAIMER_LABEL, SECTION_AI_CHIP
+    cache_status = (ai_metadata or {}).get("cache", "")
+    model = (ai_metadata or {}).get("model", "")
+    meta_line = ""
+    if model:
+        meta_line = (f"<div class='ai-meta'>Model: "
+                     f"<code>{_e(model)}</code> · "
+                     f"cache: {_e(cache_status)}</div>")
+
+    section_html_parts: list[str] = []
+    for field_name, display_title in _AI_BRIEF_SECTIONS:
+        body = getattr(ai_brief, field_name, "") or ""
+        if not body.strip():
+            # Schema validator guarantees no empties at the brief level,
+            # but we still defend so future per-field operator edits
+            # to the cache file can't blank a section into a half-render.
+            continue
+        section_html_parts.append(
+            f"<section class='ai-section'>"
+            f"<h3>{_e(display_title)} "
+            f"<span class='ai-chip' title='Generated by AI'>"
+            f"{_e(SECTION_AI_CHIP)}</span></h3>"
+            f"{_markdown_to_html(body)}"
+            f"</section>"
+        )
+
+    return (
+        "<h2>Executive Summary</h2>"
+        f"<div class='ai-disclaimer' role='note'>"
+        f"<strong>{_e(DISCLAIMER_LABEL)}</strong>"
+        f"</div>"
+        f"<div class='summary-box ai-brief'>"
+        f"<span class='confidence-tag {tag}'>{tag_label}</span>"
+        f"{''.join(section_html_parts)}"
+        f"{meta_line}"
         f"</div>"
     )
 
@@ -671,7 +753,7 @@ def render_executive_html(
     # the API call fails. The deterministic ExecutiveDigest still
     # feeds the confidence tag (the colour-coded pill stays grounded
     # in ACH score, not LLM judgement).
-    ai_summary: str | None = None
+    ai_brief = None
     ai_meta: dict | None = None
     try:
         from el.reporting.executive_ai import synthesize_executive_ai
@@ -681,15 +763,15 @@ def render_executive_html(
             regenerate=regenerate_ai_summary,
         )
         if result is not None:
-            ai_summary, ai_meta = result
+            ai_brief, ai_meta = result
     except Exception:
-        ai_summary = None
+        ai_brief = None
         ai_meta = None
 
     body_sections.append(
         _render_executive_summary(
             digest, nr.leading_score, nr.leading_gap,
-            ai_summary=ai_summary, ai_metadata=ai_meta,
+            ai_brief=ai_brief, ai_metadata=ai_meta,
         )
     )
     body_sections.append(_render_findings_chronological(
