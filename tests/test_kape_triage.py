@@ -52,6 +52,86 @@ def test_kape_triage_dir_classifies_and_routes(isolated):
     )
 
 
+def test_kape_per_user_artifacts_stage_into_curated_layout(tmp_path):
+    """KAPE captures per-user artifacts at native paths under
+    `Users/<user>/`. The staging helper must enumerate every user and
+    map their artifacts into the curated layout the WindowsArtifactAgent
+    parsers already understand — so multi-user cases don't silently
+    drop everyone after the first user the rglob hit."""
+    from el.agents.windows_artifact import _stage_kape_layout
+
+    kape = tmp_path / "kape-out"
+    c = kape / "C"
+    c.mkdir(parents=True)
+    (c / "$MFT").write_bytes(b"NOT_A_REAL_MFT")
+
+    cfg = c / "Windows" / "System32" / "config"
+    cfg.mkdir(parents=True)
+    for hive in ("SYSTEM", "SOFTWARE", "SAM", "SECURITY"):
+        (cfg / hive).write_bytes(b"NOT_A_REAL_HIVE")
+    (c / "Windows" / "appcompat" / "Programs").mkdir(parents=True)
+    (c / "Windows" / "appcompat" / "Programs" / "Amcache.hve").write_bytes(b"x")
+    (c / "Windows" / "Prefetch").mkdir()
+    (c / "Windows" / "System32" / "winevt" / "Logs").mkdir(parents=True)
+
+    # Three real users + one default-template that we still capture
+    # (recent_docs handles empty hives gracefully).
+    for user in ("alice", "bob", "carol"):
+        u = c / "Users" / user
+        (u / "AppData" / "Roaming" / "Microsoft" / "Windows"
+         / "Recent" / "AutomaticDestinations").mkdir(parents=True)
+        (u / "AppData" / "Roaming" / "Microsoft" / "Windows"
+         / "Recent" / "CustomDestinations").mkdir(parents=True)
+        (u / "AppData" / "Local" / "Microsoft" / "Windows"
+         / "Clipboard").mkdir(parents=True)
+        (u / "AppData" / "Local" / "Microsoft" / "Windows"
+         / "Temporary Internet Files" / "Content.IE5").mkdir(parents=True)
+        (u / "NTUSER.DAT").write_bytes(b"NOT_A_REAL_HIVE")
+        (u / "AppData" / "Local" / "Microsoft" / "Windows"
+         / "UsrClass.dat").write_bytes(b"NOT_A_REAL_HIVE")
+
+    staged = tmp_path / "staged"
+    counts = _stage_kape_layout(kape, staged)
+
+    assert counts["user_ntusers"] == 3
+    assert counts["user_usrclass"] == 3
+    assert counts["lnk_users"] == 3
+    assert counts["jumplists_users"] == 3
+    assert counts["ie_cache_users"] == 3
+    assert counts["clipboard_users"] == 3
+    assert counts["registry_hives"] == 4
+    assert counts["mft"] == 1
+
+    # Verify the curated-layout shape that downstream parsers expect.
+    assert (staged / "mft" / "$MFT").is_symlink()
+    assert (staged / "registry" / "SYSTEM").is_symlink()
+    assert (staged / "registry" / "NTUSER-alice.DAT").is_symlink()
+    assert (staged / "registry" / "NTUSER-bob.DAT").is_symlink()
+    assert (staged / "registry" / "NTUSER-carol.DAT").is_symlink()
+    assert (staged / "registry" / "UsrClass-alice.DAT").is_symlink()
+    assert (staged / "lnk" / "alice").is_symlink()
+    assert (staged / "jumplists" / "alice-automatic").is_symlink()
+    assert (staged / "jumplists" / "alice-custom").is_symlink()
+    assert (staged / "ie_cache" / "alice-content.ie5").is_symlink()
+    assert (staged / "uwp-clipboard" / "alice" / "Clipboard").is_symlink()
+    # Confirm symlinks resolve to the original KAPE evidence (read-only,
+    # no copies).
+    assert (staged / "registry" / "NTUSER-alice.DAT").resolve() == (
+        c / "Users" / "alice" / "NTUSER.DAT").resolve()
+
+
+def test_kape_staging_no_drive_returns_empty_counts(tmp_path):
+    """A directory that isn't KAPE-shaped must produce zero counts and
+    not create the staged tree (the run() path also guards on this,
+    but the helper should be safe to call standalone)."""
+    from el.agents.windows_artifact import _stage_kape_layout
+
+    not_kape = tmp_path / "random"
+    not_kape.mkdir()
+    counts = _stage_kape_layout(not_kape, tmp_path / "staged")
+    assert all(v == 0 for v in counts.values())
+
+
 def test_disk_forensicator_layout_still_routes_via_windows_artifacts(isolated):
     """Regression: the DiskForensicator-extracted curated layout
     (`mft/`, `registry/`) must still classify as `windows-artifacts-dir`

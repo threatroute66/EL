@@ -59,6 +59,136 @@ def _find_registry_dir(root: Path) -> Path | None:
     return None
 
 
+def _kape_drive_root(kape_root: Path) -> Path | None:
+    """Return the first drive-letter subdir under a KAPE output root
+    that contains a Windows/ tree. None if not a KAPE shape."""
+    for letter in ("C", "D", "E", "F"):
+        d = kape_root / letter
+        if d.is_dir() and (d / "Windows").is_dir():
+            return d
+    return None
+
+
+def _stage_kape_layout(kape_root: Path, staged: Path) -> dict[str, int]:
+    """Build a curated DiskForensicator-shaped symlink tree from a KAPE
+    output dir into *staged*. Symlinks only — the original KAPE input
+    is never modified or copied. After staging, the rest of
+    WindowsArtifactAgent can treat *staged* as its `root` and existing
+    parsers (which were built for DiskForensicator's layout) work
+    unchanged. Returns per-artifact counts for evidence reporting."""
+    counts: dict[str, int] = {
+        "mft": 0, "usnjrnl": 0, "registry_hives": 0,
+        "amcache": 0, "user_ntusers": 0, "user_usrclass": 0,
+        "prefetch": 0, "winevt": 0, "srum": 0, "recyclebin": 0,
+        "lnk_users": 0, "jumplists_users": 0,
+        "ie_cache_users": 0, "clipboard_users": 0,
+    }
+    drive = _kape_drive_root(kape_root)
+    if drive is None:
+        return counts
+    staged.mkdir(parents=True, exist_ok=True)
+
+    def _link(src: Path, dst: Path) -> bool:
+        if not src.exists():
+            return False
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            if dst.is_symlink() or dst.exists():
+                dst.unlink()
+            dst.symlink_to(src.resolve())
+            return True
+        except OSError:
+            return False
+
+    if _link(drive / "$MFT", staged / "mft" / "$MFT"):
+        counts["mft"] = 1
+    # KAPE / KAPE-Targets can spell the $UsnJrnl:$J ADS several ways
+    # because the literal colon is reserved on Linux filesystems.
+    for jname in ("$J", "UsnJrnl_$J", "$UsnJrnl%3A$J", "$UsnJrnl_J"):
+        for src in (drive / "$Extend" / jname, drive / jname):
+            if _link(src, staged / "mft" / "$J"):
+                counts["usnjrnl"] = 1
+                break
+        if counts["usnjrnl"]:
+            break
+
+    cfg = drive / "Windows" / "System32" / "config"
+    for hive in ("SYSTEM", "SOFTWARE", "SAM", "SECURITY"):
+        if _link(cfg / hive, staged / "registry" / hive):
+            counts["registry_hives"] += 1
+    if _link(drive / "Windows" / "appcompat" / "Programs" / "Amcache.hve",
+              staged / "registry" / "Amcache.hve"):
+        counts["amcache"] = 1
+
+    users_dir = drive / "Users"
+    if users_dir.is_dir():
+        for user_dir in sorted(users_dir.iterdir()):
+            if not user_dir.is_dir():
+                continue
+            user = user_dir.name
+            # Per-user registry hives — flatten into staged/registry/
+            # with the same naming DiskForensicator uses
+            # (NTUSER-<user>.DAT / UsrClass-<user>.DAT) so the existing
+            # recent_docs glob (`NTUSER-*.DAT`) Just Works.
+            if _link(user_dir / "NTUSER.DAT",
+                      staged / "registry" / f"NTUSER-{user}.DAT"):
+                counts["user_ntusers"] += 1
+            if _link(user_dir / "AppData" / "Local" / "Microsoft"
+                      / "Windows" / "UsrClass.dat",
+                      staged / "registry" / f"UsrClass-{user}.DAT"):
+                counts["user_usrclass"] += 1
+            # Per-user Recent → lnk/<user>/ (LECmd -d recurses)
+            recent = (user_dir / "AppData" / "Roaming" / "Microsoft"
+                       / "Windows" / "Recent")
+            if recent.is_dir() and _link(recent, staged / "lnk" / user):
+                counts["lnk_users"] += 1
+            # Per-user jumplists (Automatic + Custom) → jumplists/<user>-<kind>/
+            jl_any = False
+            for sub, tag in (("AutomaticDestinations", "automatic"),
+                              ("CustomDestinations", "custom")):
+                if _link(recent / sub,
+                          staged / "jumplists" / f"{user}-{tag}"):
+                    jl_any = True
+            if jl_any:
+                counts["jumplists_users"] += 1
+            # Per-user IE/Edge legacy cache. find_index_dat_files
+            # matches `content.ie5` / `history.ie5` / `cookies` as
+            # substring of the lowercased full path, so the staged
+            # directory name only needs to contain that token.
+            ie_any = False
+            ie_base = (user_dir / "AppData" / "Local" / "Microsoft"
+                        / "Windows" / "Temporary Internet Files")
+            for sub, tag in (("Content.IE5", "content.ie5"),
+                              ("History.IE5", "history.ie5")):
+                if _link(ie_base / sub,
+                          staged / "ie_cache" / f"{user}-{tag}"):
+                    ie_any = True
+            ck = (user_dir / "AppData" / "Roaming" / "Microsoft"
+                   / "Windows" / "Cookies")
+            if _link(ck, staged / "ie_cache" / f"{user}-cookies"):
+                ie_any = True
+            if ie_any:
+                counts["ie_cache_users"] += 1
+            # Per-user UWP clipboard → uwp-clipboard/<user>/Clipboard/
+            cb = (user_dir / "AppData" / "Local" / "Microsoft"
+                   / "Windows" / "Clipboard")
+            if cb.is_dir() and _link(
+                    cb, staged / "uwp-clipboard" / user / "Clipboard"):
+                counts["clipboard_users"] += 1
+
+    if _link(drive / "Windows" / "Prefetch", staged / "Prefetch"):
+        counts["prefetch"] = 1
+    if _link(drive / "Windows" / "System32" / "winevt" / "Logs",
+              staged / "winevt" / "Logs"):
+        counts["winevt"] = 1
+    if _link(drive / "Windows" / "System32" / "sru" / "SRUDB.dat",
+              staged / "srum" / "SRUDB.dat"):
+        counts["srum"] = 1
+    if _link(drive / "$Recycle.Bin", staged / "$Recycle.Bin"):
+        counts["recyclebin"] = 1
+    return counts
+
+
 class WindowsArtifactAgent(Agent):
     name = "windows_artifact"
 
@@ -73,6 +203,44 @@ class WindowsArtifactAgent(Agent):
         analysis = ctx.case_dir / "analysis" / self.name
         analysis.mkdir(parents=True, exist_ok=True)
         root = ctx.input_path
+
+        # KAPE preflight — if Triage tagged this as a KAPE collection,
+        # build a curated-layout symlink tree under raw/kape-staged/ so
+        # all per-user artifacts (NTUSER MRU, LNK Recent, jumplists,
+        # IE cache, UWP clipboard) get walked rather than just the
+        # first user the rglob-based finders happen to hit. The
+        # original KAPE input is never written to.
+        if ctx.shared.get("evidence_kind") == "kape-triage":
+            staged = ctx.case_dir / "raw" / "kape-staged"
+            counts = _stage_kape_layout(ctx.input_path, staged)
+            if any(counts.values()):
+                import hashlib as _hl
+                ev = EvidenceItem(
+                    tool="el.kape_stage", version="0.1.0",
+                    command=(f"symlink curated layout from "
+                              f"{ctx.input_path} → {staged}"),
+                    output_sha256=_hl.sha256(
+                        repr(sorted(counts.items())).encode()
+                    ).hexdigest(),
+                    output_path=str(staged),
+                    extracted_facts=counts,
+                )
+                out.append(self.emit(ctx, Finding(
+                    case_id=ctx.case_id, agent=self.name,
+                    confidence="high",
+                    claim=(f"KAPE curated-layout staging: "
+                           f"NTUSER hives={counts['user_ntusers']}, "
+                           f"UsrClass={counts['user_usrclass']}, "
+                           f"LNK Recent users={counts['lnk_users']}, "
+                           f"jumplist users={counts['jumplists_users']}, "
+                           f"IE cache users={counts['ie_cache_users']}, "
+                           f"clipboard users={counts['clipboard_users']}. "
+                           f"Per-user artifacts now enumerated rather "
+                           f"than first-match-only."),
+                    evidence=[ev],
+                    hypotheses_supported=["H_DISK_ARTIFACTS"],
+                )))
+                root = staged
 
         out.extend(self._mft(ctx, root, analysis))
         out.extend(self._usnjrnl(ctx, root, analysis))
