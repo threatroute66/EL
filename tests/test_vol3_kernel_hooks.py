@@ -58,20 +58,27 @@ def test_ssdt_clean_table_produces_no_findings(tmp_path, monkeypatch):
     assert agent._flag_kernel_hooks(ctx, "windows.ssdt.SSDT", run) == []
 
 
-def test_ssdt_hook_to_rootkit_module_flagged(tmp_path, monkeypatch):
+def test_ssdt_resolved_but_non_core_module_not_flagged(tmp_path, monkeypatch):
+    """Rocba-case tuning (May 2026): a resolved-but-non-core module
+    name is NO LONGER flagged by itself — every Win10 install has
+    ~200 in-box drivers (Wdf01000, ndis, dxgkrnl, rdyboost, csc,
+    BthEnum, ks, ...) each owning IRP entries, and maintaining the
+    allowlist proved unmaintainable. The real rootkit signal is
+    `Module=UNKNOWN` (vol3 couldn't resolve the address) — covered
+    by test_ssdt_unknown_module_flagged below."""
     ctx = _ctx(tmp_path, monkeypatch)
     rows = [
         {"Index": 0, "Address": "0xfffff80001", "Module": "ntoskrnl.exe"},
-        {"Index": 14, "Address": "0xfffffa8000", "Module": "evilrootkit.sys"},
-        {"Index": 15, "Address": "0xfffffa8000", "Module": "evilrootkit.sys"},
+        {"Index": 14, "Address": "0xfffffa8000", "Module": "rdyboost.sys"},
+        {"Index": 15, "Address": "0xfffffa8000", "Module": "BthEnum.sys"},
     ]
     run = _plugin_run("windows.ssdt.SSDT", rows, tmp_path)
     agent = MemoryForensicatorAgent()
     findings = agent._flag_kernel_hooks(ctx, "windows.ssdt.SSDT", run)
-    assert findings
-    assert findings[0].confidence == "high"
-    assert "H_ROOTKIT" in findings[0].hypotheses_supported
-    assert "evilrootkit.sys" in findings[0].claim
+    assert findings == [], (
+        "non-core but resolved modules should not flag (legit Win10 "
+        "in-box driver dispatch)"
+    )
 
 
 def test_ssdt_unknown_module_flagged(tmp_path, monkeypatch):
@@ -104,31 +111,37 @@ def test_ssdt_case_insensitive_module_match(tmp_path, monkeypatch):
 # DriverIrp hook detector (same logic, different plugin name)
 # ---------------------------------------------------------------------------
 
-def test_driverirp_hook_flagged(tmp_path, monkeypatch):
+def test_driverirp_unknown_hook_flagged(tmp_path, monkeypatch):
+    """Rocba-case tuning: only UNKNOWN-module entries flag now. A
+    resolved 'malware.sys' is no longer a hook — every Win10 install
+    has hundreds of similarly-named in-box drivers (rdyboost, csc,
+    bowser, ...) that would otherwise blow up the FP count."""
     ctx = _ctx(tmp_path, monkeypatch)
     rows = [
         {"IRP": 0, "Address": "0xf00", "Module": "ntoskrnl.exe"},
-        {"IRP": 14, "Address": "0xbad", "Module": "malware.sys"},
+        {"IRP": 14, "Address": "0xbad", "Module": "UNKNOWN"},
     ]
     run = _plugin_run("windows.driverirp.DriverIrp", rows, tmp_path)
     findings = MemoryForensicatorAgent()._flag_kernel_hooks(
         ctx, "windows.driverirp.DriverIrp", run)
     assert findings
-    assert "malware.sys" in findings[0].claim
+    assert findings[0].confidence == "high"
+    assert "H_ROOTKIT" in findings[0].hypotheses_supported
 
 
 def test_driverirp_uses_owner_column_too(tmp_path, monkeypatch):
     """DriverIrp on some vol3 versions uses 'Owner' rather than
-    'Module'. Detector must accept both."""
+    'Module'. The detector must accept both column names — verified
+    by feeding an UNKNOWN owner (the real rootkit signal)."""
     ctx = _ctx(tmp_path, monkeypatch)
     rows = [
         {"IRP": 0, "Address": "0xf00", "Owner": "ntoskrnl.exe"},
-        {"IRP": 14, "Address": "0xbad", "Owner": "rootkit.sys"},
+        {"IRP": 14, "Address": "0xbad", "Owner": "UNKNOWN"},
     ]
     run = _plugin_run("windows.driverirp.DriverIrp", rows, tmp_path)
     findings = MemoryForensicatorAgent()._flag_kernel_hooks(
         ctx, "windows.driverirp.DriverIrp", run)
-    assert findings
+    assert findings, "Owner column with UNKNOWN should still flag"
 
 
 def test_empty_rows_no_findings(tmp_path, monkeypatch):

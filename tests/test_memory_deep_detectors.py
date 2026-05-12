@@ -149,20 +149,26 @@ def test_driverirp_wdf01000_ndis_dxgkrnl_not_flagged(tmp_path, monkeypatch):
 
 
 def test_driverirp_unknown_module_still_flagged(tmp_path, monkeypatch):
-    """The detector must STILL fire on a genuinely-unknown / non-MS
-    module owning an IRP entry (a real rootkit primitive)."""
+    """The detector must STILL fire on a genuinely-unresolved module
+    owning an IRP entry — vol3 couldn't map the address to any loaded
+    driver image. That's the unambiguous rootkit shape (entry points
+    at a hook installed in non-driver memory)."""
     ctx = _ctx(tmp_path, monkeypatch, case_id="t-driverirp-real")
     rows = [
-        {"Driver": "\\Driver\\evil",  "Address": 0x111, "Module": "evil_rk.sys"},
+        # Resolved-but-not-core: NOT flagged anymore (legit Win10
+        # in-box driver dispatch — there are ~200 of these).
+        {"Driver": "\\Driver\\rdyboost", "Address": 0x111, "Module": "rdyboost"},
+        # Unresolved: the real rootkit shape — still flags.
         {"Driver": "\\Driver\\Unknown", "Address": 0x222, "Module": "UNKNOWN"},
-        # Mixed with legit driver — must still fire on the bad one
-        {"Driver": "\\Driver\\Wdf01000", "Address": 0x333, "Module": "Wdf01000.sys"},
+        # Allowlist anchors: kernel core
+        {"Driver": "\\Driver\\Wdf01000", "Address": 0x333, "Module": "Wdf01000"},
     ]
     findings = MemoryForensicatorAgent()._flag_kernel_hooks(
         ctx, "windows.driverirp.DriverIrp",
         _run("windows.driverirp.DriverIrp", rows, tmp_path))
     assert len(findings) == 1
-    assert "2 entry(ies)" in findings[0].claim or "2 entr" in findings[0].claim
+    # Only the UNKNOWN row counts as a hook now
+    assert "1 entry(ies)" in findings[0].claim or "1 entr" in findings[0].claim
     assert "H_ROOTKIT" in findings[0].hypotheses_supported
 
 

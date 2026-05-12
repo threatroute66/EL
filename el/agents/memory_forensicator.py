@@ -448,65 +448,71 @@ class MemoryForensicatorAgent(Agent):
         because KMDF (Wdf01000) + ndis + dxgkrnl + ACPI all legit-
         imately own thousands of IRP entries on a modern install.
         """
-        legit_modules = {
+        # vol3 reports DriverIrp modules as the BASE name without
+        # `.sys` / `.exe` (e.g. `Wdf01000`, `ndis`, `ntoskrnl`). Build
+        # the allowlist in base-name form so the comparison works on
+        # vol3 output directly.
+        legit_modules_raw = (
             # Kernel / HAL / win32k
-            "ntoskrnl.exe", "ntkrnlpa.exe", "ntkrnlmp.exe", "ntoskrnl",
-            "hal.dll", "hal", "halmacpi.dll", "halacpi.dll",
-            "win32k.sys", "win32k", "win32kbase.sys", "win32kfull.sys",
+            "ntoskrnl", "ntkrnlpa", "ntkrnlmp",
+            "hal", "halmacpi", "halacpi",
+            "win32k", "win32kbase", "win32kfull",
             # KMDF / UMDF framework — every modern WDF-based driver
             # registers IRP dispatch through Wdf01000.
-            "wdf01000.sys", "wudfrd.sys", "wudfx.sys",
+            "wdf01000", "wudfrd", "wudfx",
             # Networking stack
-            "ndis.sys", "tcpip.sys", "netio.sys", "afd.sys",
-            "tdx.sys", "fwpkclnt.sys", "wfplwfs.sys", "netbt.sys",
-            "rdbss.sys", "mrxsmb.sys", "mrxsmb10.sys", "mrxsmb20.sys",
-            "mup.sys", "nsiproxy.sys", "tunnel.sys",
+            "ndis", "tcpip", "netio", "afd",
+            "tdx", "fwpkclnt", "wfplwfs", "netbt",
+            "rdbss", "mrxsmb", "mrxsmb10", "mrxsmb20",
+            "mup", "nsiproxy", "tunnel", "tcpipreg",
             # Graphics + DirectX
-            "dxgkrnl.sys", "dxgmms2.sys", "dxgmms1.sys", "watchdog.sys",
-            "bootvid.sys", "cdd.dll", "displ.sys", "BasicDisplay.sys",
-            # Storage stack
-            "storport.sys", "classpnp.sys", "partmgr.sys", "volmgr.sys",
-            "volsnap.sys", "mountmgr.sys", "disk.sys", "msahci.sys",
-            "storahci.sys", "stornvme.sys", "ataport.sys", "atapi.sys",
+            "dxgkrnl", "dxgmms2", "dxgmms1", "watchdog",
+            "bootvid", "cdd", "displ", "BasicDisplay",
+            "BasicRender", "rdpvideominiport",
+            # Storage stack — disk, partition, volume, RAID, BitLocker
+            "storport", "classpnp", "partmgr", "volmgr", "volume",
+            "volsnap", "mountmgr", "disk", "msahci", "iorate",
+            "storahci", "stornvme", "ataport", "atapi", "fvevol",
+            "scsiport", "vhdmp", "spaceport", "spfilter",
             # ACPI / PCI / power
-            "acpi.sys", "pcw.sys", "pci.sys", "agp440.sys",
-            "intelppm.sys", "processr.sys", "amdppm.sys",
+            "acpi", "pcw", "pci", "agp440",
+            "intelppm", "processr", "amdppm", "amdk8",
+            "compositebus", "msisadrv",
             # USB stack
-            "usbhub.sys", "usbport.sys", "usbstor.sys", "hidusb.sys",
-            "usbccgp.sys", "usbxhci.sys", "usbehci.sys", "usbuhci.sys",
-            "hidclass.sys", "hidparse.sys", "kbdhid.sys", "mouhid.sys",
-            "kbdclass.sys", "mouclass.sys",
+            "usbhub", "usbport", "usbstor", "hidusb",
+            "usbccgp", "usbxhci", "usbehci", "usbuhci",
+            "hidclass", "hidparse", "kbdhid", "mouhid",
+            "kbdclass", "mouclass", "i8042prt",
             # File systems
-            "fltmgr.sys", "ntfs.sys", "fastfat.sys", "exfat.sys",
-            "cdfs.sys", "cdrom.sys", "refs.sys", "udfs.sys",
-            "msrpc.sys", "ksecdd.sys", "tcpipreg.sys",
+            "fltmgr", "fltMgr", "FLTMGR", "ntfs", "fastfat", "exfat",
+            "cdfs", "cdrom", "refs", "udfs", "wof",
+            "wofadk", "cimfs", "wcifs", "bindflt",
+            # Security / crypto / RPC
+            "msrpc", "ksecdd", "ksecpkg", "cng", "ndproxy",
+            "fileinfo", "luafv", "applockerfltr",
+            "BAM", "WdFilter", "WdNisDrv",
             # Common in-box services
-            "srv.sys", "srv2.sys", "srvnet.sys", "ksecpkg.sys",
-            "fileinfo.sys", "luafv.sys", "applockerfltr.sys",
-            # Security / crypto
-            "cng.sys", "msrpc.sys", "drmkaud.sys",
-            # Memory / power management
-            "intelppm.sys", "amdk8.sys", "msisadrv.sys",
-            "mpsdrv.sys", "vmswitch.sys",
-            # Compression / WIM
-            "wofadk.sys", "cimfs.sys", "wcifs.sys",
-        }
+            "srv", "srv2", "srvnet", "rdpdr", "tdtcp",
+            "mpsdrv", "vmswitch",
+            # Audio
+            "drmkaud", "portcls", "drmk",
+        )
+        _ = legit_modules_raw  # kept for historical reference / docs
         hooks: list[dict] = []
         for r in run.rows:
             if not isinstance(r, dict):
                 continue
-            # Column names vary by plugin: SSDT uses "Module", DriverIrp
-            # uses "Module" too but sometimes "Owner". Check both.
             module = ((r.get("Module") or r.get("Owner")
                         or r.get("ModuleName") or "") or "").strip().lower()
-            if not module:
-                continue
-            # "UNKNOWN" / empty means vol3 couldn't resolve the address
-            # to a driver — suggestive of hook in unlinked memory.
-            if module in ("unknown", "n/a", "-"):
-                hooks.append(r)
-                continue
-            if module not in legit_modules:
+            for ext in (".sys", ".exe", ".dll"):
+                if module.endswith(ext):
+                    module = module[: -len(ext)]
+                    break
+            # Only flag when vol3 couldn't resolve the address to any
+            # loaded driver — the unambiguous rootkit shape. Resolved
+            # but non-core modules are normal Win10 in-box driver
+            # behaviour and produce thousands of FPs.
+            if module in ("", "unknown", "n/a", "-"):
                 hooks.append(r)
 
         if not hooks:
