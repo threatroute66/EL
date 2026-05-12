@@ -236,6 +236,20 @@ def test_pyinstaller_google_drive_not_flagged():
     )
 
 
+def test_pyinstaller_google_drive_marker_in_subdir_not_flagged():
+    """Regression: real Rocba bodyfile puts the marker at
+    `_MEI<digits>/resources/drive_api/drive.v2internal.rest.json` —
+    several subdirs deep. The pre-scan must classify the parent
+    `_MEI<digits>` as benign even when markers aren't direct children."""
+    text = (
+        "0|/Users/fredr/AppData/Local/Temp/_MEI118162/bz2.pyd|1|...|0\n"
+        "0|/Users/fredr/AppData/Local/Temp/_MEI118162/resources/"
+        "drive_api/drive.v2internal.rest.json|2|...|0\n"
+    )
+    hits = scan_text(text)
+    assert not any(h.pattern_id == "PYINSTALLER_TEMP_DIR" for h in hits)
+
+
 def test_pyinstaller_anaconda_not_flagged():
     """anaconda-navigator inside _MEI marks it as Anaconda; not a dropper."""
     text = (
@@ -302,6 +316,48 @@ def test_pnf_driver_setup_timestomp_skew_not_flagged():
     blobs whose B/M skew is normal Windows behaviour."""
     text = (
         "0|/Windows/INF/usbstor.pnf|1-128-1|r/r|0|0|2048"
+        "|1606780800|1606780800|1606780800|1604966400\n"
+    )
+    hits = scan_text(text)
+    assert not any(h.pattern_id == "MACB_TIMESTOMP_SKEW" for h in hits)
+
+
+def test_office_clicktorun_timestomp_skew_not_flagged():
+    """Rocba round-2: MACB_TIMESTOMP_SKEW fired on Office Click-to-Run
+    config + per-package catalog files under ProgramData/Microsoft/
+    ClickToRun/. C2R rewrites these in place on every channel update,
+    legitimately producing 18+ day skew."""
+    text = (
+        "0|/ProgramData/Microsoft/ClickToRun/DeploymentConfig.2.xml"
+        "|51671-128-4|r/r|0|0|1382|1605363458|1605363458|1605363458"
+        "|1603767977\n"
+        "0|/ProgramData/Microsoft/ClickToRun/MachineData/Catalog/"
+        "Packages/{9AC08E99-230B-47E8-9721-4577B7F124EA}/Manifest.xml"
+        "|99-128-1|r/r|0|0|2048|1605363458|1605363458|1605363458"
+        "|1603767977\n"
+    )
+    hits = scan_text(text)
+    assert not any(h.pattern_id == "MACB_TIMESTOMP_SKEW" for h in hits)
+
+
+def test_software_distribution_timestomp_skew_not_flagged():
+    """Windows Update download cache rewrites file timestamps on every
+    update cycle; legitimately produces skew."""
+    text = (
+        "0|/Windows/SoftwareDistribution/Download/Install/AM_Delta.exe"
+        "|1-128-1|r/r|0|0|2048|1606780800|1606780800|1606780800"
+        "|1604966400\n"
+    )
+    hits = scan_text(text)
+    assert not any(h.pattern_id == "MACB_TIMESTOMP_SKEW" for h in hits)
+
+
+def test_uwp_package_state_timestomp_skew_not_flagged():
+    """UWP / Modern app package state under AppData/Local/Packages/
+    legitimately produces large skew (package state updates in place)."""
+    text = (
+        "0|/Users/fredr/AppData/Local/Packages/Microsoft.WindowsStore_"
+        "8wekyb3d8bbwe/LocalCache/local-0.dat|1-128-1|r/r|0|0|4096"
         "|1606780800|1606780800|1606780800|1604966400\n"
     )
     hits = scan_text(text)

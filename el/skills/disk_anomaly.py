@@ -283,21 +283,21 @@ def _post_filter(pattern_id: str, snippet: str,
 def _classify_benign_mei_dirs(text: str) -> frozenset[str]:
     """Pre-scan a bodyfile/text blob and return the set of `_MEI<digits>`
     dir IDs that contain at least one legitimate-product marker file
-    co-located. Hits inside those dirs are dropped by _post_filter."""
+    anywhere in their subtree. Hits inside those dirs are dropped by
+    _post_filter. The marker check is line-wide (not basename-only)
+    because PyInstaller bundles put markers under arbitrary subdirs —
+    e.g. Google Drive ships `drive.v2internal.rest.json` under
+    `_MEI<digits>/resources/drive_api/`, not as a direct child."""
     benign: set[str] = set()
-    # Iterate every `_MEI<digits>/<basename>` path and check whether
-    # `<basename>` matches a known legitimate marker (and remember the
-    # `<digits>` so all siblings under the same _MEI dir are exonerated).
+    marker_re = re.compile(
+        "(?i)(?:" + "|".join(re.escape(m)
+                              for m in _LEGITIMATE_PYINSTALLER_MARKERS) + ")")
     for line in text.splitlines():
-        m = re.search(
-            r"_MEI(\d{2,8})[/\\]([^/\\|\r\n]+)", line, re.I)
+        m = re.search(r"_MEI(\d{2,8})[/\\]", line, re.I)
         if not m:
             continue
-        mei_id = m.group(1)
-        basename = m.group(2).lower()
-        if any(marker.lower() in basename
-                for marker in _LEGITIMATE_PYINSTALLER_MARKERS):
-            benign.add(mei_id)
+        if marker_re.search(line):
+            benign.add(m.group(1))
     return frozenset(benign)
 
 
@@ -355,16 +355,72 @@ _SYSTEM_BIN_PATH_RE = re.compile(
 # detectors so feature-update boxes don't trip them.
 _WINDOWS_OLD_RE = re.compile(r"[/\\]Windows\.old[/\\]", re.I)
 
-# Paths under ProgramData/Intel/ShaderCache/ legitimately show large
-# B→M timestamp skew: B-time is set when the GPU shader is first
-# compiled, M-time is updated every time the app re-binds the cache
-# entry. Same for Windows driver-setup `.pnf` files (precompiled
-# Setup INF blobs). Exclude both from MACB_TIMESTOMP_SKEW.
-_TIMESTOMP_SKEW_PATH_EXCLUDES = re.compile(
+# Software-update / auto-managed directories where the same file is
+# rewritten in place over weeks or months, legitimately producing
+# large B→M skew. Excluded from MACB_TIMESTOMP_SKEW so the detector
+# focuses on attacker-planted payloads. List of known offenders, added
+# as observed:
+#   - GPU shader caches (B set at compile, M updated on every reuse)
+#   - Windows driver setup `.pnf` files (precompiled Setup INF blobs)
+#   - DriverStore
+#   - Office Click-to-Run config + per-package catalogs under
+#     ProgramData/Microsoft/ (DeploymentConfig*.xml, Catalog/Packages/{GUID}/...)
+#   - Windows Update download cache (SoftwareDistribution)
+#   - Windows servicing packages
+#   - UWP per-user package state (AppData/Local/Packages)
+# MACB skew detection — INCLUDE-only design (replaced the original
+# EXCLUDE-based design after the Rocba case showed the long tail of
+# legitimate B→M skew sources is unbounded: vendor auto-update dirs,
+# UWP per-user package state, Windows Timeline (ActivitiesCache.db),
+# shader caches, icon caches, Windows Search session files, Adobe ARM
+# logs, Exchange perf logs, etc. all legitimately accumulate skew on
+# modern Windows. The old exclusion regex was reaching 25+ patterns
+# and still leaking FPs.
+#
+# This shifts the philosophy: skew is only forensically diagnostic
+# when the file's *location* and *type* together fit an attacker-
+# staged payload. Inclusion criteria:
+#   - User-writable staging spaces (Downloads, Desktop, Documents,
+#     Public, Windows/Temp, inetpub, volume root, AppData/Roaming
+#     not under a vendor subdir)
+#   - AppData/Local/Temp/ ONLY when the file has an executable-class
+#     extension (.exe, .dll, .scr, .bat, .ps1, .hta, .js, .vbs, .cmd,
+#     .com, .pif, .sys) or is extension-less — the auto-managed
+#     Windows internals that pollute Temp/ have .ses, .log, .tmp,
+#     .db, .dat, etc. and are correctly skipped.
+#   - Top-of-volume (no leading system dir) — covers the Rathbun
+#     anti-forensics reference VHDX case.
+_EXEC_EXT = (r"\.(?:exe|dll|scr|bat|ps1|hta|js|vbs|cmd|com|pif|sys"
+              r"|jsp|aspx?|elf|so)")
+
+
+_TIMESTOMP_SKEW_PATH_INCLUDES = re.compile(
     r"(?:"
-    r"[/\\]ProgramData[/\\][^/\\|\r\n]+[/\\]ShaderCache[/\\]"
-    r"|[/\\]Windows[/\\]INF[/\\][^|\r\n]*\.pnf"
-    r"|[/\\]Windows[/\\]System32[/\\]DriverStore[/\\]"
+    # Windows user-writable Downloads (any extension — drag-and-drop
+    # of an attacker-supplied document/binary is the realistic case).
+    r"[/\\]Users[/\\][^/\\|\r\n]+[/\\]Downloads[/\\]"
+    # Web-server roots — any file shape (web shells use .aspx,
+    # .jsp, .php, but also .config, .ashx, etc).
+    r"|[/\\]inetpub[/\\]wwwroot[/\\]"
+    r"|^/var[/\\]www[/\\]"
+    # Linux user-writable temp roots / home / root (anchored to
+    # name-start so a deeper subdir literally named `tmp` / `root` /
+    # `home` doesn't false-match).
+    r"|^/tmp[/\\]"
+    r"|^/var[/\\]tmp[/\\]"
+    r"|^/home[/\\][^/\\|\r\n]+[/\\]"
+    r"|^/root[/\\]"
+    # Windows /Windows/Temp/ — executable-class only (legit installer
+    # / browser-crashpad / Defender logs there have .log / .dat which
+    # we don't want to flag).
+    r"|[/\\]Windows[/\\]Temp[/\\][^|\r\n]*" + _EXEC_EXT + r"(?=[|\s]|$)"
+    # Windows user AppData/Local/Temp/ — same constraint.
+    r"|[/\\]Users[/\\][^/\\|\r\n]+[/\\]AppData[/\\]Local[/\\]Temp[/\\]"
+    r"[^|/\\\r\n]*" + _EXEC_EXT + r"(?=[|\s]|$)"
+    # Windows user AppData/Roaming/ — vendor caches rewrite in place,
+    # only executable-shape files here are a forensic signal.
+    r"|[/\\]Users[/\\][^/\\|\r\n]+[/\\]AppData[/\\]Roaming[/\\]"
+    r"[^|\r\n]*" + _EXEC_EXT + r"(?=[|\s]|$)"
     r")",
     re.I,
 )
@@ -428,14 +484,15 @@ def _scan_bodyfile_rowwise(text: str) -> list[PathHit]:
             if len(zero_ts) < 15:
                 zero_ts.append(name[-120:])
 
-        # MACB skew: applies to every $DATA row (not system-path-only),
-        # since real attackers timestomp user files, too — the Rathbun
-        # anti-forensics reference image demonstrates exactly this.
-        # Exclude GPU shader caches + driver-setup .pnf where the skew
-        # is a documented normal-behaviour artefact (B set when shader
-        # compiled, M updated on every reuse).
-        is_skew_excluded = bool(_TIMESTOMP_SKEW_PATH_EXCLUDES.search(name))
-        if (not is_fname_attr and not is_directory and not is_skew_excluded
+        # MACB skew: INCLUDE-only matcher. Fire only when the path
+        # matches a high-signal attacker-staging shape (user-writable
+        # spaces, executables in user Temp, web-server roots, volume
+        # root). Modern Windows has too many legitimate auto-managed
+        # files with wide B→M skew (vendor auto-updates, UWP packages,
+        # Timeline DB, shader caches) for exclusion lists to scale.
+        # See _TIMESTOMP_SKEW_PATH_INCLUDES for the inclusion rules.
+        is_skew_eligible = bool(_TIMESTOMP_SKEW_PATH_INCLUDES.search(name))
+        if (not is_fname_attr and not is_directory and is_skew_eligible
                 and atime and mtime and ctime and crtime
                 and mtime - crtime >= _SKEW_FLOOR_SECONDS):
             if len(macb_skew) < 15:

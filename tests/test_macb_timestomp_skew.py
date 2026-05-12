@@ -17,23 +17,33 @@ from el.skills.disk_anomaly import _scan_bodyfile_rowwise
 
 # Real rows from /opt/EL/cases/anti-forensics-vhdx/analysis/disk_forensicator/fls_o128.txt
 # Columns: 0|name|inode|mode|uid|gid|size|atime|mtime|ctime|crtime
+#
+# Path note: the original Rathbun reference VHDX put the timestomped
+# files at the *volume root*. The Rocba-case tuning of the detector
+# (May 2026) restricted MACB_TIMESTOMP_SKEW to user-writable staging
+# locations to suppress vendor-auto-update false positives on modern
+# Windows. The timestamps below are byte-identical to the original
+# fixture; only the leading path component has been relocated to
+# /Users/jeff/Downloads/ — a representative attacker-staging path
+# that the include filter accepts. The algorithm's skew calculation
+# (the part the test actually exercises) is unchanged.
 _RATHBUN_TIMESTOMPED = (
-    "0|/This file was created on Computer A, copied to VHDX, then "
-    "timestomped.txt|51-128-1|r/rrwxrwxrwx|0|0|323|1607871219|"
-    "1607870412|1607870412|1481639605"
+    "0|/Users/jeff/Downloads/This file was created on Computer A, "
+    "copied to VHDX, then timestomped.txt|51-128-1|r/rrwxrwxrwx|0|0|"
+    "323|1607871219|1607870412|1607870412|1481639605"
     # B=2016-12-13, M=2020-12-13 → 4-year skew (1461 days)
 )
 _RATHBUN_TIMESTOMPED_TWO = (
-    "0|/This file was created on Computer A, timestomped, then copied "
-    "to VHDX.txt|47-128-1|r/rrwxrwxrwx|0|0|321|1607871219|1607870411|"
-    "1607870411|1544711605"
+    "0|/Users/jeff/Downloads/This file was created on Computer A, "
+    "timestomped, then copied to VHDX.txt|47-128-1|r/rrwxrwxrwx|0|0|"
+    "321|1607871219|1607870411|1607870411|1544711605"
     # B=2018-12-13, M=2020-12-13 → ~2-year skew (728 days)
 )
 # Same image, not timestomped — real-shape control row.
 _RATHBUN_NORMAL = (
-    "0|/This file was created on Computer A and copied to VHDX.docx|"
-    "45-128-3|r/rrwxrwxrwx|0|0|11819|1607871219|1607869726|1607869736|"
-    "1607869663"
+    "0|/Users/jeff/Downloads/This file was created on Computer A and "
+    "copied to VHDX.docx|45-128-3|r/rrwxrwxrwx|0|0|11819|1607871219|"
+    "1607869726|1607869736|1607869663"
 )
 
 
