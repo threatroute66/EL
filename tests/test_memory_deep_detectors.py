@@ -124,6 +124,101 @@ def test_malfind_mixed_processes_keep_high_confidence(tmp_path, monkeypatch):
     assert main[0].confidence == "high"
 
 
+def test_driverirp_wdf01000_ndis_dxgkrnl_not_flagged(tmp_path, monkeypatch):
+    """Rocba carve-out: DriverIrp owners Wdf01000.sys (KMDF framework),
+    ndis.sys (NDIS networking), dxgkrnl.sys (DirectX kernel), ACPI.sys,
+    partmgr.sys are in-box Windows drivers that legitimately own
+    thousands of IRP entries on every Win10 install. Flagging them as
+    rootkit hooks was the largest single source of false H_ROOTKIT /
+    H_APT_ESPIONAGE elevation in the Rocba memory ledger."""
+    ctx = _ctx(tmp_path, monkeypatch, case_id="t-driverirp-wdf")
+    rows = [
+        {"Driver": "\\Driver\\Wdf01000", "Address": 0x123, "Module": "Wdf01000.sys"},
+        {"Driver": "\\Driver\\Ndis",     "Address": 0x456, "Module": "ndis.sys"},
+        {"Driver": "\\Driver\\dxgkrnl",  "Address": 0x789, "Module": "dxgkrnl.sys"},
+        {"Driver": "\\Driver\\ACPI",     "Address": 0xabc, "Module": "ACPI.sys"},
+        {"Driver": "\\Driver\\partmgr",  "Address": 0xdef, "Module": "partmgr.sys"},
+    ]
+    findings = MemoryForensicatorAgent()._flag_kernel_hooks(
+        ctx, "windows.driverirp.DriverIrp",
+        _run("windows.driverirp.DriverIrp", rows, tmp_path))
+    assert findings == [], (
+        f"in-box Win10 drivers should not be flagged as kernel hooks, "
+        f"got: {[f.claim[:120] for f in findings]}"
+    )
+
+
+def test_driverirp_unknown_module_still_flagged(tmp_path, monkeypatch):
+    """The detector must STILL fire on a genuinely-unknown / non-MS
+    module owning an IRP entry (a real rootkit primitive)."""
+    ctx = _ctx(tmp_path, monkeypatch, case_id="t-driverirp-real")
+    rows = [
+        {"Driver": "\\Driver\\evil",  "Address": 0x111, "Module": "evil_rk.sys"},
+        {"Driver": "\\Driver\\Unknown", "Address": 0x222, "Module": "UNKNOWN"},
+        # Mixed with legit driver — must still fire on the bad one
+        {"Driver": "\\Driver\\Wdf01000", "Address": 0x333, "Module": "Wdf01000.sys"},
+    ]
+    findings = MemoryForensicatorAgent()._flag_kernel_hooks(
+        ctx, "windows.driverirp.DriverIrp",
+        _run("windows.driverirp.DriverIrp", rows, tmp_path))
+    assert len(findings) == 1
+    assert "2 entry(ies)" in findings[0].claim or "2 entr" in findings[0].claim
+    assert "H_ROOTKIT" in findings[0].hypotheses_supported
+
+
+def test_ldrmodules_host_wide_unlinked_downgraded(tmp_path, monkeypatch):
+    """Rocba carve-out: 203 unlinked DLLs across 198 processes is the
+    shape of Win10's ApiSet contract behaviour, not reflective injection.
+    With >15 processes flagged the detector must downgrade and clear
+    its hypothesis_supported list."""
+    ctx = _ctx(tmp_path, monkeypatch, case_id="t-ldr-hostwide")
+    # Build rows for 20 processes each with one InLoad=False/InMem=True DLL
+    rows = [
+        {"Pid": 100 + i, "Process": f"proc{i}.exe", "MappedPath": "x.dll",
+         "InLoad": False, "InInit": True, "InMem": True}
+        for i in range(20)
+    ]
+    findings = MemoryForensicatorAgent()._flag_unlinked_dlls(
+        ctx, _run("windows.ldrmodules.LdrModules", rows, tmp_path))
+    assert len(findings) == 1
+    assert findings[0].confidence == "medium"
+    assert findings[0].hypotheses_supported == []
+    assert "host-wide" in findings[0].claim.lower() or "ApiSet" in findings[0].claim
+
+
+def test_ldrmodules_concentrated_injection_still_high(tmp_path, monkeypatch):
+    """Concentrated unlinked-DLL signature in ≤15 processes is the real
+    reflective-injection pattern and must STILL elevate to high."""
+    ctx = _ctx(tmp_path, monkeypatch, case_id="t-ldr-real")
+    rows = [
+        {"Pid": 100, "Process": "victim.exe", "MappedPath": f"reflective{i}.dll",
+         "InLoad": False, "InInit": False, "InMem": True}
+        for i in range(8)
+    ] + [
+        {"Pid": 200, "Process": "other.exe", "MappedPath": "rk.dll",
+         "InLoad": False, "InInit": False, "InMem": True}
+    ]
+    findings = MemoryForensicatorAgent()._flag_unlinked_dlls(
+        ctx, _run("windows.ldrmodules.LdrModules", rows, tmp_path))
+    assert len(findings) == 1
+    assert findings[0].confidence == "high"
+    assert "H_PROCESS_INJECTION" in findings[0].hypotheses_supported
+    assert "H_APT_ESPIONAGE" in findings[0].hypotheses_supported
+
+
+def test_ldrmodules_apiset_partial_mismatch_no_fire(tmp_path, monkeypatch):
+    """A DLL in InLoad+InMem but not InInit is NOT reflective injection
+    — that's the Win10 ApiSet forwarder shape. Detector must skip it."""
+    ctx = _ctx(tmp_path, monkeypatch, case_id="t-ldr-apiset")
+    rows = [
+        {"Pid": 100, "Process": "x.exe", "MappedPath": "api-ms-win-core.dll",
+         "InLoad": True, "InInit": False, "InMem": True},
+    ]
+    findings = MemoryForensicatorAgent()._flag_unlinked_dlls(
+        ctx, _run("windows.ldrmodules.LdrModules", rows, tmp_path))
+    assert findings == []
+
+
 def test_malfind_lsass_keeps_credential_access_high(tmp_path, monkeypatch):
     """Credential-access carve-out (the pre-existing one) must still
     fire on lsass.exe regardless of the new JIT-FP path."""

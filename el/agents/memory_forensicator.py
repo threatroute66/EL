@@ -437,15 +437,60 @@ class MemoryForensicatorAgent(Agent):
                             plugin: str,
                             run: vol3.PluginRun) -> list[Finding]:
         """vol3 extras: ssdt + driverirp expose kernel syscall / IRP
-        dispatch tables. A legitimate entry points at ntoskrnl.exe,
-        hal.dll, or win32k.sys (and variants). An entry pointing at
-        ANY other module is a kernel hook — near-unambiguous rootkit
-        primitive (SSDT hook for anti-AV / stealth; IRP hook for
-        file/registry interception)."""
-        legit_modules = {"ntoskrnl.exe", "ntkrnlpa.exe", "ntkrnlmp.exe",
-                         "ntoskrnl", "hal.dll", "hal", "halmacpi.dll",
-                         "win32k.sys", "win32k", "win32kbase.sys",
-                         "win32kfull.sys"}
+        dispatch tables. A legitimate entry points at ntoskrnl /
+        hal / win32k OR at one of the in-box Windows drivers that
+        the platform requires for normal operation. An entry pointing
+        at any OTHER module — a non-MS-signed driver name, a typo of
+        a real driver, or UNKNOWN — is a kernel hook.
+
+        Rocba-case tuning (May 2026): the pre-tuning allowlist was
+        only ntoskrnl/hal/win32k, which fired on every Win10 host
+        because KMDF (Wdf01000) + ndis + dxgkrnl + ACPI all legit-
+        imately own thousands of IRP entries on a modern install.
+        """
+        legit_modules = {
+            # Kernel / HAL / win32k
+            "ntoskrnl.exe", "ntkrnlpa.exe", "ntkrnlmp.exe", "ntoskrnl",
+            "hal.dll", "hal", "halmacpi.dll", "halacpi.dll",
+            "win32k.sys", "win32k", "win32kbase.sys", "win32kfull.sys",
+            # KMDF / UMDF framework — every modern WDF-based driver
+            # registers IRP dispatch through Wdf01000.
+            "wdf01000.sys", "wudfrd.sys", "wudfx.sys",
+            # Networking stack
+            "ndis.sys", "tcpip.sys", "netio.sys", "afd.sys",
+            "tdx.sys", "fwpkclnt.sys", "wfplwfs.sys", "netbt.sys",
+            "rdbss.sys", "mrxsmb.sys", "mrxsmb10.sys", "mrxsmb20.sys",
+            "mup.sys", "nsiproxy.sys", "tunnel.sys",
+            # Graphics + DirectX
+            "dxgkrnl.sys", "dxgmms2.sys", "dxgmms1.sys", "watchdog.sys",
+            "bootvid.sys", "cdd.dll", "displ.sys", "BasicDisplay.sys",
+            # Storage stack
+            "storport.sys", "classpnp.sys", "partmgr.sys", "volmgr.sys",
+            "volsnap.sys", "mountmgr.sys", "disk.sys", "msahci.sys",
+            "storahci.sys", "stornvme.sys", "ataport.sys", "atapi.sys",
+            # ACPI / PCI / power
+            "acpi.sys", "pcw.sys", "pci.sys", "agp440.sys",
+            "intelppm.sys", "processr.sys", "amdppm.sys",
+            # USB stack
+            "usbhub.sys", "usbport.sys", "usbstor.sys", "hidusb.sys",
+            "usbccgp.sys", "usbxhci.sys", "usbehci.sys", "usbuhci.sys",
+            "hidclass.sys", "hidparse.sys", "kbdhid.sys", "mouhid.sys",
+            "kbdclass.sys", "mouclass.sys",
+            # File systems
+            "fltmgr.sys", "ntfs.sys", "fastfat.sys", "exfat.sys",
+            "cdfs.sys", "cdrom.sys", "refs.sys", "udfs.sys",
+            "msrpc.sys", "ksecdd.sys", "tcpipreg.sys",
+            # Common in-box services
+            "srv.sys", "srv2.sys", "srvnet.sys", "ksecpkg.sys",
+            "fileinfo.sys", "luafv.sys", "applockerfltr.sys",
+            # Security / crypto
+            "cng.sys", "msrpc.sys", "drmkaud.sys",
+            # Memory / power management
+            "intelppm.sys", "amdk8.sys", "msisadrv.sys",
+            "mpsdrv.sys", "vmswitch.sys",
+            # Compression / WIM
+            "wofadk.sys", "cimfs.sys", "wcifs.sys",
+        }
         hooks: list[dict] = []
         for r in run.rows:
             if not isinstance(r, dict):
@@ -504,23 +549,36 @@ class MemoryForensicatorAgent(Agent):
             return []
 
         unlinked: list[dict] = []
+
+        def _is_false(v):
+            if v is None:
+                return True
+            if isinstance(v, bool):
+                return not v
+            s = str(v).strip().lower()
+            return s in ("false", "0", "no", "none", "")
+
+        def _is_true(v):
+            if v is None:
+                return False
+            if isinstance(v, bool):
+                return v
+            s = str(v).strip().lower()
+            return s in ("true", "1", "yes")
+
         for r in rows:
             il = r.get("InLoad")
             ii = r.get("InInit")
             im = r.get("InMem")
-            # Each column may be bool/"True"/"False"/None in vol3 JSON
-            def _is_false(v):
-                if v is None:
-                    return True
-                if isinstance(v, bool):
-                    return not v
-                s = str(v).strip().lower()
-                return s in ("false", "0", "no", "none", "")
-            false_count = sum(1 for v in (il, ii, im) if _is_false(v))
-            # Only flag if ≥1 list was true but ≥1 was false — symmetric
-            # all-true or all-false patterns are either normal or tool-
-            # failure, not injection signals.
-            if 1 <= false_count <= 2:
+            # Tightened to the classic reflective-injection signature:
+            # InLoad=False (not in the standard PEB loader list) AND
+            # InMem=True (still present in physical memory). The pre-
+            # tuning rule fired on ANY mismatch among the three lists,
+            # which captured every Win10 ApiSet forwarder (the OS
+            # legitimately drops some DLLs from InLoad/InInit while
+            # keeping them InMem, e.g. api-ms-win-* stubs). Rocba-case
+            # tuning (May 2026) restricted to the real signal.
+            if _is_false(il) and _is_true(im):
                 unlinked.append(r)
         if not unlinked:
             return []
@@ -532,6 +590,28 @@ class MemoryForensicatorAgent(Agent):
             key = (r.get("Pid") or r.get("PID") or 0,
                    r.get("Process") or r.get("ImageFileName") or "?")
             by_proc[key] += 1
+        # Win10 host-wide ApiSet behaviour can still light up many
+        # processes legitimately; require concentration in a small
+        # number of processes (≤15 with the signature) to keep the
+        # signal attacker-shape rather than OS-wide noise. Many
+        # processes with one or two unlinked DLLs each is the OS
+        # behaviour; a few processes with many is the attacker shape.
+        if len(by_proc) > 15:
+            return [self.emit(ctx, Finding(
+                case_id=ctx.case_id, agent=self.name,
+                confidence="medium",
+                claim=(f"ldrmodules: {len(unlinked)} DLL(s) with "
+                       f"InLoad=False/InMem=True across {len(by_proc)} "
+                       f"process(es) — too host-wide to elevate. "
+                       f"Win10's ApiSet contract / forwarder DLLs "
+                       f"legitimately exhibit this pattern at scale. "
+                       f"Concentration in ≤15 processes is the real "
+                       f"reflective-injection signature."),
+                evidence=[run.as_evidence(
+                    {"unlinked_dll_count": len(unlinked),
+                      "process_count": len(by_proc)})],
+                hypotheses_supported=[],
+            ))]
         top = by_proc.most_common(5)
         sample = ", ".join(f"PID {pid} {name}: {n} DLL(s)"
                             for (pid, name), n in top)
@@ -540,11 +620,12 @@ class MemoryForensicatorAgent(Agent):
                                                    for k, n in top]})
         return [self.emit(ctx, Finding(
             case_id=ctx.case_id, agent=self.name, confidence="high",
-            claim=(f"Unlinked DLL(s) detected via ldrmodules three-list "
-                   f"diff: {len(unlinked)} DLL(s) present in some but "
-                   f"not all of InLoad / InInit / InMem across "
-                   f"{len(by_proc)} process(es). Reflective-injection "
-                   f"signature (Metasploit / Cobalt Strike / "
+            claim=(f"Unlinked DLL(s) detected via ldrmodules: "
+                   f"{len(unlinked)} DLL(s) with InLoad=False but "
+                   f"InMem=True across {len(by_proc)} process(es) "
+                   f"(concentrated, not host-wide ApiSet behaviour). "
+                   f"Classic reflective-injection signature "
+                   f"(Metasploit / Cobalt Strike / "
                    f"Invoke-ReflectivePEInjection). Top: {sample}."),
             evidence=[ev],
             hypotheses_supported=["H_PROCESS_INJECTION", "H_APT_ESPIONAGE",
@@ -987,7 +1068,11 @@ class MemoryForensicatorAgent(Agent):
         # known JIT-heavy UWP / .NET / Electron component, the RWX VADs
         # are almost certainly compiler-emitted code, not implants. We
         # still emit the finding (analyst should see it) but downgrade
-        # to `medium` and add a caveat naming the FP class.
+        # to `medium` AND emit with empty hypotheses_supported so the
+        # ACH scorer doesn't lift H_PROCESS_INJECTION / H_APT_ESPIONAGE
+        # off a structurally-known-FP signal. (ach.py treats medium
+        # and high equally — empty hypotheses_supported is the only
+        # way to neutralise score impact without dropping the finding.)
         jit_only = bool(names) and names.issubset(
             self.JIT_HEAVY_UWP_DOTNET_PROCESSES)
         if jit_only:
@@ -999,13 +1084,13 @@ class MemoryForensicatorAgent(Agent):
                        f".NET / Electron components — the RWX VAD shape "
                        f"that malfind keys on is what CLR / V8 / Chakra "
                        f"emit code into. High-confidence elevation "
-                       f"suppressed; reverse-engineer the dumped regions "
-                       f"to confirm content (look for MZ headers, "
-                       f"shellcode prologues, C2-framework markers) "
-                       f"before treating as injection."),
+                       f"suppressed and hypothesis scoring neutralised "
+                       f"(empty hypotheses_supported); reverse-engineer "
+                       f"the dumped regions to confirm content (look for "
+                       f"MZ headers, shellcode prologues, C2-framework "
+                       f"markers) before treating as injection."),
                 confidence="medium", evidence=[ev],
-                hypotheses_supported=["H_PROCESS_INJECTION",
-                                       "H_CODE_EXECUTION"],
+                hypotheses_supported=[],
             )))
         else:
             out.append(self.emit(ctx, Finding(
