@@ -444,6 +444,19 @@ log "upgrading pip"
 log "installing EL + Python deps from pyproject.toml"
 "${EL_DIR}/.venv/bin/pip" install --quiet -e "${EL_DIR}[dev]"
 
+# --- el on PATH -------------------------------------------------------------
+# The venv entrypoint lives at .venv/bin/el; symlink it into ~/.local/bin so
+# operators can just type `el doctor` from anywhere. ~/.local/bin is on PATH
+# by default on SIFT (Ubuntu 22.04+ user-systemd-path); if it isn't, the
+# warning below tells the operator how to add it.
+mkdir -p "${HOME}/.local/bin"
+ln -sf "${EL_DIR}/.venv/bin/el" "${HOME}/.local/bin/el"
+log "symlinked el -> ${HOME}/.local/bin/el"
+case ":${PATH}:" in
+    *":${HOME}/.local/bin:"*) ;;
+    *) log "NOTE: ${HOME}/.local/bin not on PATH — add it to your shell rc to use 'el' directly" ;;
+esac
+
 # Hindsight (pyhindsight) imports ccl_chromium_reader — GitHub-only dep that
 # isn't published to PyPI. pip install from the upstream repo so the venv has
 # everything Chromium-family browser forensics needs.
