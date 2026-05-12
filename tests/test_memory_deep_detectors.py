@@ -86,6 +86,56 @@ def test_orphaned_process_detected(tmp_path, monkeypatch):
     assert "suspicious.exe" in orphan[0].claim
 
 
+def test_malfind_all_jit_processes_downgraded_to_medium(tmp_path, monkeypatch):
+    """Rocba carve-out: when every malfind hit lands in a known JIT-heavy
+    UWP / .NET / Electron component, the RWX VAD pattern is almost
+    certainly the JIT compiler's emitted code, not an implant. The
+    finding is still emitted (so the analyst sees it) but downgraded to
+    `medium` with a caveat naming the FP class."""
+    ctx = _ctx(tmp_path, monkeypatch, case_id="t-malfind-jit")
+    rows = [
+        {"PID": 4864, "Process": "MsMpEng.exe", "Hexdump": "cc cc cc cc"},
+        {"PID": 8312, "Process": "SearchApp.exe", "Hexdump": "cc cc cc cc"},
+        {"PID": 9788, "Process": "LockApp.exe", "Hexdump": "00 00 00 00"},
+        {"PID": 15636, "Process": "Teams.exe", "Hexdump": "cc cc cc cc"},
+    ]
+    findings = MemoryForensicatorAgent()._flag_malfind(
+        ctx, _run("windows.malfind.Malfind", rows, tmp_path))
+    main = [f for f in findings if "malfind flagged" in f.claim]
+    assert len(main) == 1
+    assert main[0].confidence == "medium"
+    assert "JIT-heavy" in main[0].claim
+    assert "elevation suppressed" in main[0].claim.lower()
+
+
+def test_malfind_mixed_processes_keep_high_confidence(tmp_path, monkeypatch):
+    """When at least ONE non-JIT process is flagged (e.g. an attacker
+    injected into notepad.exe alongside Teams), the JIT-FP carve-out
+    must NOT fire — keep the elevation."""
+    ctx = _ctx(tmp_path, monkeypatch, case_id="t-malfind-mixed")
+    rows = [
+        {"PID": 100, "Process": "Teams.exe", "Hexdump": "cc cc"},
+        {"PID": 200, "Process": "notepad.exe", "Hexdump": "cc cc"},
+    ]
+    findings = MemoryForensicatorAgent()._flag_malfind(
+        ctx, _run("windows.malfind.Malfind", rows, tmp_path))
+    main = [f for f in findings if "malfind flagged" in f.claim]
+    assert len(main) == 1
+    assert main[0].confidence == "high"
+
+
+def test_malfind_lsass_keeps_credential_access_high(tmp_path, monkeypatch):
+    """Credential-access carve-out (the pre-existing one) must still
+    fire on lsass.exe regardless of the new JIT-FP path."""
+    ctx = _ctx(tmp_path, monkeypatch, case_id="t-malfind-lsass")
+    rows = [{"PID": 600, "Process": "lsass.exe", "Hexdump": "cc cc"}]
+    findings = MemoryForensicatorAgent()._flag_malfind(
+        ctx, _run("windows.malfind.Malfind", rows, tmp_path))
+    cred = [f for f in findings if "credential-access" in f.claim]
+    assert len(cred) == 1
+    assert cred[0].confidence == "high"
+
+
 def test_short_lived_process_detected_but_noisy_filtered(tmp_path, monkeypatch):
     ctx = _ctx(tmp_path, monkeypatch, case_id="t-short")
     rows = [

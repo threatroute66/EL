@@ -212,3 +212,134 @@ def test_inline_shadowcopy_delete_still_flagged():
     text = 'cmd: ShadowCopy and delete within 20 chars'
     hits = scan_text(text)
     assert any(h.pattern_id == "VSSADMIN_DELETE_SHADOWS_TRACE" for h in hits)
+
+
+# ---------------------------------------------------------------------------
+# Rocba case carve-outs (added after RE of the Rocba memory + disk evidence)
+# ---------------------------------------------------------------------------
+
+
+def test_pyinstaller_google_drive_not_flagged():
+    """Rocba: PYINSTALLER_TEMP_DIR fired on Google Drive Backup&Sync's
+    normal runtime unpack. A `_MEI<digits>/` dir that also contains
+    `drive.v2internal.rest.json` is the Drive client, not a dropper."""
+    text = (
+        "0|/Users/fredr/AppData/Local/Temp/_MEI118162/bz2.pyd|1|...|0\n"
+        "0|/Users/fredr/AppData/Local/Temp/_MEI118162/cello.pyd|1|...|0\n"
+        "0|/Users/fredr/AppData/Local/Temp/_MEI118162/drive.v2internal.rest.json|1|...|0\n"
+        "0|/Users/fredr/AppData/Local/Temp/_MEI118162/main.exe.manifest|1|...|0\n"
+    )
+    hits = scan_text(text)
+    assert not any(h.pattern_id == "PYINSTALLER_TEMP_DIR" for h in hits), (
+        "Google Drive's _MEI dir should be excluded by the marker-file "
+        "allowlist"
+    )
+
+
+def test_pyinstaller_anaconda_not_flagged():
+    """anaconda-navigator inside _MEI marks it as Anaconda; not a dropper."""
+    text = (
+        "0|/Users/x/AppData/Local/Temp/_MEI98765/anaconda-navigator.pyc|1|...|0\n"
+        "0|/Users/x/AppData/Local/Temp/_MEI98765/Lib/site.pyc|1|...|0\n"
+    )
+    hits = scan_text(text)
+    assert not any(h.pattern_id == "PYINSTALLER_TEMP_DIR" for h in hits)
+
+
+def test_pyinstaller_unknown_bundle_still_flagged():
+    """A _MEI dir with NO legitimate-marker files is still suspect."""
+    text = (
+        "0|/Users/victim/AppData/Local/Temp/_MEI66666/python27.dll|1|...|0\n"
+        "0|/Users/victim/AppData/Local/Temp/_MEI66666/payload.pyc|1|...|0\n"
+    )
+    hits = scan_text(text)
+    assert any(h.pattern_id == "PYINSTALLER_TEMP_DIR" for h in hits)
+
+
+def test_winsxs_hashed_component_dir_svchost_not_flagged():
+    """Rocba: SVCHOST_OUTSIDE_SYSTEM32 fired on Win10+ WinSxS hashed
+    component-cache dirs whose snippet didn't include the literal
+    `winsxs` string. The hashed dir shape is enough to exclude."""
+    text = (
+        "0|/Windows/WinSxS/amd64_microsoft-windows-s..svchost-minimal_"
+        "31bf3856ad364e35_10.0.19041.546_none_9e094af3987dca57/svchost.exe|1|...|0\n"
+        # Snippet-clipping case: just the hash dir, no `winsxs` substring
+        "0|.19041.546_none_9e094af3987dca57/f/svchost.exe|1|...|0\n"
+    )
+    hits = scan_text(text)
+    assert not any(h.pattern_id == "SVCHOST_OUTSIDE_SYSTEM32" for h in hits)
+
+
+def test_winsxs_hashed_component_dir_lsass_not_flagged():
+    text = "0|.19041.546_none_1b64e89df11db196/r/lsass.exe|1|...|0\n"
+    hits = scan_text(text)
+    assert not any(h.pattern_id == "LSASS_OUTSIDE_SYSTEM32" for h in hits)
+
+
+def test_shadercache_timestomp_skew_not_flagged():
+    """Rocba: MACB_TIMESTOMP_SKEW fired on Intel GPU shader cache where
+    B-time is set at first compile and M-time updates on every reuse —
+    the skew is a documented driver behaviour, not timestomping."""
+    # B-time 2020-11-10 (1604966400), M-time 2020-12-01 (1606780800)
+    # = 21 day skew, far above the 7-day floor
+    text = (
+        "0|/ProgramData/Intel/ShaderCache/dwm_1|1-128-1|r/r|0|0|1024"
+        "|1606780800|1606780800|1606780800|1604966400\n"
+        "0|/ProgramData/Intel/ShaderCache/EXCEL_1|2-128-1|r/r|0|0|1024"
+        "|1606780800|1606780800|1606780800|1604966400\n"
+        "0|/ProgramData/Intel/ShaderCache/GoogleDriveFS_0|3-128-1|r/r|0|0|1024"
+        "|1606780800|1606780800|1606780800|1604966400\n"
+    )
+    hits = scan_text(text)
+    assert not any(h.pattern_id == "MACB_TIMESTOMP_SKEW" for h in hits), (
+        "ShaderCache entries should be excluded — GPU drivers legitimately"
+        " produce large B→M skew"
+    )
+
+
+def test_pnf_driver_setup_timestomp_skew_not_flagged():
+    """Driver setup .pnf files inside Windows/INF/ are precompiled INF
+    blobs whose B/M skew is normal Windows behaviour."""
+    text = (
+        "0|/Windows/INF/usbstor.pnf|1-128-1|r/r|0|0|2048"
+        "|1606780800|1606780800|1606780800|1604966400\n"
+    )
+    hits = scan_text(text)
+    assert not any(h.pattern_id == "MACB_TIMESTOMP_SKEW" for h in hits)
+
+
+def test_user_temp_timestomp_skew_still_flagged():
+    """The skew detector must STILL fire on user-Temp files with the
+    same skew — that's the real timestomp pattern."""
+    text = (
+        "0|/Users/fredr/AppData/Local/Temp/dropped.exe|1-128-1|r/r|0|0|2048"
+        "|1606780800|1606780800|1606780800|1604966400\n"
+    )
+    hits = scan_text(text)
+    assert any(h.pattern_id == "MACB_TIMESTOMP_SKEW" for h in hits)
+
+
+def test_windows_old_zero_size_dll_not_flagged():
+    """Rocba: SYSTEM_BINARY_ZERO_SIZE fired on `Windows.old/System32/*.dll`
+    placeholders left by a Win10 feature-update cleanup pass. Normal."""
+    text = (
+        "0|/Windows.old/WINDOWS/System32/LAPRXY.DLL (deleted)|1-128-1|r/r|0|0|0"
+        "|1604000000|1604000000|1604000000|1604000000\n"
+        "0|/Windows.old/WINDOWS/System32/vcamp140.dll|2-128-1|r/r|0|0|0"
+        "|1604000000|1604000000|1604000000|1604000000\n"
+    )
+    hits = scan_text(text)
+    pids = {h.pattern_id for h in hits}
+    assert "SYSTEM_BINARY_ZERO_SIZE" not in pids
+    assert "SYSTEM_BINARY_ZERO_TIMESTAMPS" not in pids
+
+
+def test_live_system_zero_size_dll_still_flagged():
+    """The wipe detector must STILL fire on a zero-byte system DLL in
+    the LIVE System32 (jynxora M57-Jean signature)."""
+    text = (
+        "0|/WINDOWS/system32/debug.exe|1-128-1|r/r|0|0|0"
+        "|1604000000|1604000000|1604000000|1604000000\n"
+    )
+    hits = scan_text(text)
+    assert any(h.pattern_id == "SYSTEM_BINARY_ZERO_SIZE" for h in hits)

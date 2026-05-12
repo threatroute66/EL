@@ -172,6 +172,15 @@ _LEGIT_ANCESTOR_FRAGMENTS = (
     "$hf_mig$",                    # hotfix migration backup
 )
 
+# Hashed Win10+ component-cache directory names look like
+# `.19041.546_none_9e094af3987dca57/` and live under WinSxS/. fls
+# bodyfile snippets often capture only the hashed segment without the
+# `winsxs` ancestor (snippets are clipped to a 32-char context window),
+# so a literal "winsxs" check above can miss them. Match the dir shape
+# directly.
+_WINSXS_HASHED_DIR = re.compile(
+    r"\.\d{4,5}\.\d+_none_[a-f0-9]{12,}", re.I)
+
 # Installer-temp paths. MSI/InstallShield/VMware/etc. extract to
 # dirs like Temp/00006b1c/, Temp/_IS<letters>/, Temp/{GUID}/,
 # Temp/Installer<N>/. Executables landing there are benign installer
@@ -202,9 +211,33 @@ _SVCHOST_LSASS_PARENT = re.compile(
 # state file. Not persistence artifacts.
 _STOCK_TASKS_FILES = {"desktop.ini", "sa.dat"}
 
+# Marker filenames whose presence inside a `_MEI<digits>/` runtime-unpack
+# dir identifies the parent as a known-legitimate PyInstaller-packaged
+# product (not a custom dropper). Each marker is unique to that vendor's
+# bundle — extend with new entries as we vet more products.
+_LEGITIMATE_PYINSTALLER_MARKERS = (
+    "drive.v2internal.rest.json",                # Google Drive Backup&Sync
+    "com.google.drive.nativeproxy.json.template",
+    "anaconda-navigator",                        # Anaconda Navigator
+    "conda-meta",                                # Anaconda installer family
+    "obs-studio",                                # OBS Studio
+    "spyderlib",                                 # Spyder IDE (legacy)
+)
 
-def _post_filter(pattern_id: str, snippet: str) -> bool:
-    """Return True if the match should be kept, False if it's a known legit case."""
+# Captures the `_MEI<digits>` segment in a bodyfile path so we can match
+# it against the benign-MEI set computed in scan_text().
+_MEI_DIR_RE = re.compile(r"_MEI(\d{2,8})", re.I)
+
+
+def _post_filter(pattern_id: str, snippet: str,
+                  benign_mei_ids: frozenset[str] | None = None) -> bool:
+    """Return True if the match should be kept, False if it's a known legit case.
+
+    *benign_mei_ids* — set of `_MEI<digits>` directory IDs that scan_text
+    pre-classified as benign (e.g. Google Drive Backup&Sync, Anaconda)
+    based on co-located marker files. PYINSTALLER_TEMP_DIR matches whose
+    path falls inside one of these dirs are silently dropped.
+    """
     s = snippet.lower()
     if pattern_id in ("SVCHOST_OUTSIDE_SYSTEM32", "LSASS_OUTSIDE_SYSTEM32"):
         # Direct-parent check: reject if immediate parent dir is one of
@@ -217,6 +250,11 @@ def _post_filter(pattern_id: str, snippet: str) -> bool:
         for frag in _LEGIT_ANCESTOR_FRAGMENTS:
             if frag in s:
                 return False
+        # Hashed Win10+ WinSxS component-cache dir — paths like
+        # `.19041.546_none_9e094af3987dca57/f/svchost.exe` are normal
+        # component-store layout, NOT masquerade.
+        if _WINSXS_HASHED_DIR.search(s):
+            return False
     if pattern_id == "EXE_IN_TEMP":
         # MSI / InstallShield / VMware-Tools installer unpacks land in
         # Temp/<hex>/, Temp/_IS*/, Temp/{GUID}/ etc. Real droppers don't
@@ -224,6 +262,14 @@ def _post_filter(pattern_id: str, snippet: str) -> bool:
         # flagged, but known installer shapes are excluded.
         if _INSTALLER_TEMP_SEGMENT.search(s):
             return False
+    if pattern_id == "PYINSTALLER_TEMP_DIR":
+        # Drop hits whose `_MEI<digits>` dir was pre-classified as a
+        # known-legitimate PyInstaller-packaged product (Google Drive
+        # Backup&Sync, Anaconda, OBS, ...) by scan_text's pre-pass.
+        if benign_mei_ids:
+            m = _MEI_DIR_RE.search(snippet)
+            if m and m.group(1) in benign_mei_ids:
+                return False
     if pattern_id == "SCHEDULED_TASK_NONMS":
         # desktop.ini / SA.DAT are stock Windows files — desktop folder
         # preferences + the task-scheduler service's own data file. Every
@@ -234,15 +280,41 @@ def _post_filter(pattern_id: str, snippet: str) -> bool:
     return True
 
 
+def _classify_benign_mei_dirs(text: str) -> frozenset[str]:
+    """Pre-scan a bodyfile/text blob and return the set of `_MEI<digits>`
+    dir IDs that contain at least one legitimate-product marker file
+    co-located. Hits inside those dirs are dropped by _post_filter."""
+    benign: set[str] = set()
+    # Iterate every `_MEI<digits>/<basename>` path and check whether
+    # `<basename>` matches a known legitimate marker (and remember the
+    # `<digits>` so all siblings under the same _MEI dir are exonerated).
+    for line in text.splitlines():
+        m = re.search(
+            r"_MEI(\d{2,8})[/\\]([^/\\|\r\n]+)", line, re.I)
+        if not m:
+            continue
+        mei_id = m.group(1)
+        basename = m.group(2).lower()
+        if any(marker.lower() in basename
+                for marker in _LEGITIMATE_PYINSTALLER_MARKERS):
+            benign.add(mei_id)
+    return frozenset(benign)
+
+
 def scan_text(text: str) -> list[PathHit]:
     """Match each pattern against the text and return hits in order."""
     out: list[PathHit] = []
+    # One-pass pre-classification of legitimate PyInstaller `_MEI*` dirs
+    # so PYINSTALLER_TEMP_DIR doesn't fire on Google Drive Backup&Sync /
+    # Anaconda / OBS etc.
+    benign_mei_ids = _classify_benign_mei_dirs(text)
     for p in PATTERNS:
         seen: list[str] = []
         for m in p.regex.finditer(text):
             snippet = text[max(0, m.start() - 32):min(len(text), m.end() + 32)]
             snippet = snippet.replace("\r", "").replace("\n", " ").strip()
-            if not _post_filter(p.pattern_id, snippet):
+            if not _post_filter(p.pattern_id, snippet,
+                                  benign_mei_ids=benign_mei_ids):
                 continue
             if snippet not in seen:
                 seen.append(snippet)
@@ -273,6 +345,27 @@ _SYSTEM_BIN_PATH_RE = re.compile(
     r"|Windows[/\\]System32(?:[/\\]dllcache)?"
     r"|Windows[/\\]ServicePackFiles[/\\](?:i386|amd64)"
     r")[/\\][^/\\|\r\n]+\.(?:exe|dll|sys)\b",
+    re.I,
+)
+
+# Windows.old/ holds the previous OS image after a Win10/11 feature
+# update. Cleanup leaves zero-byte placeholders and stripped timestamps
+# on some system DLLs — normal feature-update behaviour, not an
+# attacker wipe. Exclude this whole tree from the wipe / timestomp
+# detectors so feature-update boxes don't trip them.
+_WINDOWS_OLD_RE = re.compile(r"[/\\]Windows\.old[/\\]", re.I)
+
+# Paths under ProgramData/Intel/ShaderCache/ legitimately show large
+# B→M timestamp skew: B-time is set when the GPU shader is first
+# compiled, M-time is updated every time the app re-binds the cache
+# entry. Same for Windows driver-setup `.pnf` files (precompiled
+# Setup INF blobs). Exclude both from MACB_TIMESTOMP_SKEW.
+_TIMESTOMP_SKEW_PATH_EXCLUDES = re.compile(
+    r"(?:"
+    r"[/\\]ProgramData[/\\][^/\\|\r\n]+[/\\]ShaderCache[/\\]"
+    r"|[/\\]Windows[/\\]INF[/\\][^|\r\n]*\.pnf"
+    r"|[/\\]Windows[/\\]System32[/\\]DriverStore[/\\]"
+    r")",
     re.I,
 )
 
@@ -318,7 +411,12 @@ def _scan_bodyfile_rowwise(text: str) -> list[PathHit]:
         # only flag DATA rows (mode shows $DATA or no $-suffix)
         is_fname_attr = "($FILE_NAME)" in name
         is_directory = len(parts) > 3 and parts[3].startswith("d/")
-        is_system_path = bool(_SYSTEM_BIN_PATH_RE.search(name))
+        # Win10/11 Windows.old/ feature-update leftovers legitimately
+        # carry zero-size + zero-MACB on some system DLLs. Exclude the
+        # whole subtree from the wipe / zero-MACB detectors.
+        is_windows_old = bool(_WINDOWS_OLD_RE.search(name))
+        is_system_path = (bool(_SYSTEM_BIN_PATH_RE.search(name))
+                            and not is_windows_old)
 
         if is_system_path and size == 0 and not is_fname_attr:
             if len(zero_size) < 15:
@@ -333,7 +431,11 @@ def _scan_bodyfile_rowwise(text: str) -> list[PathHit]:
         # MACB skew: applies to every $DATA row (not system-path-only),
         # since real attackers timestomp user files, too — the Rathbun
         # anti-forensics reference image demonstrates exactly this.
-        if (not is_fname_attr and not is_directory
+        # Exclude GPU shader caches + driver-setup .pnf where the skew
+        # is a documented normal-behaviour artefact (B set when shader
+        # compiled, M updated on every reuse).
+        is_skew_excluded = bool(_TIMESTOMP_SKEW_PATH_EXCLUDES.search(name))
+        if (not is_fname_attr and not is_directory and not is_skew_excluded
                 and atime and mtime and ctime and crtime
                 and mtime - crtime >= _SKEW_FLOOR_SECONDS):
             if len(macb_skew) < 15:

@@ -615,6 +615,30 @@ class MemoryForensicatorAgent(Agent):
         "csrss.exe", "smss.exe", "lsaiso.exe",
     }
 
+    # Windows components that legitimately host .NET / UWP / Electron /
+    # V8 JIT engines. malfind by design flags RWX private VAD regions,
+    # which is also the shape every JIT compiler emits its code into.
+    # When ALL malfind hits land in these processes the elevation to
+    # `high` is almost certainly a JIT false-positive, so we downgrade
+    # the per-target finding to `medium` and emit a caveat explaining
+    # the FP class — keeps the signal visible without overstating it.
+    # Cross-confirmed by reverse-engineering the Rocba case malfind
+    # dumps (16 regions, 0 C2-framework matches, structural patterns
+    # all consistent with CLR JIT thunks + .NET managed heap).
+    JIT_HEAVY_UWP_DOTNET_PROCESSES = {
+        "msmpeng.exe",          # Windows Defender service
+        "smartscreen.exe", "smartscreen.ex",  # SmartScreen (UWP)
+        "searchapp.exe",        # Cortana UI (UWP)
+        "lockapp.exe",          # Windows lock screen (UWP)
+        "runtimebroker.exe", "runtimebroker.",  # UWP runtime broker
+        "dllhost.exe",          # COM+ surrogate (frequently hosts .NET)
+        "teams.exe",            # Microsoft Teams (Electron + V8)
+        "msedge.exe", "chrome.exe", "firefox.exe",  # browsers (V8/JIT)
+        "powershell.exe", "pwsh.exe",  # PowerShell (CLR)
+        "devenv.exe",           # Visual Studio (CLR)
+        "code.exe",             # VS Code (Electron + V8)
+    }
+
     def _flag_pe_headers(self, ctx: AgentContext, run: vol3.PluginRun) -> list[Finding]:
         """Per memory-analysis SKILL: malfind Hexdump rows starting with MZ
         are reflectively-loaded PE images not backed by a disk file — a
@@ -959,13 +983,38 @@ class MemoryForensicatorAgent(Agent):
                 names.add(proc)
             if proc in self.CREDENTIAL_ACCESS_TARGETS:
                 cred_hits[proc] = cred_hits.get(proc, 0) + 1
-        out.append(self.emit(ctx, Finding(
-            case_id=ctx.case_id, agent=self.name,
-            claim=f"malfind flagged {total} region(s) across processes: "
-                  f"{', '.join(sorted(names))}",
-            confidence="high", evidence=[ev],
-            hypotheses_supported=["H_PROCESS_INJECTION", "H_CODE_EXECUTION"],
-        )))
+        # JIT false-positive carve-out. If every flagged process is a
+        # known JIT-heavy UWP / .NET / Electron component, the RWX VADs
+        # are almost certainly compiler-emitted code, not implants. We
+        # still emit the finding (analyst should see it) but downgrade
+        # to `medium` and add a caveat naming the FP class.
+        jit_only = bool(names) and names.issubset(
+            self.JIT_HEAVY_UWP_DOTNET_PROCESSES)
+        if jit_only:
+            out.append(self.emit(ctx, Finding(
+                case_id=ctx.case_id, agent=self.name,
+                claim=(f"malfind flagged {total} region(s) across "
+                       f"processes: {', '.join(sorted(names))}. ALL "
+                       f"flagged processes are known JIT-heavy UWP / "
+                       f".NET / Electron components — the RWX VAD shape "
+                       f"that malfind keys on is what CLR / V8 / Chakra "
+                       f"emit code into. High-confidence elevation "
+                       f"suppressed; reverse-engineer the dumped regions "
+                       f"to confirm content (look for MZ headers, "
+                       f"shellcode prologues, C2-framework markers) "
+                       f"before treating as injection."),
+                confidence="medium", evidence=[ev],
+                hypotheses_supported=["H_PROCESS_INJECTION",
+                                       "H_CODE_EXECUTION"],
+            )))
+        else:
+            out.append(self.emit(ctx, Finding(
+                case_id=ctx.case_id, agent=self.name,
+                claim=f"malfind flagged {total} region(s) across processes: "
+                      f"{', '.join(sorted(names))}",
+                confidence="high", evidence=[ev],
+                hypotheses_supported=["H_PROCESS_INJECTION", "H_CODE_EXECUTION"],
+            )))
 
         # Credential-access carve-out: RWX in a critical system process (lsass,
         # winlogon, services, csrss, wininit, smss) is NOT explainable by JIT
