@@ -79,7 +79,7 @@ flowchart TB
 
     INTAKE["<b>Intake</b><br/>hash + manifest<br/>read-only enforcement"]
     TRIAGE["<b>Triage</b><br/>magic bytes + directory shape<br/>sets evidence_kind"]
-    COORD{"<b>Coordinator</b><br/>state machine<br/>intake → triage → hypothesis_gen →<br/>parallel_investigate → correlate →<br/>adversarial_review → synthesize → report → done"}
+    COORD{"<b>Coordinator</b><br/><a href='docs/state-machine.md'>state machine</a><br/>intake → triage → hypothesis_gen →<br/>parallel_investigate → correlate →<br/>adversarial_review → synthesize → report → done"}
 
     INPUTS --> INTAKE --> TRIAGE --> COORD
 
@@ -253,9 +253,40 @@ windows-artifacts, yara-hunting).
 | `macos_unifiedlogs` | Mandiant macos-UnifiedLogs Rust port wrapper (Tier 4.3) — tracev3 / `.logarchive` parsing on Linux. ~100x faster than `log show`. Runs on extracted macOS filesystem trees alongside the existing macos_triage detectors |
 | `sigma_export` | pySigma multi-backend rule-conversion (Tier 4.1) — at coordinator DONE writes `reports/sigma_rules/sigma_rules.{splunk.spl, elasticsearch.lucene, opensearch.lucene, kusto.kql}` so analysts can deploy the same SIGMA content EL evaluates in-process. ~2,400 rules per backend on the bundled Hayabusa pack |
 
+### State machine
+
+The coordinator drives every investigation through a fixed
+nine-state finite state machine. Illegal transitions raise; the
+gate at `ADVERSARIAL_REVIEW → SYNTHESIZE` refuses to score
+hypotheses while any Finding's `red_review.status` is `unresolved`.
+See **[`docs/state-machine.md`](docs/state-machine.md)** for the
+Mermaid diagram, per-state guarantees, and the authoritative
+transition table.
+
 ---
 
 ## Install
+
+### Prerequisite — Protocol SIFT
+
+EL is the runtime implementation of **[Protocol SIFT](https://github.com/teamdfir/protocol-sift)**
+— the AI-agent operating contract layered on top of the SANS SIFT
+Workstation. Protocol SIFT ships:
+
+- `~/.claude/CLAUDE.md` — operator charter (forensic constraints,
+  installed tool paths, evidence-read-only rules)
+- `~/.claude/skills/<area>/SKILL.md` — per-domain operator-tier
+  playbooks for Plaso, Sleuth Kit, memory analysis, Windows artifacts,
+  YARA hunting
+
+EL inherits both verbatim. The charter's "tool output IS evidence"
+rule, the read-only-on-`/cases/` constraint, the UTC-everywhere
+convention, and the no-hallucinations posture all originate in
+Protocol SIFT — EL builds the multi-agent orchestrator that runs to
+that contract. **Install Protocol SIFT first** (follow the upstream
+README) or EL will not have the charter or skill files it expects
+from `~/.claude/`. The included [`docs/protocol-sift.md`](docs/protocol-sift.md)
+documents the inheritance contract in detail.
 
 ### Host requirements
 
