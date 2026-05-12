@@ -32,7 +32,12 @@ from el.evidence.ledger import list_findings
 from el.intel.ach import score_findings
 from el.reporting import glossary
 from el.reporting.executive import _CSS as _SINGLE_CSS
-from el.reporting.executive import _e, _confidence_tag
+from el.reporting.executive import (
+    _AI_BRIEF_SECTIONS,
+    _confidence_tag,
+    _e,
+    _markdown_to_html,
+)
 from el.reporting.narrative import synthesize, synthesize_executive
 from el.reporting.recommendations import build_recommendations
 
@@ -46,6 +51,7 @@ class _HostSlice:
     leading_gap: int
     high_count: int
     digest_text: str       # one-paragraph per-host plain-English summary
+    ai_brief: dict | None  # cached six-section AI brief, if available
 
 
 def _now_iso() -> str:
@@ -84,12 +90,41 @@ def _load_host_slice(case_dir: Path) -> _HostSlice:
         parts.extend(s.rstrip(". ") + "." for s in digest.summary_sentences[:2])
     digest_text = " ".join(parts) or f"{leading_hyp} score={leading_score}"
 
+    # Per-host AI brief — the same six-section JSON the single-case
+    # executive renderer reads. When present, combined_executive surfaces
+    # each host's brief verbatim so the stakeholder sees the rich
+    # what-happened / what-was-taken / where-it-went / when / risk /
+    # confidence narrative cross-host, not just one-line digests.
+    ai_brief = _load_ai_brief(case_dir)
+
     return _HostSlice(
         case_id=case_id, case_dir=case_dir,
         leading_hyp=leading_hyp,
         leading_score=leading_score, leading_gap=leading_gap,
         high_count=high, digest_text=digest_text,
+        ai_brief=ai_brief,
     )
+
+
+def _load_ai_brief(case_dir: Path) -> dict | None:
+    """Return the cached ExecutiveBrief dict from
+    ``reports/executive_ai_brief.json`` (schema_version=2), or None if
+    the file is missing / unparseable / wrong schema. The cache envelope
+    wraps the brief under the ``brief`` key (mirrors the el-ai-brief
+    skill output)."""
+    cache_path = case_dir / "reports" / "executive_ai_brief.json"
+    if not cache_path.is_file():
+        return None
+    try:
+        payload = json.loads(cache_path.read_text())
+    except (OSError, json.JSONDecodeError):
+        return None
+    brief = payload.get("brief")
+    if not isinstance(brief, dict):
+        return None
+    if brief.get("schema_version") != 2:
+        return None
+    return brief
 
 
 def _render_header(name: str, slices: list[_HostSlice]) -> str:
@@ -142,6 +177,44 @@ def _render_executive_summary(slices: list[_HostSlice]) -> str:
         )
     return "<h2>Executive Summary</h2>" + "<div class='summary-box'>" + \
            "".join(parts) + "</div>"
+
+
+def _render_per_host_ai_briefs(slices: list[_HostSlice]) -> str:
+    """Surface each host's cached six-section AI brief verbatim. When a
+    host has no brief on disk we silently skip it — the deterministic
+    digest in the per-host table still carries the headline. Hosts are
+    ordered by ACH score descending so the strongest signal leads."""
+    briefs = [s for s in slices if s.ai_brief is not None]
+    if not briefs:
+        return ""
+    blocks: list[str] = ["<h2>Per-Host Executive Narratives</h2>"]
+    for s in sorted(briefs, key=lambda x: -x.leading_score):
+        tag = _confidence_tag(s.leading_score, s.leading_gap)
+        sections_html: list[str] = []
+        for field_name, display_title in _AI_BRIEF_SECTIONS:
+            body = (s.ai_brief or {}).get(field_name, "") or ""
+            if not body.strip():
+                continue
+            sections_html.append(
+                f"<section class='ai-section'>"
+                f"<h4>{_e(display_title)}</h4>"
+                f"{_markdown_to_html(body)}"
+                f"</section>"
+            )
+        if not sections_html:
+            continue
+        blocks.append(
+            f"<div class='summary-box ai-brief'>"
+            f"<h3><code>{_e(s.case_id)}</code> "
+            f"<span class='confidence-tag {tag}'>"
+            f"{_e(s.leading_hyp or '—')} · score {s.leading_score}"
+            f"</span></h3>"
+            f"{''.join(sections_html)}"
+            f"</div>"
+        )
+    if len(blocks) == 1:
+        return ""
+    return "".join(blocks)
 
 
 def _render_per_host_table(slices: list[_HostSlice]) -> str:
@@ -279,6 +352,7 @@ def render_combined_executive(
     body = (
         _render_header(name, slices)
         + _render_executive_summary(slices)
+        + _render_per_host_ai_briefs(slices)
         + _render_per_host_table(slices)
         + _render_recommendations(slices)
         + _render_handoff(name, output_path.parent)
