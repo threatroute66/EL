@@ -449,13 +449,41 @@ class TriageAgent(Agent):
         )
         is_linux = sum(linux_signals) >= 4
 
+        # KAPE-Triage output preserves the native Windows path layout
+        # under a drive-letter subdir (typically `C/`). Distinct from
+        # `windows-artifacts-dir` (DiskForensicator's curated flat
+        # `mft/`+`registry/`+`evtx/` layout). Cheap probe against the
+        # first drive-letter root containing `Windows/`. KAPE captures
+        # all drives by default; we accept C/D/E/F as plausible system
+        # drives — anything more exotic falls through to the rglob
+        # fallback below.
+        kape_drive: Path | None = None
+        kape_hits = 0
+        for _letter in ("C", "D", "E", "F"):
+            _drive = d / _letter
+            if not _drive.is_dir() or not (_drive / "Windows").is_dir():
+                continue
+            _hits = sum((
+                (_drive / "Windows" / "System32" / "config" / "SYSTEM").is_file(),
+                (_drive / "Windows" / "System32" / "config" / "SOFTWARE").is_file(),
+                (_drive / "Windows" / "Prefetch").is_dir(),
+                (_drive / "$MFT").is_file(),
+                (_drive / "Windows" / "System32" / "winevt" / "Logs").is_dir(),
+                (_drive / "Windows" / "appcompat" / "Programs" / "Amcache.hve").is_file(),
+            ))
+            if _hits >= 2:
+                kape_drive = _drive
+                kape_hits = _hits
+                break
+        is_kape = kape_drive is not None
+
         # Only pay for the full rglob when we DIDN'T recognise a shape
-        # already — every mobile / QNAP / Linux-rootfs case is decided
-        # from the cheap is_dir() probes above. Windows / Velociraptor
-        # detection still needs filename scans.
+        # already — every mobile / QNAP / Linux-rootfs / KAPE case is
+        # decided from the cheap is_dir() probes above. Windows-extracted
+        # / Velociraptor detection still needs filename scans.
         names: list[str] = []
         if not (is_android or is_ios or is_macos or is_qnap or is_linux
-                 or is_bulk_extractor):
+                 or is_bulk_extractor or is_kape):
             # Walk via os.walk so we can pass onerror=None and skip
             # unreadable subtrees gracefully — QNAP DataVol1 mounts
             # have root-only files (.qcodesigning) that crash rglob's
@@ -573,6 +601,18 @@ class TriageAgent(Agent):
                 claim=f"Input directory looks like a Velociraptor collection "
                       f"({velo_hits} Velociraptor artifact filenames matched)",
                 evidence=[ev], hypotheses_supported=["H_ENDPOINT_COLLECTION"],
+            )))
+        elif is_kape:
+            ctx.shared["evidence_kind"] = "kape-triage"
+            ctx.shared["kape_drive"] = str(kape_drive)
+            out.append(self.emit(ctx, Finding(
+                case_id=ctx.case_id, agent=self.name, confidence="high",
+                claim=(f"Input directory looks like a KAPE triage collection "
+                       f"({kape_drive.name}/Windows/ present + "
+                       f"{kape_hits}/6 native-layout artifact markers: "
+                       f"SYSTEM, SOFTWARE, Prefetch, $MFT, winevt/Logs, "
+                       f"Amcache.hve)"),
+                evidence=[ev], hypotheses_supported=["H_DISK_ARTIFACTS"],
             )))
         elif artifact_hits >= 2 or evtx_count >= 5 or prefetch_dir:
             ctx.shared["evidence_kind"] = "windows-artifacts-dir"

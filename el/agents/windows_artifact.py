@@ -44,6 +44,21 @@ def _finddir(root: Path, *names: str) -> Path | None:
     return None
 
 
+def _find_registry_dir(root: Path) -> Path | None:
+    """Locate the directory containing system registry hives (SYSTEM,
+    SOFTWARE, ...). DiskForensicator extracts them to a curated
+    `registry/` dir; KAPE preserves the native Windows layout at
+    `<drive>/Windows/System32/config/`. Try the curated name first, then
+    fall back to the native location."""
+    d = _finddir(root, "registry", "Registry")
+    if d is not None:
+        return d
+    for p in root.rglob("System32/config/SYSTEM"):
+        if p.is_file():
+            return p.parent
+    return None
+
+
 class WindowsArtifactAgent(Agent):
     name = "windows_artifact"
 
@@ -145,7 +160,7 @@ class WindowsArtifactAgent(Agent):
                          lambda: ezt.run_usnjrnl(p, analysis / "usnjrnl"))
 
     def _registry_batch(self, ctx, root, analysis):
-        d = _finddir(root, "registry", "Registry")
+        d = _find_registry_dir(root)
         if not d:
             return []
         return self._try(ctx, f"RECmd batch ({d.name})",
@@ -244,7 +259,7 @@ class WindowsArtifactAgent(Agent):
                                                    software_hive=software))
 
     def _shellbags(self, ctx, root, analysis):
-        d = _finddir(root, "registry", "Registry")
+        d = _find_registry_dir(root)
         if not d:
             return []
         return self._try(ctx, f"SBECmd shellbags ({d.name})",

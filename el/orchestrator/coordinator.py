@@ -79,6 +79,10 @@ KIND_TO_AGENT: dict[str, type[Agent]] = {
     "vmdk (descriptor)": DiskForensicatorAgent,
     "EVTX (Windows Event Log)": LogAnalystAgent,
     "windows-artifacts-dir": WindowsArtifactAgent,
+    # KAPE-Triage output (drive-letter root preserving native Windows
+    # paths). Same agent as windows-artifacts-dir — the agent's rglob
+    # finders walk the tree shape-agnostically.
+    "kape-triage": WindowsArtifactAgent,
     "velociraptor-collection": EndpointAnalystAgent,
     "android-fs-dir": AndroidForensicatorAgent,
     # Magnet/UFED Android extraction archive (.tar/.zip with the
