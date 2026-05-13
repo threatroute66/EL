@@ -101,3 +101,14 @@ nohup.out
 # Memory Baseliner stray log (auto-written to cwd by csababarta/memory-baseliner)
 all.log
 .lock
+
+# --- Operator scratch / accidental working-dir leftovers ---
+# scratch/ is operator working space (intermediate carves, fixture trees,
+# ad-hoc analysis output). Can be many tens of GB; never belongs in the repo.
+scratch/
+# Stray Plaso/log2timeline log files that land at the repo root when the
+# CLI is invoked from /opt/EL/ without an output dir.
+log2timeline-*.log.gz
+# /2/ was an accidentally-committed Android fixture stub (UAC test scratch);
+# rebuild from a real UAC collection if needed, not from this path.
+/2/
