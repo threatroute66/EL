@@ -112,6 +112,7 @@ TECHNIQUE_TACTIC: dict[str, str] = {
     "T1562.001":  "Defense Evasion",
     "T1562.007":  "Defense Evasion",
     "T1564.001":  "Defense Evasion",
+    "T1564.004":  "Defense Evasion",   # Hide Artifacts: NTFS File Attributes (ADS)
     "T1564.008":  "Defense Evasion",
     # Credential Access
     "T1003":      "Credential Access",

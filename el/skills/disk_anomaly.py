@@ -139,6 +139,35 @@ PATTERNS: list[PathPattern] = [
         hypotheses=["H_RANSOMWARE"],
         attack_techniques=[("T1490", "Inhibit System Recovery")],
     ),
+    PathPattern(
+        pattern_id="NTFS_ALTERNATE_DATA_STREAM",
+        description=("NTFS alternate data stream attached to a file other "
+                     "than Zone.Identifier — classic malware hiding place. "
+                     "FOR508 cheatsheet: `fls -r -p ... | grep ':.*:'` "
+                     "surfaces every named $DATA stream beyond the default "
+                     "unnamed one; legitimate use is dominated by "
+                     "Mark-of-the-Web (Zone.Identifier), so anything else "
+                     "is operator-suspicious."),
+        # Body-file format puts the path in field 2 between pipes:
+        #     0|/path/to/file.exe:streamname|inode|...
+        # Match a path segment containing a `:` between two filename
+        # characters, followed by another filename character (the stream
+        # name). Negative lookbehind on `Zone.Identifier` excludes the
+        # benign Mark-of-the-Web stream that almost every downloaded
+        # file carries. Anchor the trailing context to `\s` or `|` so
+        # we match within the body's path field, not arbitrary text.
+        regex=re.compile(
+            rf"{_S}{_NS}+\.(?:exe|dll|sys|com|scr|bat|cmd|ps1|"
+            r"vbs|js|jse|wsf|wsh|hta|jar|py|pyc|pyw|"
+            r"docx?|xlsx?|pptx?|pdf|rtf|zip|rar|7z|cab|msi)"
+            r":(?!Zone\.Identifier(?:[\s|:]|$))"
+            r"[A-Za-z0-9_.\-$]+(?=[\s|])",
+            re.I),
+        hypotheses=["H_NTFS_ADS_PRESENT", "H_DEFENSE_EVASION"],
+        attack_techniques=[
+            ("T1564.004", "Hide Artifacts: NTFS File Attributes"),
+        ],
+    ),
 ]
 
 

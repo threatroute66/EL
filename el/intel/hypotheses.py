@@ -369,6 +369,20 @@ def _h_c2_beaconing(f: Finding) -> int:
     return s
 
 
+def _h_ntfs_ads_present(f: Finding) -> int:
+    """Non-Zone.Identifier NTFS alternate data stream(s) attached to
+    files of executable / script / document type. Defense-evasion shape:
+    the visible filename looks normal; the actual payload lives in the
+    `:streamname` ADS where casual file-listing won't show it. Lift is
+    modest (+2 on the tag) — single ADS could be a legitimate vendor
+    quirk; ACH adds it as corroboration alongside other defense-evasion
+    or process-injection signal rather than as a standalone conclusion.
+    """
+    if "H_NTFS_ADS_PRESENT" in f.hypotheses_supported:
+        return 2
+    return 0
+
+
 def _h_shadow_copy_artifact_deleted(f: Finding) -> int:
     """A forensically critical artefact (RecentFileCache.bcf, Amcache,
     Security.evtx, scheduled-task .job) is present in a Volume Shadow
@@ -516,6 +530,16 @@ HYPOTHESES: list[Hypothesis] = [
                "when the attacker's other signals are absent but the "
                "tampering itself is visible (Rathbun VHDX shape).",
                _h_anti_forensics),
+    Hypothesis("H_NTFS_ADS_PRESENT",
+               "NTFS Alternate Data Stream attached to executable/document",
+               "A `:streamname` ADS attached to an executable, script, or "
+               "Office-document file (excluding the benign Mark-of-the-Web "
+               "Zone.Identifier stream). Classic malware hiding place — the "
+               "visible filename looks normal but the payload lives in the "
+               "ADS where casual file-listing tools don't show it. Modest "
+               "standalone weight; corroborates other defense-evasion / "
+               "process-injection signal in the ranking.",
+               _h_ntfs_ads_present),
     Hypothesis("H_SHADOW_COPY_ARTIFACT_DELETED",
                "Forensic artefact deleted from live FS but present in shadow",
                "An execution-evidence / event-log / scheduled-task artefact "

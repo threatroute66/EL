@@ -55,3 +55,80 @@ def test_no_match_returns_empty():
     text = "0|/Windows/System32/notepad.exe|...\n0|/Users/foo/document.docx|...\n"
     hits = scan_text(text)
     assert hits == []
+
+
+# ---------------------------------------------------------------------------
+# FOR508 cheatsheet: NTFS Alternate Data Streams (`fls -r -p | grep ':.*:'`)
+# ---------------------------------------------------------------------------
+
+def test_ntfs_ads_on_executable_detected():
+    """The smoking-gun case: a .exe with a non-Zone.Identifier ADS.
+    Body-file format puts the path in field 2 between pipes."""
+    text = "0|/Users/Bob/Downloads/installer.exe:malicious_payload|123|...\n"
+    hits = scan_text(text)
+    by_id = {h.pattern_id: h for h in hits}
+    assert "NTFS_ALTERNATE_DATA_STREAM" in by_id
+    h = by_id["NTFS_ALTERNATE_DATA_STREAM"]
+    assert "H_NTFS_ADS_PRESENT" in h.hypotheses
+    assert "H_DEFENSE_EVASION" in h.hypotheses
+    assert any(tid == "T1564.004" for tid, _ in h.attack_techniques)
+
+
+def test_ntfs_ads_on_document_detected():
+    """ADS attached to Office documents (a real macro-dropper hiding
+    place) must fire, not just executables."""
+    text = "0|/Users/alice/Reports/Q4.docx:hidden_payload|456|...\n"
+    hits = scan_text(text)
+    assert any(h.pattern_id == "NTFS_ALTERNATE_DATA_STREAM" for h in hits)
+
+
+def test_zone_identifier_ads_not_flagged():
+    """Mark-of-the-Web Zone.Identifier ADS is on EVERY downloaded file —
+    flagging it would flood the ledger with thousands of benign hits.
+    The negative-lookahead must exclude it cleanly."""
+    text = ("0|/Users/Bob/Downloads/installer.exe:Zone.Identifier|123|...\n"
+            "0|/Users/Bob/Downloads/setup.msi:Zone.Identifier|124|...\n")
+    hits = scan_text(text)
+    ads = [h for h in hits if h.pattern_id == "NTFS_ALTERNATE_DATA_STREAM"]
+    assert ads == [], "Zone.Identifier must be excluded from ADS detection"
+
+
+def test_non_executable_ads_not_flagged():
+    """ADS on text/log/data files isn't in the high-risk extension list —
+    the pattern only fires on executable / script / Office-doc shapes
+    so we don't drown in noise from system-managed ADSes on data files."""
+    text = "0|/var/log/normal.log:metadata|123|...\n"
+    hits = scan_text(text)
+    ads = [h for h in hits if h.pattern_id == "NTFS_ALTERNATE_DATA_STREAM"]
+    assert ads == []
+
+
+def test_multiple_ads_grouped_into_one_hit():
+    """When several files have suspicious ADSes, the scanner emits one
+    PathHit per pattern with all matches grouped — caller decides how
+    to render (existing convention; no per-match finding)."""
+    text = ("0|/A/payload.exe:s1|1|...\n"
+            "0|/B/script.ps1:s2|2|...\n"
+            "0|/C/loader.dll:s3|3|...\n")
+    hits = scan_text(text)
+    ads = [h for h in hits if h.pattern_id == "NTFS_ALTERNATE_DATA_STREAM"]
+    assert len(ads) == 1
+    assert len(ads[0].matches) >= 3
+
+
+def test_h_ntfs_ads_lifts_hypothesis_in_ach():
+    """The H_NTFS_ADS_PRESENT tag must score the new hypothesis at +2
+    in the ranking — modest standalone weight, corroborates other
+    defense-evasion signal."""
+    from el.intel.ach import score_findings
+    from el.schemas.finding import EvidenceItem, Finding
+    ev = EvidenceItem(tool="el.disk_anomaly", version="0", command="x",
+                      output_sha256="0"*64, output_path="/x")
+    f = Finding(case_id="c", agent="disk_forensicator", confidence="high",
+                claim="Disk anomaly [NTFS_ALTERNATE_DATA_STREAM]: 3 match(es)",
+                evidence=[ev],
+                hypotheses_supported=["H_NTFS_ADS_PRESENT",
+                                       "H_DEFENSE_EVASION"])
+    ranked, _ = score_findings([f])
+    ads = next(r for r in ranked if r.hyp_id == "H_NTFS_ADS_PRESENT")
+    assert ads.score == 2
