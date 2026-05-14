@@ -55,6 +55,16 @@ WIN_PLUGINS = [
     "windows.driverirp.DriverIrp",
     "windows.filescan.FileScan",
     "windows.mftscan.MFTScan",
+    # FOR508 workbook ex 2.5: cmdscan / consoles surface the actual
+    # commands typed by an operator in cmd.exe / conhost.exe — the
+    # COMMAND_HISTORY (cmdscan) and CONSOLE_INFORMATION screen-buffer
+    # (consoles) structures persist in RAM long after the process
+    # exits. Single highest-signal source of attacker intent when
+    # they hit: a recovered ``net use \\target\C$`` or ``mimikatz``
+    # line is a confessional-grade finding that no other artifact
+    # in this pipeline can produce.
+    "windows.cmdscan.CmdScan",
+    "windows.consoles.Consoles",
 ]
 
 # malfind runs separately with --dump so suspicious regions hit disk as files
@@ -222,6 +232,13 @@ class MemoryForensicatorAgent(Agent):
             if plugin in runs and runs[plugin].rows:
                 out.extend(self._flag_kernel_hooks(
                     ctx, plugin, runs[plugin]))
+
+        # FOR508 ex 2.5: cmdscan + consoles recovered command-history /
+        # screen-buffer text. Any non-empty output is itself a finding;
+        # keyword-matched lines lift specific hypotheses.
+        for plugin in ("windows.cmdscan.CmdScan", "windows.consoles.Consoles"):
+            if plugin in runs and runs[plugin].rows:
+                out.extend(self._flag_shell_history(ctx, plugin, runs[plugin]))
 
         baseline_path = (ctx.shared.get("memory_baseline")
                           or ctx.shared.get("memory_baseline_json"))
@@ -548,6 +565,134 @@ class MemoryForensicatorAgent(Agent):
             evidence=[ev],
             hypotheses_supported=["H_ROOTKIT", "H_APT_ESPIONAGE"],
         ))]
+
+    # FOR508 ex 2.5 — keyword library for hypothesis lift on shell-history
+    # output. Each tuple = (regex pattern, supported-hypothesis tag, short
+    # human label). Patterns are intentionally narrow — over-broad matches
+    # (e.g. bare "net" or "reg") would fire on every legitimate cmd.exe
+    # session in the case.
+    _SHELL_KEYWORDS: tuple[tuple[str, str, str], ...] = (
+        # Credential access — mimikatz family + LSASS / SAM / DPAPI dump
+        # cradles. Note `sekurlsa::`, `lsadump::`, `kerberos::` are the
+        # canonical mimikatz module prefixes.
+        (r"\bmimikatz\b", "H_CREDENTIAL_ACCESS", "mimikatz"),
+        (r"\bsekurlsa::", "H_CREDENTIAL_ACCESS", "sekurlsa::"),
+        (r"\blsadump::", "H_CREDENTIAL_ACCESS", "lsadump::"),
+        (r"\bkerberos::", "H_CREDENTIAL_ACCESS", "kerberos::"),
+        (r"\bpth\b|\bpass[-_]?the[-_]?hash\b", "H_CREDENTIAL_ACCESS", "pass-the-hash"),
+        (r"\bprocdump\b.*lsass", "H_CREDENTIAL_ACCESS", "procdump lsass"),
+        (r"\breg\s+save\s+hklm\\\\sam\b", "H_CREDENTIAL_ACCESS", "reg save SAM"),
+        # Lateral movement — admin-share + remote-exec cradles. wmic /node:,
+        # psexec, schtasks /s, sc \\\\target, net use \\\\target\\C$.
+        (r"\bpsexec(?:\.exe)?\b", "H_LATERAL_MOVEMENT", "psexec"),
+        (r"\bwmic\b.*\bnode\s*:", "H_LATERAL_MOVEMENT", "wmic /node:"),
+        (r"\bschtasks\b.*\b/s\b", "H_LATERAL_MOVEMENT", "schtasks /s"),
+        (r"\bsc\s+\\\\\\\\", "H_LATERAL_MOVEMENT", "sc \\\\target"),
+        (r"\bnet\s+use\s+\\\\\\\\", "H_LATERAL_MOVEMENT", "net use \\\\target"),
+        (r"\bcopy\s+\\\\\\\\", "H_LATERAL_MOVEMENT", "copy \\\\target"),
+        # Living-off-the-land — PowerShell with the canonical attacker flag
+        # bouquet (-enc / -nop / -w hidden / DownloadString / iex).
+        (r"powershell.*-en?c\b", "H_LIVING_OFF_THE_LAND", "powershell -enc"),
+        (r"powershell.*-nop\b", "H_LIVING_OFF_THE_LAND", "powershell -nop"),
+        (r"powershell.*-w\s+hidden", "H_LIVING_OFF_THE_LAND", "powershell -w hidden"),
+        (r"DownloadString|Invoke-Expression|\biex\b",
+         "H_LIVING_OFF_THE_LAND", "ps download-cradle"),
+        # Anti-forensics — log clearing + secure delete + reg delete of
+        # forensic-relevant keys. Conservative — only flags explicit
+        # clear/delete commands, not benign reg query.
+        (r"\bwevtutil\s+cl\b|\bClear-EventLog\b",
+         "H_ANTI_FORENSICS", "wevtutil cl"),
+        (r"\bsdelete\b", "H_ANTI_FORENSICS", "sdelete"),
+        (r"\bvssadmin\s+delete\s+shadows\b",
+         "H_ANTI_FORENSICS", "vssadmin delete shadows"),
+        # Discovery — whoami /priv + Domain Admins enumeration are the
+        # textbook first-five-minutes commands after gaining a shell.
+        (r"\bwhoami\b\s*/(priv|all|groups)\b",
+         "H_LIVING_OFF_THE_LAND", "whoami /priv"),
+        (r"\bnet\s+group\s+\"?Domain\s+Admins\"?",
+         "H_LIVING_OFF_THE_LAND", "net group Domain Admins"),
+    )
+
+    def _flag_shell_history(self, ctx: AgentContext,
+                             plugin: str,
+                             run: vol3.PluginRun) -> list[Finding]:
+        """FOR508 ex 2.5: any non-empty output from windows.cmdscan or
+        windows.consoles means an attacker shell session was reconstructed
+        from RAM. Emit:
+
+        1. One umbrella ``H_LIVING_OFF_THE_LAND`` finding noting the
+           recovered command/buffer count (always present when the
+           plugin emitted any rows).
+        2. One additional finding per matched keyword in
+           ``_SHELL_KEYWORDS`` — separate findings so each lifts its
+           specific hypothesis independently in ACH.
+
+        Keeping the umbrella finding even when no keywords match is
+        load-bearing: recovered shell history is by itself a strong
+        signal that an interactive operator was at the keyboard.
+        """
+        import re
+
+        # Walk every cell, collect text-bearing values. cmdscan uses
+        # `Command` / `LastDisplayed`; consoles uses `ScreenBuffer` /
+        # similar fields. Be liberal — any non-empty string cell is
+        # potentially command text.
+        lines: list[str] = []
+        for r in run.rows:
+            if not isinstance(r, dict):
+                continue
+            for k, v in r.items():
+                if not isinstance(v, str):
+                    continue
+                v_strip = v.strip()
+                if not v_strip:
+                    continue
+                # Console screen-buffers can be multi-line; split so
+                # each line gets matched independently.
+                lines.extend(s for s in v_strip.splitlines() if s.strip())
+
+        if not lines:
+            return []
+
+        plugin_short = plugin.split(".")[-1]
+        out: list[Finding] = []
+        umbrella_ev = run.as_evidence({"recovered_lines": len(lines),
+                                        "sample": lines[:5]})
+        out.append(self.emit(ctx, Finding(
+            case_id=ctx.case_id, agent=self.name, confidence="high",
+            claim=(f"Shell history recovered from RAM via {plugin_short}: "
+                   f"{len(lines)} non-empty line(s). Interactive cmd.exe / "
+                   f"conhost session reconstructed from RAM is the highest-"
+                   f"signal evidence an operator was at the keyboard."),
+            evidence=[umbrella_ev],
+            hypotheses_supported=["H_LIVING_OFF_THE_LAND", "H_CODE_EXECUTION"],
+        )))
+
+        # Per-keyword hits. Each emits its own finding so ACH can lift
+        # the specific hypothesis (credential-access / lateral-movement /
+        # anti-forensics / LOTL) independently. Bag of hits is grouped
+        # by hypothesis so a session with 50 mimikatz lines doesn't
+        # produce 50 findings — one per (hypothesis, label) pair.
+        seen: dict[tuple[str, str], list[str]] = {}
+        for line in lines:
+            for pat, hyp, label in self._SHELL_KEYWORDS:
+                if re.search(pat, line, re.IGNORECASE):
+                    seen.setdefault((hyp, label), []).append(line[:200])
+
+        for (hyp, label), matched in seen.items():
+            ev = run.as_evidence({"keyword": label,
+                                   "hits": len(matched),
+                                   "sample": matched[:3]})
+            out.append(self.emit(ctx, Finding(
+                case_id=ctx.case_id, agent=self.name, confidence="high",
+                claim=(f"Shell-history keyword [{label}]: "
+                       f"{len(matched)} line(s) match in {plugin_short} "
+                       f"output. Sample: {matched[0]!r}"),
+                evidence=[ev],
+                hypotheses_supported=[hyp],
+            )))
+
+        return out
 
     def _flag_unlinked_dlls(self, ctx: AgentContext,
                              run: vol3.PluginRun) -> list[Finding]:
