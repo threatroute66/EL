@@ -625,6 +625,27 @@ class DiskForensicatorAgent(Agent):
             sk.umount(fs_mount)
             return None
 
+        # FOR508 ex 3.1b: cross-snapshot artifact diff. Compare a small
+        # forensically-critical artefact set (RecentFileCache, Amcache,
+        # Security/System/Application EVTX, scheduled-task .job files)
+        # against each VSS snapshot — anything present in shadow but
+        # absent or shrunk on the live FS is anti-forensic erasure
+        # (operator scrubbed the live copy but did not clean shadows).
+        # Run BEFORE the live unmount so fs_mount is still a valid
+        # fingerprint source.
+        try:
+            self._run_vss_diff(ctx, raw_image, partition, sector_size,
+                                fs_mount, label)
+        except Exception as e:
+            # Diff failures are not fatal — non-VSS volumes are common,
+            # and the per-snapshot mount can fail on any number of
+            # transient FUSE / sudo issues.
+            self.emit(ctx, Finding(
+                case_id=ctx.case_id, agent=self.name, confidence="insufficient",
+                claim=(f"VSS cross-snapshot diff skipped for {label}: "
+                       f"{type(e).__name__}: {str(e)[:160]}"),
+            ))
+
         sk.umount(fs_mount)
 
         if not extracted:
@@ -657,6 +678,99 @@ class DiskForensicatorAgent(Agent):
             evidence=[ev], hypotheses_supported=["H_DISK_ARTIFACTS"],
         ))
         return exports_dir
+
+    def _run_vss_diff(self, ctx: AgentContext, raw_image: Path,
+                      partition: dict, sector_size: int,
+                      live_mount: Path, label: str) -> None:
+        """FOR508 ex 3.1b: enumerate VSS snapshots on this partition,
+        loop-mount each one, fingerprint the forensic-critical artefact
+        list on live + snapshot, emit one Finding per non-trivial diff
+        (deleted-in-live, shrunk-in-live, content-changed).
+
+        Best-effort throughout — no snapshots, no permission, no NTFS
+        parser on the snapshot device, etc., are all soft failures
+        (the caller wraps this in a try/except that emits one
+        insufficient-evidence Finding for the whole step).
+        """
+        from el.skills import vss_diff
+        offset_bytes = partition["start_sector"] * sector_size
+
+        snapshots = vss_diff.vshadowinfo(
+            raw_image, offset_bytes=offset_bytes, timeout=60)
+        if not snapshots:
+            return  # non-VSS volume — nothing to diff
+
+        # Mount all snapshots once via vshadowmount; per-snapshot NTFS
+        # mounts loop on the resulting vss<N> device files.
+        vss_root = Path("/tmp/el-mounts") / f"{ctx.case_id}-vss-{label}"
+        vss_diff.vshadowmount(raw_image, vss_root,
+                               offset_bytes=offset_bytes, timeout=60)
+
+        try:
+            # Fingerprint the live side once (same artefact set per snapshot).
+            live_fp = vss_diff.fingerprint(live_mount, side="live")
+
+            for snap in snapshots:
+                vss_dev = vss_root / f"vss{snap.number}"
+                if not vss_dev.exists():
+                    continue
+                snap_mount = (Path("/tmp/el-mounts")
+                              / f"{ctx.case_id}-vss-{label}-fs{snap.number}")
+                try:
+                    # Snapshot device is already a single-volume stream
+                    # (libvshadow exposes the unwrapped NTFS), so pass
+                    # offset_sectors=0.
+                    sk.mount_ntfs(vss_dev, offset_sectors=0,
+                                   mount_point=snap_mount,
+                                   sector_size=sector_size, timeout=60)
+                except sk.SleuthkitError as e:
+                    self.emit(ctx, Finding(
+                        case_id=ctx.case_id, agent=self.name,
+                        confidence="insufficient",
+                        claim=(f"VSS snapshot {snap.number} on {label} "
+                               f"failed to mount: {e}"),
+                    ))
+                    continue
+
+                try:
+                    snap_fp = vss_diff.fingerprint(
+                        snap_mount, side=f"snapshot:{snap.number}")
+                    diffs = vss_diff.diff_fingerprints(
+                        live_fp, snap_fp, snapshot_number=snap.number)
+                    for d in diffs:
+                        ev = vss_diff.diff_as_evidence(d, raw_image)
+                        # Severity → hypothesis mapping. deleted_in_live
+                        # is the load-bearing case; shrunk/changed are
+                        # corroborative.
+                        hyp = ["H_SHADOW_COPY_ARTIFACT_DELETED",
+                               "H_ANTI_FORENSICS"]
+                        if d.relpath.lower().endswith(".evtx"):
+                            hyp.append("H_LOG_CLEARED")
+                        sev_label = {
+                            "deleted_in_live":
+                                "PRESENT in shadow, ABSENT on live FS",
+                            "shrunk_in_live":
+                                "live FS smaller than shadow",
+                            "changed":
+                                "content differs (size matches)",
+                        }.get(d.severity, d.severity)
+                        self.emit(ctx, Finding(
+                            case_id=ctx.case_id, agent=self.name,
+                            confidence="high",
+                            claim=(f"VSS diff on {label}: "
+                                   f"`{d.relpath}` — {sev_label} "
+                                   f"(snapshot #{snap.number}, "
+                                   f"Δ={d.delta_bytes} bytes). "
+                                   f"Anti-forensic erasure shape — "
+                                   f"operator likely scrubbed the live "
+                                   f"copy but did not clean shadows."),
+                            evidence=[ev],
+                            hypotheses_supported=hyp,
+                        ))
+                finally:
+                    sk.umount(snap_mount)
+        finally:
+            vss_diff.fusermount_unmount(vss_root)
 
     def _fls_to_timeline(self, ctx: AgentContext, fls_run: sk.TskRun, analysis,
                          part_label: str, desc: str = "") -> list[Finding]:

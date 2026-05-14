@@ -369,6 +369,21 @@ def _h_c2_beaconing(f: Finding) -> int:
     return s
 
 
+def _h_shadow_copy_artifact_deleted(f: Finding) -> int:
+    """A forensically critical artefact (RecentFileCache.bcf, Amcache,
+    Security.evtx, scheduled-task .job) is present in a Volume Shadow
+    Copy but absent or shrunk on the live filesystem. The classic
+    anti-forensic erasure shape — operator deleted the live file but
+    did not (could not?) clean shadows. Read together with H_LOG_CLEARED
+    or H_ANTI_FORENSICS this corroborates active evidence-tampering;
+    standalone it surfaces "the operator was here but tried to hide".
+    """
+    s = 0
+    if "H_SHADOW_COPY_ARTIFACT_DELETED" in f.hypotheses_supported:
+        s += 3
+    return s
+
+
 def _h_paired_capture(f: Finding) -> int:
     """Two memory captures of the same host were detected in the bundle —
     a paired-capture configuration. This hypothesis is *advisory*: it
@@ -501,6 +516,15 @@ HYPOTHESES: list[Hypothesis] = [
                "when the attacker's other signals are absent but the "
                "tampering itself is visible (Rathbun VHDX shape).",
                _h_anti_forensics),
+    Hypothesis("H_SHADOW_COPY_ARTIFACT_DELETED",
+               "Forensic artefact deleted from live FS but present in shadow",
+               "An execution-evidence / event-log / scheduled-task artefact "
+               "exists in a Volume Shadow Copy but is missing or truncated on "
+               "the live filesystem. Classic anti-forensic erasure shape: "
+               "attacker scrubbed the live copy but did not clean shadows. "
+               "Stands alone as a deliberate-tampering signal even when the "
+               "live ledger is otherwise quiet.",
+               _h_shadow_copy_artifact_deleted),
     Hypothesis("H_PAIRED_CAPTURE_CANDIDATE",
                "Paired capture detected",
                "Two memory captures of the same host appear in this bundle "
