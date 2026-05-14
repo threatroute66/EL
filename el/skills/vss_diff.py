@@ -104,8 +104,15 @@ class ArtifactDiff:
 # Pure helpers — unit-testable without any subprocess or filesystem mount
 # ---------------------------------------------------------------------------
 
-_SNAPSHOT_HEADER_RE = re.compile(r"^Snapshot:\s*(\d+)\s*$", re.M)
-_FIELD_RE = re.compile(r"^\s+(?P<k>[A-Za-z0-9 ]+?)\s*:\s*(?P<v>.*?)\s*$")
+# libvshadow's CLI calls each snapshot a "Store" in its output —
+# checked against vshadowinfo 20240504 directly. Older docs and SANS
+# slides occasionally say "Snapshot" for the same concept; accept
+# both as section headers so future libvshadow renames don't break
+# the parser silently (which is exactly what happened on the SRL-2015
+# r2 run — every disk reported 0 shadows because the section header
+# was Store:, not Snapshot:).
+_SNAPSHOT_HEADER_RE = re.compile(r"^(?:Store|Snapshot):\s*(\d+)\s*$", re.M)
+_FIELD_RE = re.compile(r"^\s+(?P<k>[A-Za-z0-9 _-]+?)\s*:\s*(?P<v>.*?)\s*$")
 _SIZE_BYTES_RE = re.compile(r"\((\d+)\s*bytes\)")
 
 
@@ -114,14 +121,15 @@ def parse_vshadowinfo(stdout: str) -> list[VssSnapshot]:
 
     Format (libvshadow 20240504):
 
-        Snapshot: 1
+        Store: 1
             Identifier        : aaaa-bbbb-cccc-dddd
             Creation time     : Apr 04, 2012 17:30:11.000000000 UTC
             Volume size       : 64 GiB (68719476736 bytes)
 
     Robust to extra/missing fields — only ``number`` is required to
     construct a record. Unknown fields (e.g. set identifier, attribute
-    flags) are ignored.
+    flags) are ignored. Both ``Store:`` (current libvshadow) and the
+    legacy ``Snapshot:`` header keyword are accepted.
     """
     out: list[VssSnapshot] = []
     # Walk the text snapshot-block by snapshot-block.
@@ -284,10 +292,17 @@ def vshadowinfo(raw_image: Path, offset_bytes: int = 0,
     if proc.returncode != 0:
         # Some images emit "no shadow copies" as rc!=0 with a
         # specific message — treat as empty rather than error.
-        msg = (proc.stderr or proc.stdout).strip()
-        if "no Volume Shadow" in msg or "no shadow" in msg.lower():
+        # The check is case-INSENSITIVE because libvshadow 20240504
+        # emits "No Volume Shadow Snapshots found." with capital N;
+        # earlier tooling docs reference lowercase variants. We saw
+        # the tdungan-disk case raise a VssError on the SRL-2015 r2
+        # run because the substring match was case-sensitive.
+        msg_lower = (proc.stderr or proc.stdout).strip().lower()
+        if "no volume shadow" in msg_lower or "no shadow" in msg_lower:
             return []
-        raise VssError(f"vshadowinfo failed (rc={proc.returncode}): {msg[:300]}")
+        raise VssError(
+            f"vshadowinfo failed (rc={proc.returncode}): "
+            f"{(proc.stderr or proc.stdout).strip()[:300]}")
     return parse_vshadowinfo(proc.stdout)
 
 

@@ -29,18 +29,22 @@ from el.skills.vss_diff import (
 # parse_vshadowinfo
 # ---------------------------------------------------------------------------
 
+# Real libvshadow 20240504 output — captured from the SRL-2015 r2
+# disk re-run. Section header is `Store: <N>`, NOT `Snapshot: <N>`
+# (which was an early-draft mistake in the parser — every real run
+# returned 0 snapshots because of the regex mismatch).
 VSHADOWINFO_OK = """\
 vshadowinfo 20240504
 
 Volume Shadow Snapshots information:
-\tNumber of snapshots:\t2
+\tNumber of stores:\t2
 
-Snapshot: 1
+Store: 1
 \tIdentifier\t\t: aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee
 \tCreation time\t\t: Apr 04, 2012 17:30:11.000000000 UTC
 \tVolume size\t\t: 64 GiB (68719476736 bytes)
 
-Snapshot: 2
+Store: 2
 \tIdentifier\t\t: ffffffff-1111-2222-3333-444444444444
 \tCreation time\t\t: Apr 05, 2012 02:11:33.000000000 UTC
 \tVolume size\t\t: 64 GiB (68719476736 bytes)
@@ -48,6 +52,10 @@ Snapshot: 2
 
 
 def test_parse_vshadowinfo_two_snapshots():
+    """Real libvshadow output uses `Store:` as the section header.
+    Regression: an earlier draft of the parser used `Snapshot:`,
+    which returned 0 rows on every real run and quietly skipped the
+    diff step. This test pins the correct format."""
     snaps = parse_vshadowinfo(VSHADOWINFO_OK)
     assert len(snaps) == 2
     assert snaps[0].number == 1
@@ -57,8 +65,22 @@ def test_parse_vshadowinfo_two_snapshots():
     assert snaps[1].number == 2
 
 
+def test_parse_vshadowinfo_legacy_snapshot_header_still_accepted():
+    """Older libvshadow / SANS slide examples write `Snapshot:` rather
+    than `Store:`. The parser accepts both so we don't get bitten the
+    same way again if upstream renames again."""
+    text = """\
+Snapshot: 1
+\tIdentifier\t\t: legacy-aaaa-bbbb
+\tVolume size\t\t: 32 GiB (34359738368 bytes)
+"""
+    snaps = parse_vshadowinfo(text)
+    assert len(snaps) == 1
+    assert snaps[0].identifier == "legacy-aaaa-bbbb"
+
+
 def test_parse_vshadowinfo_empty():
-    assert parse_vshadowinfo("Number of snapshots: 0\n") == []
+    assert parse_vshadowinfo("Number of stores: 0\n") == []
     assert parse_vshadowinfo("") == []
 
 
@@ -66,7 +88,7 @@ def test_parse_vshadowinfo_skips_unknown_fields():
     """Future libvshadow versions may add or rename fields. Parser
     must not blow up on unrecognised keys."""
     text = """\
-Snapshot: 1
+Store: 1
 \tIdentifier\t: xxxxxxxx-yyyy-zzzz
 \tNew Future Field\t: some-value
 \tVolume size\t: 1 GiB (1073741824 bytes)
