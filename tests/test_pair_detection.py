@@ -37,6 +37,14 @@ from el.intel.pair_detection import (
     ("FILE-MEM", "file"),                  # case-insensitive
     ("plain-host", "plain-host"),          # no suffix to strip
     ("hostimg", "host"),
+    # `-baseline` qualifier strips so a SANS-provided clean baseline
+    # capture (named like `<host>-baseline-mem` or `<host>-baseline`)
+    # collapses to the same root as the live `<host>-mem` capture
+    # → enables the H_NOT_CLEAN_BASELINE hypothesis path.
+    ("nromanoff-baseline-mem", "nromanoff"),
+    ("tdungan-baseline-mem", "tdungan"),
+    ("dc-baseline", "dc"),
+    ("dc-clean-mem", "dc"),                # operator-named "known good"
     # cookie-cutter VM siblings must NOT collapse to the same root
 ])
 def test_name_root_strips_known_suffixes(name, expected):
@@ -171,6 +179,23 @@ def test_three_way_capture_pairs_extremes_and_notes_overflow(tmp_path):
     # Mtime-extreme pair → host-mem (oldest) + host-pmem (newest).
     assert {pc.authoritative_name, pc.baseline_name} == {"host-mem", "host-pmem"}
     assert any("host-memory" in n for n in pc.notes)
+
+
+def test_pairs_sans_baseline_to_live_capture(tmp_path):
+    """SRL-2015 regression: the SANS-provided clean baseline memory
+    image (named like `<host>-baseline-mem`) must pair with the
+    live capture (`<host>-mem`) of the same host. With the
+    `-baseline` strip-suffix in place, both collapse to root
+    `<host>` and the detector emits one PairCandidate."""
+    live = _mkfile(tmp_path / "live" / "nromanoff-mem.img", 4096, b"L")
+    base = _mkfile(tmp_path / "base" / "nromanoff-baseline-mem.img", 4096, b"B")
+    pairs = detect_pairs([("nromanoff-mem", str(live)),
+                          ("nromanoff-baseline-mem", str(base))])
+    assert len(pairs) == 1
+    pc = pairs[0]
+    assert pc.name_root == "nromanoff"
+    assert {pc.authoritative_name, pc.baseline_name} == {
+        "nromanoff-mem", "nromanoff-baseline-mem"}
 
 
 def test_skips_directories_and_zero_size(tmp_path):

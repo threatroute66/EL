@@ -72,12 +72,24 @@ from pathlib import Path
 # lab convention writes paired captures as ``wkstn-01a`` /
 # ``wkstn-01b`` with the dash, which still strips correctly here.
 _SUFFIX_PATTERNS: tuple[re.Pattern, ...] = (
-    # 7+ characters first
+    # 8 — "known good" qualifiers that prefix the acquisition-mode
+    # suffixes. Added after SRL-2015 surfaced two SANS-provided
+    # clean baseline memory images (Win7SP1x86-baseline.img,
+    # XPSP3x86-baseline.img) whose device-name was, by convention,
+    # ``<host>-baseline-mem`` — without this, the live capture
+    # ``<host>-mem`` stripped to ``<host>`` while the baseline
+    # stripped only the ``-mem`` portion to ``<host>-baseline``,
+    # so the two never paired. With ``-baseline`` stripped, both
+    # collapse to the same root and the new H_NOT_CLEAN_BASELINE
+    # hypothesis can fire on the zero-diff side.
+    re.compile(r"[-_]?baseline$"),
+    # 7+ characters
     re.compile(r"[-_]?snapshot\d*$"),
     re.compile(r"[-_]?capture$"),
     re.compile(r"[-_]?memory$"),
     # 5
     re.compile(r"[-_]?image$"),
+    re.compile(r"[-_]?clean$"),     # operator-named "known good" captures
     # 4
     re.compile(r"[-_]?pmem$"),
     re.compile(r"[-_]?snap\d*$"),
