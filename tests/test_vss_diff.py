@@ -233,26 +233,101 @@ def test_diff_drops_identical_and_absent_both(tmp_path):
 # Hypothesis lift — H_SHADOW_COPY_ARTIFACT_DELETED
 # ---------------------------------------------------------------------------
 
-def test_shadow_copy_deletion_lifts_hypothesis(tmp_path):
-    """An H_SHADOW_COPY_ARTIFACT_DELETED-tagged finding must score the
-    new hypothesis at +3 — single-tag lift, stands alone."""
+def _vss_finding(severity: str | None) -> Finding:
+    """Build a VSS-diff finding mirroring what vss_diff.diff_as_evidence
+    actually emits — severity facet on the evidence item."""
+    facts = {"relpath": "Windows/System32/winevt/Logs/Security.evtx",
+             "snapshot": 1}
+    if severity is not None:
+        facts["severity"] = severity
     ev = EvidenceItem(tool="vss", version="0", command="x",
-                      output_sha256="0"*64, output_path="/x")
-    f = Finding(
+                      output_sha256="0"*64, output_path="/x",
+                      extracted_facts=facts)
+    return Finding(
         case_id="c", agent="disk_forensicator", confidence="high",
-        claim=("VSS diff on partition0: "
-               "`Windows/AppCompat/Programs/RecentFileCache.bcf` — "
-               "PRESENT in shadow, ABSENT on live FS (snapshot #2)"),
+        claim=f"VSS diff on partition0: `Security.evtx` — severity={severity}",
         evidence=[ev],
         hypotheses_supported=["H_SHADOW_COPY_ARTIFACT_DELETED",
                                "H_ANTI_FORENSICS"])
-    ranked, _ = score_findings([f])
-    sc_anti = next(r for r in ranked
-                   if r.hyp_id == "H_SHADOW_COPY_ARTIFACT_DELETED")
-    af = next(r for r in ranked if r.hyp_id == "H_ANTI_FORENSICS")
-    assert sc_anti.score == 3
-    # Anti-forensics also lifts (corroboration), expected behaviour.
-    assert af.score >= 3
+
+
+def test_deleted_in_live_lifts_hypothesis_at_plus_5():
+    """Strongest diagnostic — file gone from live FS but present in
+    shadow. No Windows-normal explanation. Score +5 reflects the
+    unambiguous-deletion confidence."""
+    ranked, _ = score_findings([_vss_finding("deleted_in_live")])
+    sc = next(r for r in ranked
+              if r.hyp_id == "H_SHADOW_COPY_ARTIFACT_DELETED")
+    assert sc.score == 5
+
+
+def test_shrunk_in_live_lifts_hypothesis_at_plus_3():
+    """Byte-quantified truncation — the canonical log-cleared shape.
+    Score +3 keeps it strongly corroborative but below the unambiguous
+    deletion case."""
+    ranked, _ = score_findings([_vss_finding("shrunk_in_live")])
+    sc = next(r for r in ranked
+              if r.hyp_id == "H_SHADOW_COPY_ARTIFACT_DELETED")
+    assert sc.score == 3
+
+
+def test_changed_lifts_hypothesis_at_plus_1_only():
+    """Same-size-different-content — sometimes operator-driven, often
+    Windows-normal in-place updates of in-use files at shadow-capture
+    time. Score +1 keeps the finding visible in ACH but stops it from
+    dominating the ranking when (as in SRL-2015 r3) the case produces
+    98 of them while the high-confidence shrunk subset is only 13."""
+    ranked, _ = score_findings([_vss_finding("changed")])
+    sc = next(r for r in ranked
+              if r.hyp_id == "H_SHADOW_COPY_ARTIFACT_DELETED")
+    assert sc.score == 1
+
+
+def test_missing_severity_facet_falls_back_to_plus_3():
+    """Back-compat: synthetic test inputs and findings emitted before
+    the severity facet existed still score +3 (the pre-tightening
+    default). Prevents older sealed cases from changing scoring shape
+    when re-rendered."""
+    ranked, _ = score_findings([_vss_finding(severity=None)])
+    sc = next(r for r in ranked
+              if r.hyp_id == "H_SHADOW_COPY_ARTIFACT_DELETED")
+    assert sc.score == 3
+
+
+def test_severity_dominates_ach_ordering():
+    """Diagnostic ordering must hold: a single deleted_in_live finding
+    outscores a single shrunk_in_live which outscores a single changed.
+    Pins the ordering against future scorer tweaks."""
+    out_del, _ = score_findings([_vss_finding("deleted_in_live")])
+    out_shr, _ = score_findings([_vss_finding("shrunk_in_live")])
+    out_chg, _ = score_findings([_vss_finding("changed")])
+    s_del = next(r.score for r in out_del
+                 if r.hyp_id == "H_SHADOW_COPY_ARTIFACT_DELETED")
+    s_shr = next(r.score for r in out_shr
+                 if r.hyp_id == "H_SHADOW_COPY_ARTIFACT_DELETED")
+    s_chg = next(r.score for r in out_chg
+                 if r.hyp_id == "H_SHADOW_COPY_ARTIFACT_DELETED")
+    assert s_del > s_shr > s_chg
+
+
+def test_changed_aggregate_does_not_overwhelm_shrunk(tmp_path):
+    """The SRL-2015 r3 regression motivating this commit: 98 'changed'
+    findings PLUS 13 'shrunk_in_live' findings on the same case must
+    NOT total higher than the 13 shrunk alone times the deleted-ratio.
+    Under the old +3-flat scorer, 98×3=294 dominated 13×3=39. Under
+    severity-weighted scoring, 98×1=98 vs 13×3=39 — shrunk still
+    weighs less in absolute terms (because there are fewer of them)
+    but the ratio improved from 1:7.5 down to 1:2.5, which is the
+    correction this commit aims for. Test pins the ratio.
+    """
+    changed_findings = [_vss_finding("changed") for _ in range(98)]
+    shrunk_findings = [_vss_finding("shrunk_in_live") for _ in range(13)]
+    ranked, _ = score_findings(changed_findings + shrunk_findings)
+    sc = next(r for r in ranked
+              if r.hyp_id == "H_SHADOW_COPY_ARTIFACT_DELETED")
+    # 98×1 + 13×3 = 137. Under the old +3-flat scorer this would
+    # have been (98+13)×3 = 333.
+    assert sc.score == 137
 
 
 def test_unrelated_finding_does_not_lift_shadow_copy_hypothesis():

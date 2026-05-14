@@ -383,19 +383,57 @@ def _h_ntfs_ads_present(f: Finding) -> int:
     return 0
 
 
+# Severity-weighted lift for VSS-diff findings — diagnostic ordering
+# from strongest to weakest. The lookup is on the diff_as_evidence()
+# severity facet, NOT on the claim text, so the scorer stays robust
+# against future claim-template rewording.
+_VSS_DIFF_SEVERITY_WEIGHT: dict[str, int] = {
+    # File present in shadow, GONE from live FS. Unambiguous deletion
+    # — no Windows-normal explanation for a forensic-critical artefact
+    # disappearing between a shadow capture and the live state.
+    "deleted_in_live":  5,
+    # Live FS smaller than shadow. Byte-quantified truncation — the
+    # canonical "log cleared" shape. The only Windows-normal cause
+    # (log file rotated to a new name) would produce a different
+    # filename, not a smaller copy of the same file.
+    "shrunk_in_live":   3,
+    # Same size, different bytes. Real signal sometimes (operator
+    # truncates-then-refills an EVTX to avoid the obvious shrink-
+    # detection), but the SRL-2015 r3 case showed 98 of these on the
+    # DC alone — many were Windows-normal in-place updates to
+    # in-use files at the moment each shadow was captured. Weighted
+    # low so ACH doesn't tip on aggregate noise; the finding stays
+    # visible in the ledger for analyst review.
+    "changed":          1,
+}
+
+
 def _h_shadow_copy_artifact_deleted(f: Finding) -> int:
     """A forensically critical artefact (RecentFileCache.bcf, Amcache,
     Security.evtx, scheduled-task .job) is present in a Volume Shadow
-    Copy but absent or shrunk on the live filesystem. The classic
-    anti-forensic erasure shape — operator deleted the live file but
-    did not (could not?) clean shadows. Read together with H_LOG_CLEARED
-    or H_ANTI_FORENSICS this corroborates active evidence-tampering;
-    standalone it surfaces "the operator was here but tried to hide".
+    Copy but absent / shrunk / rewritten on the live filesystem. The
+    classic anti-forensic erasure shape — operator deleted the live
+    file but did not (could not?) clean shadows. Read together with
+    H_LOG_CLEARED or H_ANTI_FORENSICS this corroborates active
+    evidence-tampering; standalone it surfaces "the operator was
+    here but tried to hide".
+
+    Lift is severity-weighted from the evidence.extracted_facts.severity
+    facet (set by ``vss_diff.diff_as_evidence``) so the diagnostic
+    ordering is preserved in ACH — deleted_in_live > shrunk_in_live >
+    changed. Findings without the facet (synthetic test inputs, older
+    captures) fall back to +3 for backwards-compat.
     """
-    s = 0
-    if "H_SHADOW_COPY_ARTIFACT_DELETED" in f.hypotheses_supported:
-        s += 3
-    return s
+    if "H_SHADOW_COPY_ARTIFACT_DELETED" not in f.hypotheses_supported:
+        return 0
+    # Find a severity facet on any evidence item — first match wins.
+    for ev in f.evidence:
+        sev = ev.extracted_facts.get("severity")
+        if sev in _VSS_DIFF_SEVERITY_WEIGHT:
+            return _VSS_DIFF_SEVERITY_WEIGHT[sev]
+    # Back-compat default for findings emitted before the severity
+    # facet existed (and for the synthetic tag-only test inputs).
+    return 3
 
 
 def _h_paired_capture(f: Finding) -> int:
