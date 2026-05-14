@@ -195,13 +195,22 @@ class Coordinator:
     def __init__(self, run_timeline: bool = False,
                  timeline_l2t_timeout: int = 7200,
                  timeline_psort_timeout: int = 3600,
-                 memory_baseline: str | None = None):
+                 memory_baseline: str | None = None,
+                 paired_with: dict | None = None):
         self.state = State.INTAKE
         self.transitions: list[tuple[State, State]] = []
         self.run_timeline = run_timeline
         self.timeline_l2t_timeout = timeline_l2t_timeout
         self.timeline_psort_timeout = timeline_psort_timeout
         self.memory_baseline = memory_baseline
+        # When the bundle CLI's pair detector has flagged this device
+        # as half of a paired-capture pair, this dict carries the pair
+        # metadata (role, peer_name, peer_path, reason). Triage emits
+        # an H_PAIRED_CAPTURE_CANDIDATE finding from it, and the memory
+        # forensicator marks any "no non-baseline items observed"
+        # baseliner output as H_NOT_CLEAN_BASELINE so ACH does not
+        # falsely lift the null on a re-capture-of-the-same-host pair.
+        self.paired_with = paired_with
         self.audit: AuditLog | None = None
         self._current_agent: str | None = None
         self._signal_prev: dict[int, object] = {}
@@ -416,6 +425,8 @@ class Coordinator:
         )
         if self.memory_baseline:
             ctx.shared["memory_baseline"] = self.memory_baseline
+        if self.paired_with:
+            ctx.shared["paired_with"] = self.paired_with
 
         self._go(State.TRIAGE)
         self._run_agent(TriageAgent(), ctx)

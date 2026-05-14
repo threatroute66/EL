@@ -78,8 +78,44 @@ class TriageAgent(Agent):
         analysis = ctx.case_dir / "analysis" / self.name
         analysis.mkdir(parents=True, exist_ok=True)
 
+        # Paired-capture marker (set by investigate-bundle's pair
+        # detector when this device's input shares size + name-root
+        # with another device in the same bundle). Emit one Finding
+        # so the H_PAIRED_CAPTURE_CANDIDATE hypothesis scorer can
+        # lift, and the analyst sees the pair surfaced in the
+        # case-glance section of the report.
+        pw = ctx.shared.get("paired_with")
+        if pw:
+            sha = hashlib.sha256(
+                f"paired:{ctx.case_id}:{pw.get('peer_name','')}".encode()
+            ).hexdigest()
+            ev = EvidenceItem(
+                tool="el.pair_detection", version="0.1.0",
+                command=("detect_pairs() over bundle device list — "
+                         "size + name-root match"),
+                output_sha256=sha, output_path=str(ctx.input_path),
+                extracted_facts={
+                    "role": pw.get("role"),
+                    "peer_name": pw.get("peer_name"),
+                    "peer_path": pw.get("peer_path"),
+                    "name_root": pw.get("name_root"),
+                    "size_bytes": pw.get("size_bytes"),
+                    "selection_reason": pw.get("reason"),
+                },
+            )
+            out.append(self.emit(ctx, Finding(
+                case_id=ctx.case_id, agent=self.name, confidence="high",
+                claim=(f"Paired capture detected: this device "
+                       f"({pw.get('role','?')}) shares size and "
+                       f"name-root with {pw.get('peer_name','?')!r} "
+                       f"in the same bundle — selection reason: "
+                       f"{pw.get('reason','(none)')}"),
+                evidence=[ev],
+                hypotheses_supported=["H_PAIRED_CAPTURE_CANDIDATE"],
+            )))
+
         if ctx.input_path.is_dir():
-            return self._classify_directory(ctx, analysis)
+            return out + self._classify_directory(ctx, analysis)
 
         # File-shape early detections that don't need the magic-byte
         # path: iOS sysdiagnose tarballs (filename signature), Magnet/

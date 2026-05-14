@@ -60,12 +60,22 @@ def _h_benign(f: Finding) -> int:
     indicators ("no non-baseline items in Memory Baseliner", "all binaries
     signed by expected publisher"). NOT lifted by insufficient or low
     findings — 'we couldn't analyze it' is not 'it's clean'.
+
+    Paired-capture guard: when a "no non-baseline items observed" finding
+    *also* carries H_NOT_CLEAN_BASELINE in its supported set, the baseline
+    side was a same-host re-capture (not an actual clean reference), so
+    the zero-diff is evidence of *failed remediation*, not cleanliness.
+    Suppressing the +2 in that path is the load-bearing behaviour change:
+    without it, every paired-capture run with zero diff would falsely lift
+    the null and tie / beat the active hypotheses.
     """
     s = 0
-    # Positive lift: explicit baseline-success findings
-    if _claim_contains("no non-baseline items observed",
-                       "no malicious activity",
-                       "all signatures verified")(f):
+    # Positive lift: explicit baseline-success findings — guarded against
+    # paired-capture false-positive (H_NOT_CLEAN_BASELINE marker)
+    if (_claim_contains("no non-baseline items observed",
+                        "no malicious activity",
+                        "all signatures verified")(f)
+            and "H_NOT_CLEAN_BASELINE" not in f.hypotheses_supported):
         s += 2
     # Refute: any tag that points to active malice
     for tag in ("H_PROCESS_INJECTION", "H_C2_OR_REVERSE_SHELL",
@@ -359,6 +369,43 @@ def _h_c2_beaconing(f: Finding) -> int:
     return s
 
 
+def _h_paired_capture(f: Finding) -> int:
+    """Two memory captures of the same host were detected in the bundle —
+    a paired-capture configuration. This hypothesis is *advisory*: it
+    just surfaces the configuration in the ranking so the report calls
+    it out. Scoring is intentionally low (+1) so it never beats an
+    active threat hypothesis; its purpose is visibility, not narrative."""
+    if "H_PAIRED_CAPTURE_CANDIDATE" in f.hypotheses_supported:
+        return 1
+    return 0
+
+
+def _h_not_clean_baseline(f: Finding) -> int:
+    """The baseline side of a paired-capture diff returned zero non-
+    baseline items — same processes, drivers, and services on both
+    sides. Read together with the paired-capture marker this *refutes*
+    the "host was cleanly rebuilt" reading: a real rebuilt host would
+    surface a process / driver / service delta against the incident-era
+    capture. Lifts on:
+
+    * direct H_NOT_CLEAN_BASELINE tag on a baseliner zero-diff finding
+      (the load-bearing case — emitted by memory_forensicator when
+      ctx.shared["paired_with"] is set);
+    * weak corroboration from the paired-capture marker on any
+      finding (less specific but still consistent with the picture).
+
+    Like H_ANTI_FORENSICS, this stands alone when the attacker's other
+    signals are absent — failed remediation is a finding even when the
+    live ledger is otherwise quiet.
+    """
+    s = 0
+    if "H_NOT_CLEAN_BASELINE" in f.hypotheses_supported:
+        s += 3
+    if "H_PAIRED_CAPTURE_CANDIDATE" in f.hypotheses_supported:
+        s += 1
+    return s
+
+
 HYPOTHESES: list[Hypothesis] = [
     Hypothesis("H_BENIGN_NO_INCIDENT",
                "Benign / no incident",
@@ -454,6 +501,24 @@ HYPOTHESES: list[Hypothesis] = [
                "when the attacker's other signals are absent but the "
                "tampering itself is visible (Rathbun VHDX shape).",
                _h_anti_forensics),
+    Hypothesis("H_PAIRED_CAPTURE_CANDIDATE",
+               "Paired capture detected",
+               "Two memory captures of the same host appear in this bundle "
+               "(same size + same name-root after stripping acquisition "
+               "suffixes). Advisory: the analyst can run them as a baseline "
+               "pair to surface the cross-image diff (process / driver / "
+               "service delta) rather than ingesting them as independent "
+               "devices.",
+               _h_paired_capture),
+    Hypothesis("H_NOT_CLEAN_BASELINE",
+               "Baseline not clean / remediation unverified",
+               "A paired-capture baseline diff returned zero non-baseline "
+               "items (same processes, drivers, services on both sides). "
+               "The baseline image is therefore NOT evidence of a cleanly "
+               "rebuilt host — it carries the same persistence layer as "
+               "the incident-era capture. Failed remediation is a finding "
+               "even when the live ledger is otherwise quiet.",
+               _h_not_clean_baseline),
     # macOS-specific persistence + integrity-bypass hypotheses. The
     # Mac forensicator emits these instead of generic
     # H_PERSISTENCE_SERVICE so an analyst reading the ranking can

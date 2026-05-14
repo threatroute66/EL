@@ -985,6 +985,44 @@ def investigate_bundle_cmd(
     bundle_dir = create_bundle_layout(CASE_ROOT, bundle_id)
     bundle = BundleManifest(bundle_id=bundle_id)
 
+    # Pair-detection (advisory v1) — scan the parsed device list for
+    # A/B paired captures of the same host (same byte size + same
+    # name-root after stripping acquisition suffixes). The detector
+    # is read-only on the inputs; it just writes pair_candidates.json
+    # and stamps a paired_with dict onto each affected device's
+    # Coordinator. Two ACH hypotheses (H_PAIRED_CAPTURE_CANDIDATE,
+    # H_NOT_CLEAN_BASELINE) consume the stamp at scoring time.
+    from el.intel.pair_detection import detect_pairs, write_candidates
+    pair_candidates = detect_pairs(parsed)
+    write_candidates(bundle_dir, pair_candidates)
+    paired_meta: dict[str, dict] = {}
+    if pair_candidates:
+        console.print(
+            f"[bold]pair_detection[/bold]: {len(pair_candidates)} "
+            f"paired-capture candidate(s) detected — see "
+            f"{bundle_dir / 'pair_candidates.json'}")
+        for pc in pair_candidates:
+            console.print(
+                f"  [bold]{pc.authoritative_name}[/bold] "
+                f"↔ {pc.baseline_name} (root={pc.name_root!r}, "
+                f"size={pc.size_bytes}B) — {pc.reason}")
+            paired_meta[pc.authoritative_name] = {
+                "role": "authoritative",
+                "peer_name": pc.baseline_name,
+                "peer_path": pc.baseline_path,
+                "name_root": pc.name_root,
+                "size_bytes": pc.size_bytes,
+                "reason": pc.reason,
+            }
+            paired_meta[pc.baseline_name] = {
+                "role": "baseline",
+                "peer_name": pc.authoritative_name,
+                "peer_path": pc.authoritative_path,
+                "name_root": pc.name_root,
+                "size_bytes": pc.size_bytes,
+                "reason": pc.reason,
+            }
+
     for dev_name, dev_path in parsed:
         dev_dir = create_device_layout(bundle_dir, dev_name)
         dev_case_id = make_device_case_id(bundle_id, dev_name)
@@ -996,7 +1034,10 @@ def investigate_bundle_cmd(
             # (self.state) starts at INTAKE and ends at DONE; reusing
             # one instance across devices would attempt an illegal
             # DONE->TRIAGE transition on the second device.
-            coordinator = Coordinator(run_timeline=timeline)
+            coordinator = Coordinator(
+                run_timeline=timeline,
+                paired_with=paired_meta.get(dev_name),
+            )
             result = coordinator.investigate(
                 dev_path, case_id=dev_case_id, case_dir=dev_dir)
         except Exception as e:

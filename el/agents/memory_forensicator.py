@@ -342,10 +342,20 @@ class MemoryForensicatorAgent(Agent):
                 )))
                 continue
             if r.nonbaseline_count == 0:
+                # Paired-capture guard: when the bundle's pair detector
+                # flagged this device's input as half of an A/B pair,
+                # a zero-diff is *not* evidence of a clean host — it
+                # means the baseline side carries the same persistence
+                # layer. Tag with H_NOT_CLEAN_BASELINE so the ACH
+                # scorer for the null suppresses the +2 lift (see
+                # _h_benign) and H_NOT_CLEAN_BASELINE itself lifts.
+                supported: list[str] = []
+                if ctx.shared.get("paired_with"):
+                    supported.append("H_NOT_CLEAN_BASELINE")
                 out.append(self.emit(ctx, Finding(
                     case_id=ctx.case_id, agent=self.name, confidence="high",
                     claim=f"Baseline comparison ({mode}): no non-baseline items observed",
-                    evidence=[ev],
+                    evidence=[ev], hypotheses_supported=supported,
                 )))
             else:
                 hyp = {"proc": "H_PROCESS_INJECTION", "drv": "H_ROOTKIT",
