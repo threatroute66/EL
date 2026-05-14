@@ -646,6 +646,22 @@ class DiskForensicatorAgent(Agent):
                        f"{type(e).__name__}: {str(e)[:160]}"),
             ))
 
+        # FOR508 ex 2.5: hibernation-file shell history. C:\hiberfil.sys
+        # is a frozen RAM snapshot from the moment the host last
+        # hibernated; running vol3 cmdscan/consoles against it surfaces
+        # commands typed *before* the live capture's RAM was acquired —
+        # which is often when the operator was actually working. Run
+        # while fs_mount is still up so we can stat hiberfil.sys
+        # directly via the mounted filesystem.
+        try:
+            self._run_hiberfil_shell_history(ctx, fs_mount, label)
+        except Exception as e:
+            self.emit(ctx, Finding(
+                case_id=ctx.case_id, agent=self.name, confidence="insufficient",
+                claim=(f"Hibernation shell-history extraction skipped for "
+                       f"{label}: {type(e).__name__}: {str(e)[:160]}"),
+            ))
+
         sk.umount(fs_mount)
 
         if not extracted:
@@ -771,6 +787,120 @@ class DiskForensicatorAgent(Agent):
                     sk.umount(snap_mount)
         finally:
             vss_diff.fusermount_unmount(vss_root)
+
+    def _run_hiberfil_shell_history(self, ctx: AgentContext,
+                                     live_mount: Path, label: str) -> None:
+        """FOR508 ex 2.5 follow-on: vol3 cmdscan + consoles on
+        ``hiberfil.sys`` from the mounted live filesystem. Vol3
+        automagic detects the hibernation layer directly — no
+        Vol2-era ``imagecopy`` step needed.
+
+        Best-effort throughout: missing hiberfil, wrong size, vol3
+        layer-detection failure, and "ran but returned no rows" all
+        produce informational Findings rather than raising. This is
+        the freebie tier of the workbook follow-on; we want it to
+        be silent on hosts where hibernation isn't enabled.
+        """
+        from el.skills import vol3
+
+        # Hibernation file lives at the partition root. Some Windows
+        # configurations ship hiberfil.sys but with hibernation disabled
+        # (file shrinks to ~16 MB or stays at "no valid signature").
+        # We require ≥100 MiB before bothering with vol3 — small files
+        # are guaranteed not to contain command-history structures.
+        candidates = [
+            live_mount / "hiberfil.sys",
+            live_mount / "Hiberfil.sys",
+            live_mount / "HIBERFIL.SYS",
+        ]
+        hiberfil = next((p for p in candidates if p.is_file()), None)
+        if hiberfil is None:
+            return  # silent — common case
+
+        try:
+            size = hiberfil.stat().st_size
+        except OSError:
+            return
+        if size < 100 * 1024 * 1024:
+            self.emit(ctx, Finding(
+                case_id=ctx.case_id, agent=self.name, confidence="insufficient",
+                claim=(f"Hibernation file present on {label} but too small "
+                       f"({size} bytes < 100 MiB) — hibernation likely "
+                       f"disabled on this host."),
+            ))
+            return
+
+        analysis = ctx.case_dir / "analysis" / self.name / "hiberfil"
+        analysis.mkdir(parents=True, exist_ok=True)
+
+        # Reuse the same scoring path as live-RAM cmdscan/consoles via
+        # the module-level helpers we exported from memory_forensicator.
+        from el.agents.memory_forensicator import (
+            extract_shell_lines, keyword_hits)
+
+        for plugin in ("windows.cmdscan.CmdScan", "windows.consoles.Consoles"):
+            try:
+                run = vol3.run_plugin(hiberfil, plugin, analysis,
+                                       timeout=900)
+            except vol3.Vol3Error as e:
+                self.emit(ctx, Finding(
+                    case_id=ctx.case_id, agent=self.name,
+                    confidence="insufficient",
+                    claim=(f"vol3 {plugin} on hiberfil.sys ({label}) "
+                           f"failed: {e}"),
+                ))
+                continue
+            if run.rc != 0:
+                # vol3 layer-detection failure on hiberfil.sys is common
+                # (compressed segments, version mismatches). Treat as
+                # insufficient — the live-RAM path still ran.
+                self.emit(ctx, Finding(
+                    case_id=ctx.case_id, agent=self.name,
+                    confidence="insufficient",
+                    claim=(f"vol3 {plugin} could not parse hiberfil.sys on "
+                           f"{label} (rc={run.rc}). Hibernation files use "
+                           f"a compressed layer vol3 can't always decode "
+                           f"without an exact build symbol match — see "
+                           f"{run.stderr_path.name}."),
+                ))
+                continue
+
+            lines = extract_shell_lines(run.rows)
+            if not lines:
+                continue   # silent — boring "ran but no rows"
+
+            plugin_short = plugin.split(".")[-1]
+            umbrella_ev = run.as_evidence({
+                "source": "hiberfil.sys", "host_label": label,
+                "recovered_lines": len(lines), "sample": lines[:5],
+            })
+            self.emit(ctx, Finding(
+                case_id=ctx.case_id, agent=self.name, confidence="high",
+                claim=(f"Shell history recovered from HIBERNATION FILE "
+                       f"({label}) via {plugin_short}: {len(lines)} "
+                       f"non-empty line(s). These are commands the operator "
+                       f"typed BEFORE the live RAM capture — frequently "
+                       f"the most operationally interesting window."),
+                evidence=[umbrella_ev],
+                hypotheses_supported=["H_LIVING_OFF_THE_LAND",
+                                       "H_CODE_EXECUTION"],
+            ))
+
+            for (hyp, kw_label), matched in keyword_hits(lines).items():
+                ev = run.as_evidence({
+                    "source": "hiberfil.sys", "host_label": label,
+                    "keyword": kw_label, "hits": len(matched),
+                    "sample": matched[:3],
+                })
+                self.emit(ctx, Finding(
+                    case_id=ctx.case_id, agent=self.name, confidence="high",
+                    claim=(f"Hibernation-file shell-history keyword "
+                           f"[{kw_label}]: {len(matched)} line(s) match "
+                           f"in {plugin_short} output on {label}. "
+                           f"Sample: {matched[0]!r}"),
+                    evidence=[ev],
+                    hypotheses_supported=[hyp],
+                ))
 
     def _fls_to_timeline(self, ctx: AgentContext, fls_run: sk.TskRun, analysis,
                          part_label: str, desc: str = "") -> list[Finding]:

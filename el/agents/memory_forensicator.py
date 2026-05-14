@@ -571,6 +571,9 @@ class MemoryForensicatorAgent(Agent):
     # human label). Patterns are intentionally narrow — over-broad matches
     # (e.g. bare "net" or "reg") would fire on every legitimate cmd.exe
     # session in the case.
+    #
+    # Backwards-compat alias for the agent-private constant; the
+    # canonical module-level export is SHELL_KEYWORDS below the class.
     _SHELL_KEYWORDS: tuple[tuple[str, str, str], ...] = (
         # Credential access — mimikatz family + LSASS / SAM / DPAPI dump
         # cradles. Note `sekurlsa::`, `lsadump::`, `kerberos::` are the
@@ -623,34 +626,19 @@ class MemoryForensicatorAgent(Agent):
         1. One umbrella ``H_LIVING_OFF_THE_LAND`` finding noting the
            recovered command/buffer count (always present when the
            plugin emitted any rows).
-        2. One additional finding per matched keyword in
-           ``_SHELL_KEYWORDS`` — separate findings so each lifts its
+        2. One additional finding per matched keyword from
+           ``SHELL_KEYWORDS`` — separate findings so each lifts its
            specific hypothesis independently in ACH.
 
         Keeping the umbrella finding even when no keywords match is
         load-bearing: recovered shell history is by itself a strong
         signal that an interactive operator was at the keyboard.
+
+        Scoring logic is in module-level ``extract_shell_lines`` and
+        ``keyword_hits`` so the disk_forensicator hibernation-file
+        hook can reuse it without cross-class private access.
         """
-        import re
-
-        # Walk every cell, collect text-bearing values. cmdscan uses
-        # `Command` / `LastDisplayed`; consoles uses `ScreenBuffer` /
-        # similar fields. Be liberal — any non-empty string cell is
-        # potentially command text.
-        lines: list[str] = []
-        for r in run.rows:
-            if not isinstance(r, dict):
-                continue
-            for k, v in r.items():
-                if not isinstance(v, str):
-                    continue
-                v_strip = v.strip()
-                if not v_strip:
-                    continue
-                # Console screen-buffers can be multi-line; split so
-                # each line gets matched independently.
-                lines.extend(s for s in v_strip.splitlines() if s.strip())
-
+        lines = extract_shell_lines(run.rows)
         if not lines:
             return []
 
@@ -668,18 +656,7 @@ class MemoryForensicatorAgent(Agent):
             hypotheses_supported=["H_LIVING_OFF_THE_LAND", "H_CODE_EXECUTION"],
         )))
 
-        # Per-keyword hits. Each emits its own finding so ACH can lift
-        # the specific hypothesis (credential-access / lateral-movement /
-        # anti-forensics / LOTL) independently. Bag of hits is grouped
-        # by hypothesis so a session with 50 mimikatz lines doesn't
-        # produce 50 findings — one per (hypothesis, label) pair.
-        seen: dict[tuple[str, str], list[str]] = {}
-        for line in lines:
-            for pat, hyp, label in self._SHELL_KEYWORDS:
-                if re.search(pat, line, re.IGNORECASE):
-                    seen.setdefault((hyp, label), []).append(line[:200])
-
-        for (hyp, label), matched in seen.items():
+        for (hyp, label), matched in keyword_hits(lines).items():
             ev = run.as_evidence({"keyword": label,
                                    "hits": len(matched),
                                    "sample": matched[:3]})
@@ -1278,3 +1255,48 @@ class MemoryForensicatorAgent(Agent):
                 hypotheses_supported=["H_CREDENTIAL_ACCESS", "H_PROCESS_INJECTION"],
             )))
         return out
+
+
+# Module-level alias for the keyword library so cross-agent callers
+# (e.g. disk_forensicator's hibernation-file shell-history hook) can
+# import without reaching into the class private namespace.
+SHELL_KEYWORDS = MemoryForensicatorAgent._SHELL_KEYWORDS
+
+
+def extract_shell_lines(rows: list[dict]) -> list[str]:
+    """Pure helper: walk vol3 cmdscan / consoles row dicts, collect
+    every non-empty string cell, split multi-line console screen
+    buffers into individual lines. Returns a flat list ready for
+    keyword scoring.
+
+    Liberal on cell selection — any string field is potential
+    command text. Conservative on splitting — only splits on
+    newlines (so multi-line `for` loops stay together).
+    """
+    lines: list[str] = []
+    for r in rows:
+        if not isinstance(r, dict):
+            continue
+        for v in r.values():
+            if not isinstance(v, str):
+                continue
+            v_strip = v.strip()
+            if not v_strip:
+                continue
+            lines.extend(s for s in v_strip.splitlines() if s.strip())
+    return lines
+
+
+def keyword_hits(lines: list[str]) -> dict[tuple[str, str], list[str]]:
+    """Pure helper: scan a flat line list against SHELL_KEYWORDS,
+    return a {(hypothesis_tag, label): [matched lines]} dict. Caller
+    decides how to render — _flag_shell_history wraps each entry in
+    a Finding; the hibernation-file hook in disk_forensicator wraps
+    them in hiberfil-prefixed Findings."""
+    import re
+    seen: dict[tuple[str, str], list[str]] = {}
+    for line in lines:
+        for pat, hyp, label in SHELL_KEYWORDS:
+            if re.search(pat, line, re.IGNORECASE):
+                seen.setdefault((hyp, label), []).append(line[:200])
+    return seen
