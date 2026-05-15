@@ -1221,16 +1221,35 @@ def _build_diamond_html(
                 tech_counter[str(tid)] += 1
             for tid in facts.get("attack_techniques_list") or []:
                 tech_counter[str(tid)] += 1
+
+    # Adversary email extraction — mirrors the markdown renderer in
+    # diamond.py. External (non-local-domain) emails in supporting
+    # findings' extracted_facts are the attacker's attribution
+    # surface; prepended to the Adversary list so high-signal email
+    # IOCs aren't crowded out by carved-domain noise.
+    from el.reporting.diamond import (
+        _EMAIL_RE, _infer_local_domains, _walk_fact_values,
+    )
+    local_domains = _infer_local_domains(findings)
+    adversary_emails: set[str] = set()
+    for f in supporting:
+        for ev in f.evidence:
+            facts = ev.extracted_facts or {}
+            for s in _walk_fact_values(facts):
+                for em in _EMAIL_RE.finditer(s):
+                    addr = em.group(0).lower()
+                    dom = addr.split("@", 1)[1]
+                    if dom not in local_domains:
+                        adversary_emails.add(addr)
+
     # Victim — same logic as the markdown renderer in diamond.py.
     # Shared helpers _infer_local_domains + _walk_fact_values + _EMAIL_RE
     # live in diamond.py so the two renderers stay in lockstep
     # (regression catch for M57-Jean: previously this block hard-
     # coded the case_id as a victim host even though the case_id is
     # just EL's internal handle, not a real victim).
-    from el.reporting.diamond import (
-        _EMAIL_RE, _infer_local_domains, _walk_fact_values,
-    )
-    local_domains = _infer_local_domains(findings)
+    # Note: local_domains was already computed for the Adversary
+    # email pass above — reuse it.
     victim_hosts: set[str] = set()
     victim_users: set[str] = set()
     if manifest and manifest.get("hostname"):
@@ -1276,8 +1295,8 @@ def _build_diamond_html(
 <p style="color:#8b949e;margin-bottom:8px">Projection for leading hypothesis <b>{lead_label}</b> — {len(supporting)} supporting finding(s). Not attribution to a named actor; the Adversary vertex is the public attribution surface (public IPs + domains) observed in supporting findings.</p>
 <div class="diamond">
   <div class="vertex adversary"><h3>Adversary</h3>
-    <div class="sub">public attribution surface — external IPs + domains</div>
-    {_ul(sorted(pub_ips | domains))}
+    <div class="sub">public attribution surface — external IPs + domains + emails</div>
+    {_ul(sorted(adversary_emails) + sorted(pub_ips | domains))}
   </div>
   <div class="vertex capability"><h3>Capability</h3>
     <div class="sub">MITRE ATT&amp;CK techniques on supporting findings</div>

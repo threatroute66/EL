@@ -152,8 +152,31 @@ def build_diamond_markdown(
     pub_ips, int_ips, domains = _collect_ips_domains(iocs)
     techniques = _collect_techniques(findings, leader_hyp)
 
-    # Adversary = public IPs + public domains (external attribution surface)
-    adversary_lines = sorted(pub_ips | domains)
+    # Adversary email collection — mirrors the Victim email-regex
+    # path but with the FILTER INVERTED: external (non-local) email
+    # addresses found in supporting findings' extracted_facts are
+    # the attacker's attribution surface in BEC-shaped cases. Walks
+    # the same scalar string fact values (sender / actual_recipient /
+    # display_name / from_smtp / etc) and skips any address whose
+    # domain is in the inferred-local-domain set (those are victims,
+    # already handled below). Prepended to the Adversary list so
+    # high-signal email IOCs are never crowded out of the row by the
+    # 47 carved-noise domains the M57-Jean disk produces.
+    local_domains = _infer_local_domains(findings)
+    adversary_emails: set[str] = set()
+    for f in supporting:
+        for ev in f.evidence:
+            facts = ev.extracted_facts or {}
+            for s in _walk_fact_values(facts):
+                for em in _EMAIL_RE.finditer(s):
+                    addr = em.group(0).lower()
+                    dom = addr.split("@", 1)[1]
+                    if dom not in local_domains:
+                        adversary_emails.add(addr)
+
+    # Adversary = email-derived attribution first (highest signal),
+    # then public IPs + public domains
+    adversary_lines = sorted(adversary_emails) + sorted(pub_ips | domains)
     # Infrastructure = internal IPs + all pivot points (both internal + external)
     infrastructure_lines = sorted(int_ips) + sorted(pub_ips) + sorted(domains)
     # Capability = MITRE techniques
@@ -174,8 +197,10 @@ def build_diamond_markdown(
     #     structure doesn't fit top_X. Filtered by inferred-local-
     #     domain so only victim-side addresses qualify; external
     #     recipients are explicitly excluded so they don't double-
-    #     count under Adversary.
-    local_domains = _infer_local_domains(findings)
+    #     count under Adversary (where the inverse filter put them
+    #     above).
+    # local_domains was already computed above for the Adversary
+    # email pass — reuse the same set.
     victim_hosts: set[str] = set()
     victim_users: set[str] = set()
 

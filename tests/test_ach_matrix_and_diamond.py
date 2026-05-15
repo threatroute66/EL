@@ -262,6 +262,93 @@ def test_diamond_email_regex_skips_external_when_no_local_domain():
     assert "_none_" in victim_row
 
 
+def test_diamond_external_email_lands_in_adversary_not_victim():
+    """The inverse of the Victim filter: external (non-local-domain)
+    email addresses in supporting findings' extracted_facts are the
+    attacker's attribution surface and must appear in Adversary.
+    Regression for M57-Jean where `tuckgorge@gmail.com` was the
+    attacker's address but the Adversary quarter never named it."""
+    ranking = [_rank("H_BEC_ACCOUNT_TAKEOVER", "BEC", 51)]
+    pst = _finding(
+        "00P", claim="PST parsed: Inferred local domain(s): m57.biz",
+    )
+    f = _finding(
+        "00E", supports=["H_BEC_ACCOUNT_TAKEOVER"],
+        evidence_facts={
+            "sender": "jean@m57.biz",
+            "actual_recipient": "tuckgorge@gmail.com",
+        },
+    )
+    lines = build_diamond_markdown([pst, f], ranking,
+                                    {"ipv4": []}, manifest={})
+    text = "\n".join(lines)
+    adv_idx = text.find("**Adversary**")
+    vic_idx = text.find("**Victim**")
+    adv_row = text[adv_idx:vic_idx if vic_idx > adv_idx else adv_idx + 200]
+    vic_row = text[vic_idx:vic_idx + 200]
+    # External email IS in Adversary
+    assert "tuckgorge@gmail.com" in adv_row
+    # External email is NOT in Victim
+    assert "tuckgorge@gmail.com" not in vic_row
+    # Local-domain email IS in Victim
+    assert "jean@m57.biz" in vic_row
+
+
+def test_diamond_adversary_emails_prepended_before_carved_domains():
+    """High-signal email IOCs must appear FIRST in the Adversary list
+    so they're not crowded out by carved-domain noise (M57-Jean had
+    47 carved garbage domains that filled the 20-item cap)."""
+    ranking = [_rank("H_BEC_ACCOUNT_TAKEOVER", "BEC", 51)]
+    pst = _finding(
+        "00P", claim="PST parsed: Inferred local domain(s): m57.biz",
+    )
+    exfil = _finding(
+        "00E", supports=["H_BEC_ACCOUNT_TAKEOVER"],
+        evidence_facts={"actual_recipient": "tuckgorge@gmail.com"},
+    )
+    # Lots of carved domains in IOCs — would normally fill the row
+    iocs = {"domain": [f"carved{i}.noise" for i in range(30)]}
+    lines = build_diamond_markdown([pst, exfil], ranking, iocs,
+                                    manifest={})
+    text = "\n".join(lines)
+    adv_idx = text.find("**Adversary**")
+    cap_idx = text.find("**Capability**")
+    adv_row = text[adv_idx:cap_idx]
+    # The email appears BEFORE any carved-domain string in the row
+    email_pos = adv_row.find("tuckgorge@gmail.com")
+    first_carved_pos = adv_row.find("carved0.noise")
+    assert email_pos > 0
+    assert first_carved_pos > 0
+    assert email_pos < first_carved_pos, \
+        "adversary email must be prepended before carved-domain noise"
+
+
+def test_diamond_capability_picks_up_email_forensicator_techniques():
+    """Capability quarter populates from extracted_facts.attack_techniques
+    on supporting findings. The email_forensicator now tags T1566.002
+    / T1534 / T1567 on its BEC-shape findings — Capability must show
+    them. Regression for M57-Jean where Capability was empty even
+    though the case had clear phishing + exfil signal."""
+    ranking = [_rank("H_BEC_ACCOUNT_TAKEOVER", "BEC", 51)]
+    f = _finding(
+        "00E", supports=["H_BEC_ACCOUNT_TAKEOVER"],
+        evidence_facts={
+            "sender": "jean@m57.biz",
+            "actual_recipient": "tuckgorge@gmail.com",
+            # The exact tag set the BEC outbound-mismatch site emits
+            "attack_techniques": ["T1534", "T1567"],
+        },
+    )
+    lines = build_diamond_markdown([f], ranking, {"ipv4": []}, manifest={})
+    text = "\n".join(lines)
+    cap_idx = text.find("**Capability**")
+    inf_idx = text.find("**Infrastructure**")
+    cap_row = text[cap_idx:inf_idx]
+    assert "T1534" in cap_row
+    assert "T1567" in cap_row
+    assert "no technique IDs tagged" not in cap_row
+
+
 def test_diamond_email_regex_with_local_domain_drops_external():
     """Even when the email regex finds both local and external
     addresses in the same fact dict, only the local-domain one is

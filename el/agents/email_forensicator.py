@@ -248,6 +248,14 @@ class EmailForensicatorAgent(Agent):
                                  if inbound.date_submit_utc else None,
                     "matched_reply_stem": stem,
                     "message_dir": str(inbound.message_dir),
+                    # The inbound pretext that initiated the reply
+                    # chain. T1566.002 (Phishing: Spearphishing Link
+                    # — used here as the closest fit for an inbound
+                    # text request) + T1534 (Internal Spearphishing
+                    # — the spoofed display name made the mail look
+                    # internal). Surfaces in the Diamond Capability
+                    # quarter + the narrative ATT&CK chain.
+                    "attack_techniques": ["T1566.002", "T1534"],
                 })
                 out.append(self.emit(ctx, Finding(
                     case_id=ctx.case_id, agent=self.name,
@@ -296,6 +304,11 @@ class EmailForensicatorAgent(Agent):
                 "date_utc": m.date_submit_utc.isoformat()
                              if m.date_submit_utc else None,
                 "message_dir": str(m.message_dir),
+                # Direct sender impersonation. T1566 (Phishing) +
+                # T1534 (Internal Spearphishing) — the spoofed
+                # display name makes the message look internal even
+                # though the SMTP From is external.
+                "attack_techniques": ["T1566.002", "T1534"],
             })
             out.append(self.emit(ctx, Finding(
                 case_id=ctx.case_id, agent=self.name,
@@ -431,6 +444,14 @@ class EmailForensicatorAgent(Agent):
                 "date_utc": m.date_submit_utc.isoformat() if m.date_submit_utc else None,
                 "attachments": [a.filename for a in m.attachments],
                 "message_dir": str(m.message_dir),
+                # Outbound exfil-via-deception: T1534 (Internal
+                # Spearphishing — the user believed they were
+                # replying internally) + T1567 (Exfiltration Over
+                # Web Service — the attachment leaves the org via
+                # the email channel to an external recipient).
+                "attack_techniques": (
+                    ["T1534", "T1567"] if m.attachments else ["T1534"]
+                ),
             })
             out.append(self.emit(ctx, Finding(
                 case_id=ctx.case_id, agent=self.name, confidence="high",
@@ -495,6 +516,12 @@ class EmailForensicatorAgent(Agent):
                 ],
                 "date_utc": m.date_submit_utc.isoformat() if m.date_submit_utc else None,
                 "message_dir": str(m.message_dir),
+                # Pure exfil shape: sensitive attachment to external
+                # recipient. T1567 (Exfiltration Over Web Service —
+                # the email channel routes the data out of org). The
+                # outer mismatch detector adds T1534 separately when
+                # impersonation is also present.
+                "attack_techniques": ["T1567"],
             })
             is_webmail = any(_smtp_domain(r.email) in _CONSUMER_WEBMAIL
                              for r in ext_recips)
