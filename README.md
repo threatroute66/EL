@@ -263,6 +263,67 @@ See **[`docs/state-machine.md`](docs/state-machine.md)** for the
 Mermaid diagram, per-state guarantees, and the authoritative
 transition table.
 
+### Self-correction
+
+EL is not a free-running LLM that "reasons its way" through a case.
+Self-correction is **architectural**: every agent emit path can fail
+into a downgrade-and-continue branch rather than a crash, and the
+result is visible in the ledger as a first-class `insufficient`
+finding the analyst can read. Within-run primitives that exercise
+this on real cases:
+
+- **Partition-table parse fallback.** When `mmls` returns rc=1 on an
+  E01 whose partitioning isn't standard (recovery partitions, hybrid
+  GPT/MBR), `disk_forensicator` falls back to whole-image `fls` on the
+  raw EWF stream rather than aborting. *Surfaced on SRL-2018's
+  `dc-disk` first.*
+- **vol3 symbol-cache miss.** When a Windows memory image needs an
+  ISF symbol pack that isn't local, `memory_forensicator` emits an
+  `insufficient` finding with the exact
+  `downloads.volatilityfoundation.org/volatility3/symbols/...` URL
+  to fetch, and downstream agents see the gap explicitly instead of
+  treating the empty plugin output as "no evidence found."
+- **Hibernation-layer parse failure.** Vol3 can't always decode the
+  compressed hibernation layer on pre-Win10 builds; the hibernation
+  shell-history hook (FOR508 ex 2.5) catches rc=1 per-plugin and
+  records the failure shape so an analyst reading the ledger knows
+  *why* the hibernation channel is silent, not just *that* it is.
+- **Per-snapshot VSS mount retry.** When `vshadowmount` of one
+  snapshot fails (FUSE / sudo / NTFS-parser hiccup), the cross-
+  snapshot diff records the failure on that snapshot and continues
+  to the next — one bad shadow doesn't blow up the diff for the
+  other 24. *Surfaced on SRL-2018-r2's 25-snapshot DC disk.*
+- **Streaming primitive replaces the OOM-killer-prone API.**
+  `scapy.rdpcap()` loads the entire pcap into a Python list and OOMs
+  on multi-GB merged captures; the `scapy_pcap` skill uses
+  `PcapReader` (packet-by-packet) with a configurable cap whose
+  truncation is recorded in the JSON summary so the analyst sees the
+  bound explicitly. *Surfaced on M57-pcaps: 4.7 GiB merge SIGKILLed
+  the python process with no traceback — fix landed at the skill
+  level so every future pcap consumer inherits the streaming path.*
+- **Ubiquitous-IOC suppression.** The cross-case knowledge store
+  buckets every IOC by recurrence; observations seen in 30+ prior
+  cases are classified `ubiquitous` and *do not* lift any
+  hypothesis. Prevents `13.107.6.254` (Microsoft Telemetry) from
+  flipping ACH rankings just because it appears in netscan output.
+- **Pair-detection advisory at intake.** When two device inputs
+  share byte size + name-root (e.g. SRL-2018's `file-mem` ↔
+  `file-mem-snap5`, SRL-2015's `nromanoff-mem` ↔
+  `nromanoff-baseline-mem`), the bundle CLI emits a paired-capture
+  finding and the analyst can opt into Memory-Baseliner cross-diff
+  with `--baseline`. The detection is advisory rather than
+  auto-rewire so a bad pair-name guess can't silently drop a device.
+
+The pattern: every guard ships as a downgrade-and-continue, every
+downgrade leaves a record, and every record is something the analyst
+(or the next case-run) can read and act on. **Self-correction across
+runs is a corollary of within-run self-honesty**: because the agents
+are honest about what they couldn't extract, the next iteration
+knows what to fix. The
+[accuracy report](docs/accuracy_report.md#self-correction-sequences-during-real-case-work)
+walks four end-to-end sequences where this loop closed on real
+third-party evidence.
+
 ---
 
 ## Install
