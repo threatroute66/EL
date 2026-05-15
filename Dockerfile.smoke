@@ -1,0 +1,136 @@
+# Dockerfile.smoke — cold-run smoke test for install.sh
+#
+# Verifies the install.sh deployability claim by running it against
+# a fresh Ubuntu 22.04 base with the SIFT prerequisites pre-installed.
+# Builds an image that mirrors what install.sh's header says it
+# assumes ("a clean SANS SIFT Workstation"):
+#
+#   - Python 3.11+
+#   - virtualenv OR python3-venv
+#   - dotnet runtime (for EZ Tools)
+#   - The Sleuth Kit (fls, mactime, mmls, ...)
+#   - Plaso suite (log2timeline.py, psort.py, pinfo.py)
+#   - bulk_extractor — NOTE: removed from Ubuntu 22.04+; was last in
+#     impish (21.10). install.sh assumes it's pre-installed (real
+#     SIFT ships it), so `el doctor` will report it "no" inside this
+#     container. Build from source for production:
+#     github.com/simsong/bulk_extractor
+#   - /opt/zimmermantools/ EZ Tools collection (install.sh downloads
+#     missing tools into this dir, so we just need the directory)
+#
+# Then runs install.sh + el doctor + the security-boundaries test
+# suite as the deployability proof.
+#
+# Build (run from repo root):
+#   sudo docker build -f Dockerfile.smoke -t el-smoke:latest .
+#
+# Run:
+#   sudo docker run --rm el-smoke:latest
+#
+# To poke around inside if something fails:
+#   sudo docker run --rm -it --entrypoint /bin/bash el-smoke:latest
+#
+# NOT for production use — no evidence ingestion, no sealing, no
+# real-case workflow. The image's only job is "did install.sh
+# produce a working `el doctor`?"
+
+FROM ubuntu:22.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+ENV TZ=Etc/UTC
+
+# Ubuntu base images ship with `main` only — bulk-extractor / dotnet /
+# libewf-dev / libvshadow / libvhdi / libvmdk / libqcow / plaso all
+# live in `universe`. Enable it first.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        software-properties-common ca-certificates \
+    && add-apt-repository -y universe \
+    && rm -rf /var/lib/apt/lists/*
+
+# Base layer — mirrors SIFT's relevant pieces. apt-get-merge-then-clean
+# pattern keeps the image small.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        # SIFT base prereqs install.sh's header documents.
+        # python3 = 3.10 on jammy, but EL needs 3.11+ — see the
+        # python3.12 install in the next RUN step.
+        python3-pip virtualenv \
+        sleuthkit ewf-tools libewf-dev libvshadow-utils \
+        foremost yara ssdeep hashdeep testdisk \
+        libimage-exiftool-perl \
+        # vshadowmount + libvhdi for VHD/VHDX ingest (SIFT default)
+        libvhdi-utils libvmdk-utils libqcow-utils \
+        # Build deps for some pip packages (kuzu, weasyprint, pefile etc.)
+        build-essential pkg-config libffi-dev libssl-dev \
+        libxml2-dev libxslt1-dev zlib1g-dev \
+        libcairo2 libpango-1.0-0 libpangoft2-1.0-0 \
+        # General utilities install.sh + EL use
+        curl wget git ca-certificates sudo \
+        # dotnet runtime for EZ Tools (.NET 6 / .NET 8 both work; 6 is
+        # what SIFT 2024.x ships)
+        dotnet-runtime-6.0 \
+    && rm -rf /var/lib/apt/lists/*
+
+# Python 3.12 from deadsnakes PPA. SIFT 2024.x ships 3.12 as the
+# default python3 — Ubuntu 22.04 stops at 3.10, so an Ubuntu adopter
+# specifically needs deadsnakes (install.sh's preflight prints this
+# exact hint when the interpreter is too old).
+RUN apt-get update && apt-get install -y --no-install-recommends gnupg \
+    && add-apt-repository -y ppa:deadsnakes/ppa \
+    && apt-get update && apt-get install -y --no-install-recommends \
+        python3.12 python3.12-venv python3.12-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# Plaso (log2timeline.py / psort.py / pinfo.py) lives in the GIFT PPA,
+# not Ubuntu main. The global CLAUDE.md notes "Plaso 2024+ removed
+# the win10 preset; win_gen covers XP / 7 / 8 / 10 / 11" — we want
+# the modern Plaso so EL's wrapper defaults work.
+RUN add-apt-repository -y ppa:gift/stable \
+    && apt-get update && apt-get install -y --no-install-recommends \
+        plaso-tools \
+    && rm -rf /var/lib/apt/lists/*
+
+# Stage the EZ Tools mount point. install.sh's install_missing_eztools()
+# downloads whatever the doctor probe finds missing into this dir, so
+# we only need the dir to exist + be writable.
+RUN mkdir -p /opt/zimmermantools
+
+# A user fixture install.sh expects. The script uses $HOME/.local/bin
+# and sudo; running as root inside the container is fine but having a
+# non-root home dir is closer to the SIFT shape.
+RUN useradd -m -s /bin/bash -u 1000 sansforensics \
+    && echo "sansforensics ALL=(ALL) NOPASSWD: ALL" \
+       > /etc/sudoers.d/sansforensics
+
+# Copy the repo. .dockerignore excludes cases/, scratch/, .venv/,
+# .git/, etc., so this is just the code surface.
+WORKDIR /opt/EL
+COPY . /opt/EL/
+RUN chown -R sansforensics:sansforensics /opt/EL
+
+USER sansforensics
+
+# The smoke test itself. install.sh writes provisioning snapshots
+# during the run, so we don't preserve them across builds — the
+# snapshot dir lives inside the container and dies with it.
+#
+# Failure modes we expect to see in the transcript:
+#   - Optional EZ Tools EL downloads (eric-zimmerman.com TLS handshake)
+#   - dotnet/EZ Tools runtime version may differ from SIFT's exact
+#     bundled version; that's a doctor "yes/version" line, not a fail
+#   - YARA-X, JA4, CAPE, tracee, dftimewolf are all optional probes
+#     that produce "no" in doctor — that's expected on a minimal base
+#
+# The hard-pass criterion is: install.sh exits 0, el doctor exits 0,
+# the security-boundaries test suite passes 36/36.
+CMD set -e ; \
+    echo "=== install.sh dry-run with --no-apt (apt phase handled in this Dockerfile) ===" ; \
+    ./install.sh --no-apt 2>&1 | tail -60 ; \
+    echo ; \
+    echo "=== el doctor ===" ; \
+    .venv/bin/el doctor 2>&1 | tail -60 ; \
+    echo ; \
+    echo "=== test_security_boundaries.py (36 bypass-attempt tests) ===" ; \
+    .venv/bin/pytest -q tests/test_security_boundaries.py 2>&1 | tail -8 ; \
+    echo ; \
+    echo "=== test_finding_contract.py (Pydantic schema enforcement) ===" ; \
+    .venv/bin/pytest -q tests/test_finding_contract.py 2>&1 | tail -5

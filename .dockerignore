@@ -1,0 +1,45 @@
+# Build-context exclusions for the Docker cold-run smoke test
+# (Dockerfile.smoke). Without these, `docker build` would slurp
+# 84 GB of operator working state into the context.
+
+# Per-case workspaces (gitignored anyway; 28 GB live)
+cases/
+cases/_archives/
+
+# Operator scratch (56 GB on this host)
+scratch/
+
+# Active venv from the dev host (we re-create it inside the container)
+.venv/
+venv/
+
+# VCS / IDE
+.git/
+.idea/
+.vscode/
+.claude/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# Build / test artefacts
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+build/
+dist/
+htmlcov/
+.coverage
+
+# Provisioning snapshots accumulate
+provisioning/snapshots/
+
+# Stray top-level logs we untracked in commit 244cb0e
+all.log
+log2timeline-*.log.gz
+analysis/
+
+# Docker artefacts themselves
+Dockerfile*
+.dockerignore

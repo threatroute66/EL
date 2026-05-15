@@ -16,6 +16,12 @@
 
 The fastest way to verify EL's accuracy and constraint architecture without downloading anything. Demonstrates the *Constraint Implementation*, *IR Accuracy*, and *Audit Trail Quality* judging criteria.
 
+> Note: a Docker-based cold-run smoke test exists at `Dockerfile.smoke`
+> (~3 min build, ~5 min run) and verifies install.sh actually works on
+> a fresh non-SIFT Ubuntu 22.04 — see [`docs/cold-run.md`](cold-run.md)
+> for the result on `main` and the two friction points the test
+> surfaced (Python 3.11+ preflight, `bulk-extractor` archive removal).
+
 ```bash
 # 1. Clone + bootstrap (idempotent; safe to re-run)
 git clone https://github.com/threatroute66/EL.git /opt/EL

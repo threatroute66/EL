@@ -424,16 +424,51 @@ else
     log "skipping macos-UnifiedLogs install (--no-apt specified)"
 fi
 
+# --- Python version preflight ------------------------------------------------
+# EL's pyproject.toml requires Python 3.11+. SIFT 2024.x ships 3.12 so SIFT
+# users never hit this — but Ubuntu 22.04 ships 3.10, Debian 11 ships 3.9,
+# and a venv created from the wrong interpreter only fails 30 seconds later
+# at `pip install -e .` with "Package 'el' requires a different Python".
+# Preflight makes the failure visible at the right time with a fix-it hint.
+# Choose the newest python3.X interpreter ≥3.11 that's on PATH; record the
+# choice for the venv-creation step below.
+PYTHON_BIN=""
+for candidate in python3.13 python3.12 python3.11 python3; do
+    if command -v "$candidate" >/dev/null 2>&1; then
+        ver="$("$candidate" -c 'import sys; print("%d.%d"%sys.version_info[:2])' 2>/dev/null || echo 0.0)"
+        major="${ver%%.*}"
+        minor="${ver##*.}"
+        if [[ "$major" -eq 3 && "$minor" -ge 11 ]]; then
+            PYTHON_BIN="$candidate"
+            break
+        fi
+    fi
+done
+if [[ -z "$PYTHON_BIN" ]]; then
+    have_ver="$(python3 -c 'import sys; print("%d.%d"%sys.version_info[:2])' 2>/dev/null || echo none)"
+    echo "ERROR: EL needs Python 3.11+ (pyproject.toml requires-python); found python3=${have_ver}" >&2
+    echo "Install a newer Python and retry:" >&2
+    echo "  Ubuntu 22.04: sudo add-apt-repository -y ppa:deadsnakes/ppa && sudo apt install -y python3.12 python3.12-venv" >&2
+    echo "  Debian 11:    sudo apt install -y python3.11 python3.11-venv  (after enabling bookworm-backports)" >&2
+    echo "  SIFT 2024.x:  already ships python3.12 — this branch shouldn't fire on a real SIFT install" >&2
+    exit 2
+fi
+log "selected python interpreter: ${PYTHON_BIN} ($(${PYTHON_BIN} --version 2>&1))"
+
 # --- venv phase -------------------------------------------------------------
 if [[ ! -d "${EL_DIR}/.venv" ]]; then
-    log "creating Python venv at ${EL_DIR}/.venv"
-    if command -v virtualenv >/dev/null 2>&1; then
-        virtualenv -q "${EL_DIR}/.venv"
-    elif python3 -m venv --help >/dev/null 2>&1; then
-        python3 -m venv "${EL_DIR}/.venv"
+    log "creating Python venv at ${EL_DIR}/.venv (using ${PYTHON_BIN})"
+    # Prefer `<python> -m venv` so the venv inherits the exact interpreter
+    # the preflight selected. `virtualenv` without --python could otherwise
+    # default back to the system python3 (3.10 on Ubuntu 22.04) and undo
+    # the preflight check.
+    if "${PYTHON_BIN}" -m venv --help >/dev/null 2>&1; then
+        "${PYTHON_BIN}" -m venv "${EL_DIR}/.venv"
+    elif command -v virtualenv >/dev/null 2>&1; then
+        virtualenv -q --python="${PYTHON_BIN}" "${EL_DIR}/.venv"
     else
-        echo "ERROR: neither virtualenv nor python3-venv is available" >&2
-        echo "Try: sudo apt install -y python3-venv  OR  sudo apt install -y python3-virtualenv" >&2
+        echo "ERROR: ${PYTHON_BIN} found but neither '${PYTHON_BIN} -m venv' nor virtualenv is available" >&2
+        echo "Try: sudo apt install -y ${PYTHON_BIN}-venv  OR  sudo apt install -y python3-virtualenv" >&2
         exit 2
     fi
 fi
