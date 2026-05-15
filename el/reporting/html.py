@@ -1221,20 +1221,45 @@ def _build_diamond_html(
                 tech_counter[str(tid)] += 1
             for tid in facts.get("attack_techniques_list") or []:
                 tech_counter[str(tid)] += 1
-    # Victim from manifest + principals in findings
+    # Victim — same logic as the markdown renderer in diamond.py.
+    # Shared helpers _infer_local_domains + _walk_fact_values + _EMAIL_RE
+    # live in diamond.py so the two renderers stay in lockstep
+    # (regression catch for M57-Jean: previously this block hard-
+    # coded the case_id as a victim host even though the case_id is
+    # just EL's internal handle, not a real victim).
+    from el.reporting.diamond import (
+        _EMAIL_RE, _infer_local_domains, _walk_fact_values,
+    )
+    local_domains = _infer_local_domains(findings)
     victim_hosts: set[str] = set()
     victim_users: set[str] = set()
-    if manifest and manifest.get("case_id"):
-        victim_hosts.add(str(manifest["case_id"]))
+    if manifest and manifest.get("hostname"):
+        victim_hosts.add(str(manifest["hostname"]))
     for f in supporting:
         for ev in f.evidence:
             facts = ev.extracted_facts or {}
+            # (a) Legacy structured-principal lists (Kerberoasting +
+            #     lateral-movement use these).
             for key in ("top_principals", "top_targets", "top_sources"):
                 for item in facts.get(key) or []:
                     if isinstance(item, (list, tuple)) and item:
                         name = str(item[0])
-                        if "@" in name or "\\" in name or name.lower().startswith("s-1-"):
-                            victim_users.add(name)
+                        nlow = name.lower()
+                        if "@" in name:
+                            dom = nlow.split("@", 1)[1]
+                            if not local_domains or dom in local_domains:
+                                victim_users.add(nlow)
+                        elif "\\" in name or nlow.startswith("s-1-"):
+                            victim_users.add(nlow)
+            # (b) Free-text email regex over every scalar string value
+            #     (sender / display_name / actual_recipient / from_smtp /
+            #     etc.). Filtered to local domain.
+            for s in _walk_fact_values(facts):
+                for m in _EMAIL_RE.finditer(s):
+                    addr = m.group(0).lower()
+                    dom = addr.split("@", 1)[1]
+                    if local_domains and dom in local_domains:
+                        victim_users.add(addr)
 
     def _ul(items, cap=20):
         if not items:

@@ -117,7 +117,31 @@ def test_diamond_emits_adversary_capability_infrastructure_victim():
     assert "evil.example.com" in text
     assert "Capability" in text and "T1071.001" in text
     assert "Infrastructure" in text and "10.0.0.5" in text
-    assert "Victim" in text and "wkstn-01" in text
+    # case_id MUST NOT appear in Victim — it's EL's internal handle,
+    # not a real victim host. Regression for the M57-Jean bug where
+    # the Victim quarter said "m57-jean-judges" instead of
+    # "jean@m57.biz". When no real victim principals are extractable,
+    # the row renders as "_none_".
+    assert "wkstn-01" not in text
+    assert "Victim" in text
+    assert "_none_" in text   # no email findings + no top_X → empty row
+
+
+def test_diamond_uses_manifest_hostname_when_present():
+    """If the manifest carries a real hostname (not the case_id), it
+    DOES qualify as a Victim host. Different field name (`hostname`)
+    so a real ComputerName from the registry hive can populate
+    Victim without re-introducing the case_id bug."""
+    ranking = [_rank("H_C2_BEACONING", "C2 beaconing", 9)]
+    f = _finding("01X", supports=["H_C2_BEACONING"],
+                  evidence_facts={"attack_techniques": ["T1071.001"]})
+    lines = build_diamond_markdown(
+        [f], ranking, {"ipv4": []},
+        manifest={"case_id": "abstract-handle",
+                  "hostname": "STARK-DC01"})
+    text = "\n".join(lines)
+    assert "STARK-DC01" in text
+    assert "abstract-handle" not in text
 
 
 def test_diamond_handles_no_public_attribution_surface():
@@ -159,4 +183,110 @@ def test_diamond_extracts_user_principals_from_facts():
     lines = build_diamond_markdown([f], ranking,
                                      {"ipv4": []}, manifest={})
     text = "\n".join(lines)
+    # When no inferred-local-domain is present (no PST in case), the
+    # top_targets legacy path passes through unfiltered — SHIELDBASE.LAN
+    # principals land in Victim because the agent already curated them
+    # as targets-of-the-attack.
     assert "spfarm@SHIELDBASE.LAN".lower() in text.lower()
+
+
+# ---------------------------------------------------------------------------
+# Email-regex Victim path (M57-Jean BEC regression)
+# ---------------------------------------------------------------------------
+
+def test_diamond_email_regex_picks_local_sender_as_victim():
+    """M57-Jean BEC shape: email_forensicator emits a finding whose
+    extracted_facts include sender / actual_recipient / display_name
+    (no top_targets). The Victim quarter must pick up `jean@m57.biz`
+    (the local-domain sender) and NOT `tuckgorge@gmail.com` (the
+    external recipient — that's adversary, not victim). The local-
+    domain heuristic comes from the PST-parsed finding's claim text."""
+    ranking = [_rank("H_BEC_ACCOUNT_TAKEOVER", "BEC", 51)]
+    pst_parsed = _finding(
+        "00P", supports=[],
+        claim="PST parsed (Jean--outlook.pst): 258 message(s) "
+              "across 10 folder(s) (Calendar, Contacts, Deleted Items, "
+              "Drafts, Inbox, Journal, Notes, Outbox, Sent Items, "
+              "Tasks). Inferred local domain(s): google.com, m57.biz",
+    )
+    exfil = _finding(
+        "00E", supports=["H_BEC_ACCOUNT_TAKEOVER"],
+        evidence_facts={
+            "sender": "jean@m57.biz",
+            "display_name": "alison@m57.biz",
+            "actual_recipient": "tuckgorge@gmail.com",
+            "attachments": ["1_m57biz.xls"],
+        },
+        claim="Email display-name/SMTP mismatch — sender=jean@m57.biz",
+    )
+    lines = build_diamond_markdown(
+        [pst_parsed, exfil], ranking,
+        {"domain": ["m57.biz"], "ipv4": []},
+        manifest={"case_id": "m57-jean-judges"})
+    text = "\n".join(lines)
+    # Victim row contains Jean (local-domain principal)
+    assert "jean@m57.biz" in text
+    # External recipient lands in Adversary/Infrastructure (via the
+    # iocs.domain path) but NOT in Victim.
+    victim_block = text.split("**Victim**")[1].split("|")[0:2]
+    assert "tuckgorge@gmail.com" not in "".join(victim_block)
+    # Case ID does not appear anywhere as a victim (regression for
+    # the original M57-Jean bug)
+    assert "m57-jean-judges" not in text
+
+
+def test_diamond_email_regex_skips_external_when_no_local_domain():
+    """When no PST-parsed finding exists (so no inferred local
+    domain), the email regex path must NOT promote external emails
+    to Victim. The Victim quarter stays empty rather than naming the
+    adversary's address as a victim."""
+    ranking = [_rank("H_BEC_ACCOUNT_TAKEOVER", "BEC", 51)]
+    exfil = _finding(
+        "00E", supports=["H_BEC_ACCOUNT_TAKEOVER"],
+        evidence_facts={
+            "sender": "jean@m57.biz",
+            "actual_recipient": "tuckgorge@gmail.com",
+        },
+    )
+    lines = build_diamond_markdown(
+        [exfil], ranking, {"ipv4": []},
+        manifest={"case_id": "no-pst-case"})
+    text = "\n".join(lines)
+    victim_idx = text.find("**Victim**")
+    assert victim_idx > 0
+    victim_row = text[victim_idx:victim_idx + 200]
+    # Both addresses absent from Victim because we can't classify
+    # which one is local without a Inferred local domain marker.
+    assert "tuckgorge@gmail.com" not in victim_row
+    assert "jean@m57.biz" not in victim_row
+    assert "_none_" in victim_row
+
+
+def test_diamond_email_regex_with_local_domain_drops_external():
+    """Even when the email regex finds both local and external
+    addresses in the same fact dict, only the local-domain one is
+    promoted to Victim."""
+    ranking = [_rank("H_BEC_ACCOUNT_TAKEOVER", "BEC", 51)]
+    pst = _finding(
+        "00P", claim="PST parsed: Inferred local domain(s): m57.biz",
+    )
+    f = _finding(
+        "00E", supports=["H_BEC_ACCOUNT_TAKEOVER"],
+        evidence_facts={
+            "sender": "jean@m57.biz",
+            "cc_displayed": "alison@m57.biz",
+            "actual_recipient": "tuckgorge@gmail.com",
+            "external_forward_to": "attacker@example.com",
+        },
+    )
+    lines = build_diamond_markdown([pst, f], ranking,
+                                    {"ipv4": []}, manifest={})
+    text = "\n".join(lines)
+    victim_idx = text.find("**Victim**")
+    victim_row = text[victim_idx:victim_idx + 200]
+    # Local-domain addresses present
+    assert "jean@m57.biz" in victim_row
+    assert "alison@m57.biz" in victim_row
+    # External addresses excluded
+    assert "tuckgorge@gmail.com" not in victim_row
+    assert "attacker@example.com" not in victim_row
