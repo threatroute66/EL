@@ -28,6 +28,49 @@ from el.schemas.finding import EvidenceItem, Finding
 from el.skills import outlook_pst as pst
 
 
+def _header_chain_facts(m: pst.Message) -> dict:
+    """Convert a Message's parsed header_chain (when present) into a
+    flat dict of forensically-load-bearing extracted_facts keys. Used
+    by the inbound-side detectors so the Diamond Adversary quarter
+    picks up the real SMTP-path attribution (originator IP +
+    Return-Path envelope sender + Postfix submitter UID) alongside
+    whatever spoofed display-From the From: line carries.
+
+    Returns {} when no header chain is parsed — keeps the merge
+    site (`facts.update(_header_chain_facts(m))`) a no-op on
+    messages whose InternetHeaders.txt was missing.
+    """
+    hc = getattr(m, "header_chain", None)
+    if hc is None:
+        return {}
+    out = {}
+    if hc.originator_ip:
+        out["smtp_originator_ip"] = hc.originator_ip
+    if hc.originator_host:
+        out["smtp_originator_host"] = hc.originator_host
+    if hc.return_path:
+        out["smtp_return_path"] = hc.return_path
+    if hc.submitter_uid is not None:
+        out["smtp_submitter_uid"] = hc.submitter_uid
+    if hc.x_originating_ip:
+        out["x_originating_ip"] = hc.x_originating_ip
+    if hc.received_chain:
+        # Compact per-hop summary — `from_host`/`from_ip`/`by_host`
+        # for each hop in chronological order so an analyst can read
+        # the relay path without going back to the raw headers file.
+        out["smtp_relay_chain"] = [
+            {k: v for k, v in {
+                "from_host": h.from_host,
+                "from_ip": h.from_ip,
+                "by_host": h.by_host,
+                "uid": h.submitter_uid,
+                "id": h.smtp_id,
+            }.items() if v is not None}
+            for h in hc.received_chain
+        ]
+    return out
+
+
 # Attachment filename keywords that often indicate a sensitive document.
 _SENSITIVE_KEYWORDS = (
     "plan", "roadmap", "confidential", "secret", "salary", "salaries",
@@ -239,7 +282,7 @@ class EmailForensicatorAgent(Agent):
                 if str(inbound.message_dir) in emitted_fids:
                     continue
                 emitted_fids.add(str(inbound.message_dir))
-                ev = run.as_evidence(facts={
+                facts = {
                     "folder": inbound.folder,
                     "subject": inbound.subject,
                     "sender": inbound.sender_email,
@@ -256,7 +299,16 @@ class EmailForensicatorAgent(Agent):
                     # internal). Surfaces in the Diamond Capability
                     # quarter + the narrative ATT&CK chain.
                     "attack_techniques": ["T1566.002", "T1534"],
-                })
+                }
+                # Parsed Received chain + envelope sender — surfaces
+                # the REAL SMTP path underneath any header spoof. On
+                # M57-Jean this lands smtp_originator_ip=208.97.188.9
+                # (Dreamhost shared web server) + Return-Path
+                # `simsong@xy.dreamhostps.com` + submitter UID 558838,
+                # all far more actionable for legal-process pivots
+                # than the spoofed `tuckgorge@gmail.com`.
+                facts.update(_header_chain_facts(inbound))
+                ev = run.as_evidence(facts=facts)
                 out.append(self.emit(ctx, Finding(
                     case_id=ctx.case_id, agent=self.name,
                     confidence="high",
@@ -297,7 +349,7 @@ class EmailForensicatorAgent(Agent):
             real_dom = _smtp_domain(real)
             if not disp_dom or not real_dom or disp_dom == real_dom:
                 continue
-            ev = run.as_evidence(facts={
+            facts = {
                 "folder": m.folder, "subject": m.subject,
                 "from_display": disp, "from_smtp": real,
                 "display_domain": disp_dom, "actual_domain": real_dom,
@@ -309,7 +361,37 @@ class EmailForensicatorAgent(Agent):
                 # display name makes the message look internal even
                 # though the SMTP From is external.
                 "attack_techniques": ["T1566.002", "T1534"],
-            })
+            }
+            # Real SMTP path under the display-name spoof — see
+            # _header_chain_facts for the key set (smtp_originator_ip,
+            # smtp_originator_host, smtp_return_path, smtp_submitter_uid,
+            # x_originating_ip, smtp_relay_chain).
+            facts.update(_header_chain_facts(m))
+            ev = run.as_evidence(facts=facts)
+            # Append the real SMTP-path attribution to the claim when
+            # the parsed Received chain produced one — gives the
+            # narrative a concrete origin (`208.97.188.9` /
+            # `apache2-xy.xy.dreamhostps.com` / `Return-Path
+            # simsong@xy.dreamhostps.com`) instead of stopping at
+            # "display name spoofed".
+            chain_tail = ""
+            orig_ip = facts.get("smtp_originator_ip")
+            orig_host = facts.get("smtp_originator_host")
+            return_path = facts.get("smtp_return_path")
+            submitter_uid = facts.get("smtp_submitter_uid")
+            if orig_ip or return_path:
+                bits = []
+                if orig_ip and orig_host:
+                    bits.append(f"originator {orig_host} [{orig_ip}]")
+                elif orig_ip:
+                    bits.append(f"originator IP {orig_ip}")
+                if return_path:
+                    bits.append(f"envelope Return-Path {return_path}")
+                if submitter_uid is not None:
+                    bits.append(f"Postfix UID {submitter_uid}")
+                chain_tail = (f" Real SMTP path: {', '.join(bits)} — "
+                              f"the displayed From is the spoof; this "
+                              f"is the actual sender's infrastructure.")
             out.append(self.emit(ctx, Finding(
                 case_id=ctx.case_id, agent=self.name,
                 confidence="high",
@@ -318,7 +400,8 @@ class EmailForensicatorAgent(Agent):
                        f"ACTUAL From-SMTP is {real!r} (display domain "
                        f"{disp_dom} ≠ actual {real_dom}). Direct "
                        f"impersonation — the sender spoofed a display "
-                       f"name to make the mail look internal."),
+                       f"name to make the mail look internal."
+                       f"{chain_tail}"),
                 evidence=[ev],
                 hypotheses_supported=[
                     "H_INITIAL_ACCESS_PHISHING",

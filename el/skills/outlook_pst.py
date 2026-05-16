@@ -62,6 +62,13 @@ class Message:
     flags: str                      # raw "Flags:" value, includes "Has attachments"
     size_bytes: int
     attachments: list[Attachment] = field(default_factory=list)
+    # Parsed InternetHeaders.txt — populated by _parse_message when the
+    # pffexport-emitted headers file is present. None when the headers
+    # file is missing (some PST messages predate Outlook's header
+    # preservation, or libpff couldn't decode them). Detectors read
+    # `header_chain.originator_ip` / `.return_path` to surface the
+    # real sender infrastructure underneath any display-name spoof.
+    header_chain: "object | None" = None     # el.skills.email_headers.HeaderChain
 
     @property
     def has_attachments(self) -> bool:
@@ -306,6 +313,24 @@ def _parse_message(msg_dir: Path) -> Message:
         size_b = int(size_s)
     # Folder name is the message_dir's parent's name (folder/Message0001)
     folder = msg_dir.parent.name if msg_dir.parent else ""
+
+    # Parse the raw SMTP envelope + Received chain from
+    # InternetHeaders.txt. Inbound mail in pffexport's output
+    # carries the full RFC 5322 header block; outbound mail
+    # composed in Outlook usually lacks it (the headers aren't
+    # written until the SMTP submission happens, which is the
+    # mail server's job, not the client's). header_chain stays
+    # None when the file is missing or empty — detectors should
+    # treat that as a soft signal, not a parse failure.
+    header_chain = None
+    raw_headers = _read(msg_dir / "InternetHeaders.txt")
+    if raw_headers:
+        try:
+            from el.skills.email_headers import parse as _parse_hdrs
+            header_chain = _parse_hdrs(raw_headers)
+        except Exception:
+            header_chain = None
+
     return Message(
         folder=folder,
         message_dir=msg_dir,
@@ -317,4 +342,5 @@ def _parse_message(msg_dir: Path) -> Message:
         flags=_kv_field(outlook, "Flags"),
         size_bytes=size_b,
         attachments=_collect_attachments(msg_dir),
+        header_chain=header_chain,
     )

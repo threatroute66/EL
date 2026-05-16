@@ -613,7 +613,15 @@ def extract_from_paths(paths: Iterable[str | Path]) -> dict[str, set[str]]:
 # enterprise APT cases — the SRL-2018 dmz-ftp pattern, where
 # `172.16.5.26 → rsydow → dmz-ftp` is the load-bearing pivot.
 _FACT_IP_KEYS = ("source_ip", "source_ips", "src_ip", "src_ips",
-                  "target_host", "remote_host")
+                  "target_host", "remote_host",
+                  # email_forensicator surfaces SMTP path attribution
+                  # from the parsed Received chain. The originator IP
+                  # is the real sender's hosting under any header
+                  # spoof — load-bearing for the Diamond Adversary
+                  # quarter. M57-Jean drove this addition: spoofed
+                  # `tuckgorge@gmail.com` From, actual originator
+                  # `208.97.188.9` (Dreamhost shared web server).
+                  "smtp_originator_ip", "x_originating_ip")
 
 
 def extract_from_finding_facts(findings) -> dict[str, set[str]]:
