@@ -67,6 +67,15 @@ dependencies = [
     "pysigma-backend-elasticsearch>=2.0",
     "pysigma-backend-opensearch>=2.0",
     "pysigma-backend-kusto>=1.0",
+    # iocsearcher (IMDEA Software Institute, MIT) — broader IOC type
+    # coverage than EL's native regex extractor. Augmenting only, not
+    # replacing the core extractor: see el/skills/iocsearcher_extras.py
+    # for the targeted-types list (cryptocurrencies × 13, Tor onion,
+    # CVE refs, social handles × 10, IBAN, phone, Android packages,
+    # MITRE ATT&CK T-IDs in report text). Pulls ~15 transitive deps
+    # (lxml, pdfminer.six, phonenumbers, langdetect, solders, …) —
+    # the cost of breadth on IOC types EL doesn't otherwise extract.
+    "iocsearcher>=2.8",
 ]
 
 [project.optional-dependencies]

@@ -55,7 +55,7 @@ from el.orchestrator.states import State, can_transition
 from el.reporting.html import render_html
 from el.reporting.render import render_report
 from el.reporting.stix import emit_bundle
-from el.skills import ioc_extract
+from el.skills import ioc_extract, iocsearcher_extras
 
 
 from el.agents.android_forensicator import AndroidForensicatorAgent
@@ -554,6 +554,18 @@ class Coordinator:
         rows = list_findings(ctx.case_dir, case_id=ctx.case_id)
         evidence_paths_pre = [e.output_path for f in rows for e in f.evidence]
         ioc_sets_pre = ioc_extract.extract_from_paths(evidence_paths_pre)
+        # iocsearcher pass — augments the core extractor with broader
+        # IOC types EL doesn't have native regex for (crypto wallets,
+        # Tor onions, CVE refs, social handles, IBAN, phone, Android
+        # packages, ATT&CK T-IDs in report text). MIT-licensed
+        # (IMDEA Software Institute). Merges into ioc_sets_pre under
+        # new top-level keys; existing keys are untouched so EL's
+        # 90+ FP regression tests + IANA TLD allowlist + source-kind
+        # awareness all stay in force for the core types.
+        extras_pre = iocsearcher_extras.extract_extras_from_paths(
+            evidence_paths_pre)
+        for k, v in extras_pre.items():
+            ioc_sets_pre.setdefault(k, set()).update(v)
         iocs_pre = {k: sorted(v) for k, v in ioc_sets_pre.items() if v}
         (ctx.case_dir / "iocs.json").write_text(json.dumps(iocs_pre, indent=2))
 
@@ -605,6 +617,14 @@ class Coordinator:
         # APT internal pivots are load-bearing IOCs, not noise).
         fact_iocs = ioc_extract.extract_from_finding_facts(rows)
         for k, v in fact_iocs.items():
+            ioc_sets.setdefault(k, set()).update(v)
+        # iocsearcher extras — same merge pattern; new IOC types
+        # (crypto, onion, cve, social_handle, phone, iban,
+        # android_package, attack_technique) land under their own
+        # top-level keys. See el.skills.iocsearcher_extras for the
+        # type set + the why-not-replace-the-core-extractor rationale.
+        extras = iocsearcher_extras.extract_extras_from_paths(evidence_paths)
+        for k, v in extras.items():
             ioc_sets.setdefault(k, set()).update(v)
         iocs = {k: sorted(v) for k, v in ioc_sets.items() if v}
         (ctx.case_dir / "iocs.json").write_text(json.dumps(iocs, indent=2))
