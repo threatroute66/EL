@@ -176,6 +176,13 @@ _TIME_KEYS = (
     "first_ts_utc", "last_ts_utc",
     "last_used_start_utc", "last_seen_utc",
     "backup_date_utc",
+    # disk_anomaly hits emit earliest_utc / latest_utc when the
+    # matched bodyfile row carries non-zero mactime columns. Added
+    # after M57-Jean audit: 12 disk_forensicator anomaly findings
+    # had mactime data on the matched line but no recognised time
+    # key, so they fell back to EL ingest time and dropped off the
+    # 2008 swimlane window.
+    "earliest_utc", "latest_utc",
 )
 
 

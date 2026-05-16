@@ -330,8 +330,53 @@ def _classify_benign_mei_dirs(text: str) -> frozenset[str]:
     return frozenset(benign)
 
 
+def _row_time_at(text: str, pos: int) -> int | None:
+    """Find the earliest non-zero mactime column in the bodyfile
+    line containing offset `pos`. Returns None when the surrounding
+    line isn't a valid bodyfile row (less than 11 pipe-delimited
+    columns, or all four MAC columns zero).
+
+    Bodyfile column layout (Sleuth Kit mactime body format,
+    0-indexed): 0=md5, 1=name, 2=inode, 3=mode, 4=uid, 5=gid,
+    6=size, 7=atime, 8=mtime, 9=ctime, 10=crtime. We prefer the
+    earliest non-zero of (mtime, ctime, crtime, atime) — mtime is
+    typically the most reliable "when was this file touched" on
+    Windows since atime is suppressed by default since Vista;
+    crtime / ctime fill in for files where mtime is zeroed (the
+    SYSTEM_BINARY_ZERO_TIMESTAMPS shape).
+    """
+    line_start = text.rfind("\n", 0, pos) + 1
+    line_end = text.find("\n", pos)
+    if line_end == -1:
+        line_end = len(text)
+    line = text[line_start:line_end]
+    if "|" not in line:
+        return None
+    parts = line.split("|")
+    if len(parts) < 11:
+        return None
+    candidates: list[int] = []
+    for idx in (8, 9, 10, 7):           # mtime, ctime, crtime, atime
+        try:
+            v = int(parts[idx] or "0")
+        except ValueError:
+            continue
+        if v > 0:
+            candidates.append(v)
+    if not candidates:
+        return None
+    return min(candidates)
+
+
 def scan_text(text: str) -> list[PathHit]:
-    """Match each pattern against the text and return hits in order."""
+    """Match each pattern against the text and return hits in order.
+    Mines mactime mtime/ctime from the matched bodyfile row to populate
+    each hit's earliest_unix / latest_unix — the bodyfile carries
+    atime/mtime/ctime/crtime in columns 7-10 (pipe-delimited), and
+    pattern hits that fire on a real bodyfile line should propagate
+    that timestamp through to the finding so it lands on the kill-
+    chain swimlane at its real artifact time instead of falling back
+    to EL's ingest clock (mostly 18 years late on M57-era cases)."""
     out: list[PathHit] = []
     # One-pass pre-classification of legitimate PyInstaller `_MEI*` dirs
     # so PYINSTALLER_TEMP_DIR doesn't fire on Google Drive Backup&Sync /
@@ -339,6 +384,7 @@ def scan_text(text: str) -> list[PathHit]:
     benign_mei_ids = _classify_benign_mei_dirs(text)
     for p in PATTERNS:
         seen: list[str] = []
+        match_times: list[int] = []
         for m in p.regex.finditer(text):
             snippet = text[max(0, m.start() - 32):min(len(text), m.end() + 32)]
             snippet = snippet.replace("\r", "").replace("\n", " ").strip()
@@ -347,6 +393,14 @@ def scan_text(text: str) -> list[PathHit]:
                 continue
             if snippet not in seen:
                 seen.append(snippet)
+            # Mine the mactime mtime from the bodyfile line containing
+            # this match. Real attacker-staged files carry useful
+            # crtime / mtime; the scan_text path-pattern detectors
+            # previously dropped these on the floor, leaving the
+            # finding without an artifact timestamp.
+            t = _row_time_at(text, m.start())
+            if t is not None:
+                match_times.append(t)
             if len(seen) >= p.max_samples:
                 break
         if seen:
@@ -356,6 +410,8 @@ def scan_text(text: str) -> list[PathHit]:
                 matches=seen,
                 hypotheses=list(p.hypotheses),
                 attack_techniques=list(p.attack_techniques),
+                earliest_unix=min(match_times) if match_times else None,
+                latest_unix=max(match_times) if match_times else None,
             ))
     # Row-level detector: zero-size / zero-timestamp Windows system
     # binaries — the anti-forensic pattern jynxora flagged on M57-Jean
