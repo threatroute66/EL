@@ -172,7 +172,7 @@ _TIME_KEYS = (
     # client_submit / delivery_time; `mtime_utc` is filesystem
     # last-modified; `first_ts_utc` / `last_ts_utc` are window edges
     # of an aggregated event stream (logon/process bursts).
-    "date_utc", "mtime_utc",
+    "date_utc", "mtime_utc", "mtime_latest_utc",
     "first_ts_utc", "last_ts_utc",
     "last_used_start_utc", "last_seen_utc",
     "backup_date_utc",

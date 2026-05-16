@@ -137,3 +137,60 @@ def test_scan_text_existing_rowwise_detectors_still_carry_mtime():
     by_id = {h.pattern_id: h for h in hits}
     assert "SYSTEM_BINARY_ZERO_SIZE" in by_id
     assert by_id["SYSTEM_BINARY_ZERO_SIZE"].earliest_unix == 1200000000
+
+
+# ---------------------------------------------------------------------------
+# Row-wise SYSTEM_BINARY_ZERO_SIZE: fallback to ctime / crtime when mtime
+# has been wiped (anti-forensic timestamping the attacker only got to the
+# primary mtime column, NTFS preserved the secondary columns)
+# ---------------------------------------------------------------------------
+
+def test_zero_size_falls_back_to_ctime_when_mtime_wiped():
+    """Wiped mtime, intact ctime — the row-wise detector must record
+    ctime as the artifact time so the SYSTEM_BINARY_ZERO_SIZE finding
+    still lands on the swimlane near the real drop event."""
+    text = (
+        "0|/Windows/System32/wiped.dll|1|r/r|0|0|0|0|0|1216001000|0\n"
+    )
+    hits = scan_text(text)
+    by_id = {h.pattern_id: h for h in hits}
+    assert "SYSTEM_BINARY_ZERO_SIZE" in by_id
+    assert by_id["SYSTEM_BINARY_ZERO_SIZE"].earliest_unix == 1216001000
+
+
+def test_zero_size_falls_back_to_crtime_when_mtime_and_ctime_wiped():
+    """Worst-case: attacker zeroed both mtime AND ctime. crtime (the
+    NTFS create timestamp) is harder to alter because it lives in
+    $STANDARD_INFORMATION + $FILE_NAME. Falling back to it is the
+    last resort but still better than dropping the finding off the
+    timeline."""
+    text = (
+        "0|/Windows/System32/zeroed.dll|1|r/r|0|0|0|0|0|0|1216002000\n"
+    )
+    hits = scan_text(text)
+    by_id = {h.pattern_id: h for h in hits}
+    assert "SYSTEM_BINARY_ZERO_SIZE" in by_id
+    assert by_id["SYSTEM_BINARY_ZERO_SIZE"].earliest_unix == 1216002000
+
+
+def test_zero_size_prefers_mtime_when_present():
+    """When mtime IS non-zero, the detector keeps using it — the
+    fallback only activates when mtime == 0. Pin the precedence."""
+    text = (
+        "0|/Windows/System32/normal.dll|1|r/r|0|0|0|0|1216000500|1216001000|1216002000\n"
+    )
+    hits = scan_text(text)
+    by_id = {h.pattern_id: h for h in hits}
+    assert by_id["SYSTEM_BINARY_ZERO_SIZE"].earliest_unix == 1216000500
+
+
+def test_zero_size_no_time_when_all_columns_wiped():
+    """All four columns zeroed — true SYSTEM_BINARY_ZERO_TIMESTAMPS
+    shape. earliest_unix stays None; we don't fabricate a time."""
+    text = (
+        "0|/Windows/System32/wiped.dll|1|r/r|0|0|0|0|0|0|0\n"
+    )
+    hits = scan_text(text)
+    by_id = {h.pattern_id: h for h in hits}
+    if "SYSTEM_BINARY_ZERO_SIZE" in by_id:
+        assert by_id["SYSTEM_BINARY_ZERO_SIZE"].earliest_unix is None

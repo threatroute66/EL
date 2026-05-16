@@ -25,7 +25,7 @@ from pathlib import Path
 
 from el.agents.base import Agent, AgentContext
 from el.schemas.finding import EvidenceItem, Finding
-from el.skills import ezt
+from el.skills import csv_time_window, ezt
 
 
 def _findfirst(root: Path, *patterns: str) -> Path | None:
@@ -306,10 +306,23 @@ class WindowsArtifactAgent(Agent):
                 case_id=ctx.case_id, agent=self.name, confidence="insufficient",
                 claim=f"{label}: rc={run.rc} (see {run.stderr_path.name})",
             ))]
+        # Mine the parsed CSV output for an artifact-time window so this
+        # "parsed successfully" finding lands on the kill-chain swimlane
+        # at the artifact's real-world time range (e.g. EVTX 2008-07-19
+        # → 2008-07-22) instead of falling back to EL's ingest time
+        # (2026-…). Bounded helper — caps at 50 MB / 200k rows per file
+        # so an EvtxECmd 5 GB output doesn't OOM the agent.
+        facts: dict[str, str] = {}
+        window = csv_time_window.scan_files(run.output_files)
+        if window is not None:
+            earliest, latest = window
+            facts["earliest_utc"] = earliest.isoformat()
+            if latest != earliest:
+                facts["latest_utc"] = latest.isoformat()
         return [self.emit(ctx, Finding(
             case_id=ctx.case_id, agent=self.name, confidence="high",
             claim=f"{label}: parsed successfully",
-            evidence=[run.as_evidence()],
+            evidence=[run.as_evidence(facts=facts or None)],
             hypotheses_supported=["H_DISK_ARTIFACTS"],
         ))]
 

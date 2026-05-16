@@ -562,8 +562,15 @@ def _scan_bodyfile_rowwise(text: str) -> list[PathHit]:
         if is_system_path and size == 0 and not is_fname_attr:
             if len(zero_size) < 15:
                 zero_size.append(name[-120:])
-            if mtime > 0:
-                zero_size_mtimes.append(mtime)
+            # Fall back to ctime / crtime / atime when attacker zeroed
+            # mtime but other MAC columns survived. Same min-of-non-
+            # zero order as `_row_time_at` used by the path-pattern
+            # detector — keeps row-wise and path-pattern detectors in
+            # lockstep on which column they prefer when the primary
+            # mtime is wiped.
+            best = next((t for t in (mtime, ctime, crtime, atime) if t > 0), 0)
+            if best > 0:
+                zero_size_mtimes.append(best)
         if (is_system_path and atime == mtime == ctime == crtime == 0
                 and not is_fname_attr):
             if len(zero_ts) < 15:
