@@ -254,6 +254,14 @@ class WindowsArtifactAgent(Agent):
         out.extend(self._jumplists(ctx, root, analysis))
         out.extend(self._lnk(ctx, root, analysis))
         out.extend(self._recyclebin(ctx, root, analysis))
+        # Time-baseline (SYSTEM hive: TimeZoneInformation + W32Time
+        # config). Emits a single per-case calibration Finding the
+        # analyst can refer to when reading any other artifact time
+        # — tells them the configured TZ + whether the clock was
+        # NTP-synced (drift bounded) or NoSync (drift unbounded).
+        # See el/skills/time_baseline.py for the doc string on why
+        # this is a "document, don't correct" emission.
+        out.extend(self._time_baseline(ctx, root, analysis))
         # BAM/DAM (SYSTEM hive) and Windows Timeline (ActivitiesCache.db)
         # — both already extracted by DiskForensicator; consume them here.
         out.extend(self._bam_dam(ctx, root, analysis))
@@ -567,6 +575,86 @@ class WindowsArtifactAgent(Agent):
                 hypotheses_supported=hyp,
             )))
         return out
+
+    def _time_baseline(self, ctx, root, analysis):
+        """Read the SYSTEM hive for TimeZoneInformation + W32Time
+        config, emit a single Finding documenting the system's
+        configured TZ + sync state. The analyst uses this baseline
+        to interpret any FAT / EXIF / Office-metadata local-time
+        values elsewhere in the case. We deliberately do NOT modify
+        artifact times — automated correction would invalidate the
+        chain of custody for a delta the baseline alone can't
+        precisely measure."""
+        from el.schemas.finding import EvidenceItem
+        from el.skills import time_baseline
+        import hashlib
+
+        system_hive = _findfirst(root, "SYSTEM")
+        if not system_hive:
+            return []
+        tb = time_baseline.parse_system_hive(system_hive)
+        if not tb.have_anything:
+            note = "; ".join(tb.notes) if tb.notes else "no readable keys"
+            return [self.emit(ctx, Finding(
+                case_id=ctx.case_id, agent=self.name,
+                confidence="insufficient",
+                claim=(f"Time-baseline: SYSTEM hive opened but "
+                       f"TimeZoneInformation + W32Time keys absent — "
+                       f"clock calibration unavailable ({note})."),
+            ))]
+        # Build a readable one-liner for the report. Bias semantics:
+        # Windows stores Bias / ActiveTimeBias as POSITIVE minutes when
+        # the local clock is BEHIND UTC (e.g. PST=480, GMT=0, JST=-540).
+        # Our parser already folds the unsigned-DWORD encoding back to
+        # signed; for the narrative we flip the sign so a non-DFIR
+        # reader sees the familiar UTC offset convention.
+        utc_offset_h = ""
+        if tb.tz_active_bias_minutes is not None:
+            mins = -tb.tz_active_bias_minutes
+            sign = "+" if mins >= 0 else "-"
+            utc_offset_h = (f"UTC{sign}{abs(mins)//60:02d}:"
+                            f"{abs(mins)%60:02d}")
+        tz_summary = (f"{tb.tz_standard_name or 'unknown TZ'}"
+                      f" (active offset {utc_offset_h or 'unknown'})")
+        last_change = (f"; W32Time config last touched "
+                       f"{tb.w32time_config_last_write_utc[:19]}"
+                       if tb.w32time_config_last_write_utc else "")
+        ev = EvidenceItem(
+            tool="el.time_baseline", version="0.1.0",
+            command=f"parse_system_hive({system_hive.name})",
+            output_sha256=hashlib.sha256(
+                system_hive.read_bytes()).hexdigest(),
+            output_path=str(system_hive),
+            extracted_facts={
+                "control_set": tb.control_set,
+                "tz_standard_name": tb.tz_standard_name,
+                "tz_daylight_name": tb.tz_daylight_name,
+                "tz_bias_minutes": tb.tz_bias_minutes,
+                "tz_active_bias_minutes": tb.tz_active_bias_minutes,
+                "w32time_type": tb.w32time_type,
+                "w32time_ntp_server": tb.w32time_ntp_server,
+                "w32time_config_last_write_utc":
+                    tb.w32time_config_last_write_utc,
+                "sync_state": tb.sync_state_label,
+                "phase": "time_baseline",
+            },
+        )
+        # Sync state drives a single-bit clock-trust signal:
+        #   NTP / NT5DS → drift bounded, clock trustworthy
+        #   NoSync       → drift unbounded, treat times with caution
+        #   anything else → unknown — surface but don't editorialise
+        trust = "trustworthy" if tb.w32time_type.upper() in (
+            "NTP", "NT5DS") else "drift unbounded — treat with caution" \
+            if tb.w32time_type.upper() == "NOSYNC" else "trust unknown"
+        return [self.emit(ctx, Finding(
+            case_id=ctx.case_id, agent=self.name, confidence="high",
+            claim=(f"Time-baseline (calibration only — no times modified): "
+                   f"TZ = {tz_summary}; sync = {tb.sync_state_label}; "
+                   f"clock {trust}{last_change}. Apply this when reading "
+                   f"any FAT / EXIF / Office-metadata local-time values."),
+            evidence=[ev],
+            hypotheses_supported=["H_DISK_ARTIFACTS"],
+        ))]
 
     def _bam_dam(self, ctx, root, analysis):
         """Walk the SYSTEM hive's BAM/DAM subtree and surface per-user

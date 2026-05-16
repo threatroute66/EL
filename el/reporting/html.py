@@ -32,7 +32,7 @@ from el.reporting.graph_export import export_graph
 from el.reporting.narrative import (
     BEATS as _BEATS,
     evidence_time as _nar_evidence_time,
-    is_parse_confirmation as _nar_is_parse_confirmation,
+    is_swimlane_metadata as _nar_is_swimlane_metadata,
     synthesize as _narrative_synth,
     _beat_from_finding as _nar_beat_from_finding,
     _BEAT_HEADING as _NAR_BEAT_HEADING,
@@ -1418,7 +1418,7 @@ def _finding_to_dict(f: Finding) -> dict:
         # / per-record children carry the real swimlane points. Keeping
         # them off the strip prevents a stray 1999 hive timestamp from
         # stretching the X axis across decades.
-        "swimlane_eligible": not _nar_is_parse_confirmation(f),
+        "swimlane_eligible": not _nar_is_swimlane_metadata(f),
     }
 
 

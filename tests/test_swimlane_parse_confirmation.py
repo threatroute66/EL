@@ -18,7 +18,10 @@ from datetime import datetime, timezone
 
 import pytest
 
-from el.reporting.narrative import is_parse_confirmation
+from el.reporting.narrative import (
+    is_parse_confirmation,
+    is_swimlane_metadata,
+)
 from el.schemas.finding import EvidenceItem, Finding
 
 
@@ -146,6 +149,62 @@ def test_finding_to_dict_marks_event_findings_eligible():
              hypotheses=["H_APT_ESPIONAGE"])
     d = _finding_to_dict(f)
     assert d["swimlane_eligible"] is True
+
+
+def test_backcompat_alias_still_works():
+    """is_parse_confirmation is now an alias for is_swimlane_metadata.
+    Pin so a future rename doesn't silently break callers that
+    imported the old name."""
+    assert is_parse_confirmation is is_swimlane_metadata
+
+
+# ---------------------------------------------------------------------------
+# Calibration baselines (phase=='time_baseline') are also metadata
+# ---------------------------------------------------------------------------
+
+def test_ewf_skew_baseline_is_swimlane_metadata():
+    """disk_forensicator's EWF acquirer-vs-target clock-skew Finding
+    carries `extracted_facts.phase == "time_baseline"` — same
+    metadata category as a parse confirmation, must be skipped from
+    the swimlane (otherwise a 0-skew finding would land at EL ingest
+    time and clutter the strip)."""
+    f = _mkf(agent="disk_forensicator",
+             claim=("EWF acquirer-vs-target clock skew baseline: "
+                    "0s — target's RTC matched the acquirer's reference"),
+             facts={"phase": "time_baseline", "skew_seconds": 0})
+    assert is_swimlane_metadata(f)
+
+
+def test_time_baseline_finding_is_swimlane_metadata():
+    """windows_artifact's TZ + W32Time baseline — same `phase`
+    marker, same skip rule."""
+    f = _mkf(agent="windows_artifact",
+             claim=("Time-baseline (calibration only — no times "
+                    "modified): TZ = GMT Standard Time"),
+             facts={"phase": "time_baseline",
+                     "tz_standard_name": "GMT Standard Time",
+                     "w32time_type": "NTP"})
+    assert is_swimlane_metadata(f)
+
+
+def test_phase_marker_not_set_means_event_eligible():
+    """Findings without the `phase` marker stay eligible — the
+    `phase=="time_baseline"` opt-out has to be explicit."""
+    f = _mkf(agent="disk_forensicator",
+             claim="Disk anomaly [SVCHOST_OUTSIDE_SYSTEM32]",
+             facts={"pattern_id": "SVCHOST_OUTSIDE_SYSTEM32",
+                     "match_count": 1})
+    assert not is_swimlane_metadata(f)
+
+
+def test_other_phase_values_dont_match():
+    """Only `phase == "time_baseline"` opts out. Other phase
+    values (e.g. `phase == "ewfinfo"` used by an unrelated finding
+    family) remain swimlane-eligible."""
+    f = _mkf(agent="disk_forensicator",
+             claim="EWF metadata captured",
+             facts={"phase": "ewfinfo"})
+    assert not is_swimlane_metadata(f)
 
 
 def test_finding_to_dict_other_agents_default_eligible():

@@ -159,25 +159,40 @@ def _beat_from_finding(f: Finding) -> str:
 # discrete events
 # ---------------------------------------------------------------------------
 
-def is_parse_confirmation(f: Finding) -> bool:
-    """A "parse confirmation" finding tells the analyst that a forensic
-    parser ran cleanly against an artifact and produced output — it's
-    metadata about the parse, not an event in the attack timeline.
+def is_swimlane_metadata(f: Finding) -> bool:
+    """True for findings that describe parse status / system
+    calibration baselines — not discrete events in the attack
+    timeline. The kill-chain swimlane is a per-event scatter plot;
+    plotting a calibration marker either widens the time axis (a
+    registry hive's earliest write can be the OS install in 1999)
+    or misleads with a single dot for what's actually a per-case
+    metadata value.
 
-    The kill-chain swimlane is a per-event scatter plot; placing a
-    parse-confirmation marker on it widens the time axis (registry
-    hives can contain timestamps decades older than the incident) and
-    inflates the event count without telling the analyst anything
-    about what the attacker did. The per-key / per-record findings
-    emitted alongside the parse-confirmation are the real events; they
-    land on the swimlane in their own right.
+    Three shapes are covered:
+      1. windows_artifact "<label>: parsed successfully" — output
+         of `_try()` for RECmd / EvtxECmd / MFTECmd / etc.
+      2. disk_forensicator EWF acquirer-vs-target clock skew
+         baseline — uses extracted_facts.phase == "time_baseline".
+      3. windows_artifact time-baseline (TZ + W32Time config) —
+         same `phase` marker.
 
-    Concretely covers `windows_artifact._try()` outputs — RECmd batch,
-    EvtxECmd, MFTECmd, AmcacheParser, PECmd, SBECmd, JLECmd, LECmd,
-    RBCmd, etc. — whose claim always ends in "parsed successfully".
+    The per-key / per-record findings emitted alongside each of
+    these are the real events and still land on the swimlane.
     """
-    return (f.agent or "") == "windows_artifact" and \
-        (f.claim or "").endswith(": parsed successfully")
+    if (getattr(f, "agent", "") or "") == "windows_artifact" and \
+            (getattr(f, "claim", "") or "").endswith(": parsed successfully"):
+        return True
+    for ev in (getattr(f, "evidence", None) or []):
+        facts = getattr(ev, "extracted_facts", None) or {}
+        if facts.get("phase") == "time_baseline":
+            return True
+    return False
+
+
+# Back-compat alias — earlier this predicate was scoped to parse
+# confirmations only. Keep the old name working so unreleased callers
+# / tests don't break in one go.
+is_parse_confirmation = is_swimlane_metadata
 
 
 # ---------------------------------------------------------------------------

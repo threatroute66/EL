@@ -80,6 +80,14 @@ class DiskForensicatorAgent(Agent):
                     evidence=[info.as_evidence({"phase": "ewfinfo"})],
                     hypotheses_supported=["H_DISK_IMAGE"],
                 )))
+                # Acquirer-vs-target clock skew baseline. The two
+                # header dates in ewfinfo stdout are emitted by libewf
+                # in the acquirer's local TZ with no TZ tag, so each
+                # individual value isn't UTC-anchored — but their
+                # DELTA is TZ-independent and the first calibration
+                # point analysts need before reading any FAT / EXIF /
+                # Office-metadata local-time values.
+                out.extend(self._ewf_skew_baseline(ctx, info.stdout_path))
         except sk.SleuthkitError as e:
             out.append(self.emit(ctx, Finding(
                 case_id=ctx.case_id, agent=self.name, confidence="insufficient",
@@ -106,6 +114,63 @@ class DiskForensicatorAgent(Agent):
         finally:
             sk.ewfumount(mount_point)
         return out
+
+    def _ewf_skew_baseline(self, ctx: AgentContext,
+                            ewfinfo_stdout: Path) -> list[Finding]:
+        """Parse ewfinfo stdout for the (Acquisition date, System date)
+        delta, emit a baseline Finding. The DELTA itself is TZ-
+        independent — the same forensic value regardless of which TZ
+        libewf used to render either timestamp."""
+        from el.skills import ewf_skew
+        skew = ewf_skew.parse_file(ewfinfo_stdout)
+        if not skew.have_skew:
+            return [self.emit(ctx, Finding(
+                case_id=ctx.case_id, agent=self.name,
+                confidence="insufficient",
+                claim=("EWF acquirer-vs-target clock skew baseline: "
+                       "ewfinfo stdout did not carry both Acquisition "
+                       "date and System date — calibration baseline "
+                       "unavailable from EWF header alone (analyst "
+                       "should look for an external reference)."),
+            ))]
+        # Plain-English summary the analyst reads at the top of the
+        # report. Sign convention: positive = target clock was AHEAD
+        # of the acquirer's reference (rare, usually wrong system
+        # time); negative = target was BEHIND.
+        if skew.skew_seconds == 0:
+            verdict = ("0s — target's RTC matched the acquirer's "
+                       "reference clock at acquisition")
+        else:
+            direction = "behind" if skew.skew_seconds > 0 else "ahead of"
+            verdict = (f"{abs(skew.skew_seconds)}s — target's RTC was "
+                       f"{direction} the acquirer's reference clock")
+        import hashlib
+        try:
+            sha = hashlib.sha256(ewfinfo_stdout.read_bytes()).hexdigest()
+        except OSError:
+            sha = "0" * 64
+        ev = EvidenceItem(
+            tool="el.ewf_skew", version="0.1.0",
+            command=f"parse_file({ewfinfo_stdout.name})",
+            output_sha256=sha,
+            output_path=str(ewfinfo_stdout),
+            extracted_facts={
+                "acquisition_date": skew.acquisition_date_raw,
+                "system_date": skew.system_date_raw,
+                "skew_seconds": skew.skew_seconds,
+                "phase": "time_baseline",
+            },
+        )
+        return [self.emit(ctx, Finding(
+            case_id=ctx.case_id, agent=self.name, confidence="high",
+            claim=(f"EWF acquirer-vs-target clock skew baseline: "
+                   f"{verdict}. Acquisition date {skew.acquisition_date_raw!r}, "
+                   f"system date {skew.system_date_raw!r}. Use this delta "
+                   f"to calibrate any FAT / EXIF / Office-metadata local-"
+                   f"time values in the case."),
+            evidence=[ev],
+            hypotheses_supported=["H_DISK_IMAGE"],
+        ))]
 
     def _raw_disk_walk(self, ctx: AgentContext, analysis, raw_image: Path) -> list[Finding]:
         """Walk a raw disk stream (.img, .dd, or ewfmount-exposed ewf1).
