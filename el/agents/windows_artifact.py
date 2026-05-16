@@ -614,7 +614,7 @@ class WindowsArtifactAgent(Agent):
             sign = "+" if mins >= 0 else "-"
             utc_offset_h = (f"UTC{sign}{abs(mins)//60:02d}:"
                             f"{abs(mins)%60:02d}")
-        tz_summary = (f"{tb.tz_standard_name or 'unknown TZ'}"
+        tz_summary = (f"{tb.tz_display_name or 'unknown TZ'}"
                       f" (active offset {utc_offset_h or 'unknown'})")
         last_change = (f"; W32Time config last touched "
                        f"{tb.w32time_config_last_write_utc[:19]}"
@@ -629,6 +629,8 @@ class WindowsArtifactAgent(Agent):
                 "control_set": tb.control_set,
                 "tz_standard_name": tb.tz_standard_name,
                 "tz_daylight_name": tb.tz_daylight_name,
+                "tz_key_name": tb.tz_key_name,
+                "tz_display_name": tb.tz_display_name,
                 "tz_bias_minutes": tb.tz_bias_minutes,
                 "tz_active_bias_minutes": tb.tz_active_bias_minutes,
                 "w32time_type": tb.w32time_type,

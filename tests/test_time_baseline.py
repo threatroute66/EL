@@ -20,6 +20,7 @@ import pytest
 
 from el.skills.time_baseline import (
     TimeBaseline,
+    _decode_utf16_buffer,
     _dword_as_signed_minutes,
     _filetime_to_iso,
     parse_system_hive,
@@ -92,6 +93,89 @@ def test_filetime_overflow_returns_empty():
 
 
 # ---------------------------------------------------------------------------
+# _decode_utf16_buffer — TimeZoneKeyName regipy-overrun fix
+# ---------------------------------------------------------------------------
+
+def test_utf16_decode_simple_utc_buffer():
+    """Vista+ TimeZoneKeyName comes back as a 128-byte buffer
+    holding UTF-16LE "UTC" + null + uninitialised hive memory.
+    Decoder must truncate at the first null."""
+    raw = b"U\x00T\x00C\x00\x00\x00" + b"\xda\xff" * 60  # garbage after null
+    assert _decode_utf16_buffer(raw) == "UTC"
+
+
+def test_utf16_decode_eastern_standard_time():
+    """Common workstation TZ — string + null + garbage padding."""
+    raw = ("Eastern Standard Time".encode("utf-16-le")
+           + b"\x00\x00" + b"\xff" * 80)
+    assert _decode_utf16_buffer(raw) == "Eastern Standard Time"
+
+
+def test_utf16_decode_already_string_passes_through():
+    """XP-era StandardName arrives as a clean str — decoder must
+    not mangle it. Still trim NULs in case regipy hands one back."""
+    assert _decode_utf16_buffer("GMT Standard Time") == "GMT Standard Time"
+    assert _decode_utf16_buffer("UTC\x00garbage") == "UTC"
+
+
+def test_utf16_decode_empty_or_none():
+    """Missing values shouldn't crash — return empty string so
+    `have_anything` checks evaluate correctly."""
+    assert _decode_utf16_buffer(None) == ""
+    assert _decode_utf16_buffer(b"") == ""
+    assert _decode_utf16_buffer("") == ""
+
+
+def test_utf16_decode_bare_null_buffer():
+    """Buffer is just nulls (uninitialised) → empty string."""
+    assert _decode_utf16_buffer(b"\x00" * 128) == ""
+
+
+# ---------------------------------------------------------------------------
+# tz_display_name — prefer TimeZoneKeyName over MUI-indirected name
+# ---------------------------------------------------------------------------
+
+def test_display_name_prefers_tz_key_name_on_vista_plus():
+    """Vista+ shape: StandardName is the unhelpful MUI ref;
+    TimeZoneKeyName is the canonical identifier. Display wins on
+    TimeZoneKeyName so the analyst sees 'Eastern Standard Time'
+    instead of '@tzres.dll,-112'."""
+    tb = TimeBaseline(tz_standard_name="@tzres.dll,-112",
+                      tz_key_name="Eastern Standard Time")
+    assert tb.tz_display_name == "Eastern Standard Time"
+
+
+def test_display_name_falls_back_to_standard_name_on_xp():
+    """XP-era hives don't have TimeZoneKeyName — StandardName IS
+    the readable name. Display name falls back gracefully."""
+    tb = TimeBaseline(tz_standard_name="GMT Standard Time",
+                      tz_key_name="")
+    assert tb.tz_display_name == "GMT Standard Time"
+
+
+def test_display_name_surfaces_mui_ref_when_nothing_better():
+    """Worst case — Vista+ TimeZoneKeyName absent, StandardName
+    is MUI ref. Surface the raw MUI ref so the analyst at least
+    sees something concrete instead of blank."""
+    tb = TimeBaseline(tz_standard_name="@tzres.dll,-932",
+                      tz_key_name="")
+    assert tb.tz_display_name == "@tzres.dll,-932"
+
+
+def test_display_name_unknown_placeholder_when_all_empty():
+    tb = TimeBaseline()
+    assert tb.tz_display_name == "(unknown)"
+
+
+def test_have_anything_true_with_tz_key_name_alone():
+    """A hive with TimeZoneKeyName but no StandardName (rare but
+    possible on stripped-down Server Core builds) still counts
+    as "we have something" — emit the high-confidence finding."""
+    tb = TimeBaseline(tz_key_name="UTC")
+    assert tb.have_anything is True
+
+
+# ---------------------------------------------------------------------------
 # TimeBaseline.sync_state_label — analyst-readable summary
 # ---------------------------------------------------------------------------
 
@@ -160,6 +244,9 @@ def test_parse_real_m57_system_hive_extracts_gmt_baseline():
     assert tb.control_set == "ControlSet001"
     assert tb.tz_standard_name == "GMT Standard Time"
     assert tb.tz_daylight_name == "GMT Daylight Time"
+    # XP-era hive: TimeZoneKeyName absent → display falls back to
+    # StandardName cleanly.
+    assert tb.tz_display_name == "GMT Standard Time"
     assert tb.tz_bias_minutes == 0       # GMT base offset
     # BST is active in M57's last-write window (registry written in
     # summer 2008) — ActiveTimeBias = -60 means UTC+1

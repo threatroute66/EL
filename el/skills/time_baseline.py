@@ -41,6 +41,11 @@ class TimeBaseline:
     # TimeZoneInformation
     tz_standard_name: str = ""
     tz_daylight_name: str = ""
+    # Vista+ stores the canonical (non-MUI-indirected) TZ identifier
+    # here — e.g. "Eastern Standard Time", "UTC", "Pacific Standard
+    # Time". This is the value to prefer over StandardName / DaylightName
+    # which on Vista+ are MUI resource references like "@tzres.dll,-112".
+    tz_key_name: str = ""
     tz_bias_minutes: int | None = None          # base offset from UTC
     tz_standard_bias_minutes: int | None = None
     tz_daylight_bias_minutes: int | None = None
@@ -57,8 +62,26 @@ class TimeBaseline:
 
     @property
     def have_anything(self) -> bool:
-        return bool(self.tz_standard_name or self.w32time_type
+        return bool(self.tz_standard_name or self.tz_key_name
+                    or self.w32time_type
                     or self.tz_bias_minutes is not None)
+
+    @property
+    def tz_display_name(self) -> str:
+        """The name to surface in narratives + reports. Prefer
+        TimeZoneKeyName (canonical, Vista+) over StandardName
+        which is MUI-indirected on Vista+ and prints as the
+        useless `@tzres.dll,-N` reference."""
+        if self.tz_key_name:
+            return self.tz_key_name
+        # XP-era fallback. StandardName on XP IS the readable name.
+        if self.tz_standard_name and not self.tz_standard_name.startswith(
+                "@"):
+            return self.tz_standard_name
+        # Vista+ with TimeZoneKeyName absent (rare) → at least
+        # surface the MUI ref so the analyst sees it raw rather
+        # than blank.
+        return self.tz_standard_name or "(unknown)"
 
     @property
     def sync_state_label(self) -> str:
@@ -87,6 +110,34 @@ def _filetime_to_iso(filetime_100ns: int) -> str:
     except (OverflowError, ValueError):
         return ""
     return dt.isoformat()
+
+
+def _decode_utf16_buffer(raw: object) -> str:
+    """regipy returns Vista+ TimeZoneKeyName as a fixed-size byte
+    buffer (typically 128 bytes) holding a UTF-16LE string with a
+    null terminator — anything past the null is uninitialised hive
+    memory. Decode + truncate at the first null code point.
+
+    Handles three input shapes:
+      - already a clean str (older regipy / shorter values)
+      - bytes carrying UTF-16LE (the common Vista+ shape)
+      - bytes carrying UTF-8 (very rare; we still try)
+    """
+    if isinstance(raw, str):
+        # Already-decoded — XP-era StandardName / DaylightName /
+        # short TimeZoneKeyName values land here. Still trim null
+        # if regipy gave us back a string with embedded NULs.
+        return raw.split("\x00", 1)[0]
+    if isinstance(raw, (bytes, bytearray)):
+        try:
+            s = bytes(raw).decode("utf-16-le", errors="ignore")
+        except Exception:
+            try:
+                s = bytes(raw).decode("utf-8", errors="ignore")
+            except Exception:
+                return ""
+        return s.split("\x00", 1)[0]
+    return ""
 
 
 def _dword_as_signed_minutes(raw: int | None) -> int | None:
@@ -163,8 +214,9 @@ def parse_system_hive(system_hive: Path) -> TimeBaseline:
     tz = _read_values(hive,
                       f"\\{out.control_set}\\Control\\TimeZoneInformation")
     if tz:
-        out.tz_standard_name = str(tz.get("StandardName") or "")
-        out.tz_daylight_name = str(tz.get("DaylightName") or "")
+        out.tz_standard_name = _decode_utf16_buffer(tz.get("StandardName"))
+        out.tz_daylight_name = _decode_utf16_buffer(tz.get("DaylightName"))
+        out.tz_key_name = _decode_utf16_buffer(tz.get("TimeZoneKeyName"))
         out.tz_bias_minutes = _dword_as_signed_minutes(
             tz.get("Bias") if isinstance(tz.get("Bias"), int) else None)
         out.tz_standard_bias_minutes = _dword_as_signed_minutes(
