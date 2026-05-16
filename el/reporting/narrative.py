@@ -155,6 +155,32 @@ def _beat_from_finding(f: Finding) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Swimlane eligibility — exclude metadata findings that don't represent
+# discrete events
+# ---------------------------------------------------------------------------
+
+def is_parse_confirmation(f: Finding) -> bool:
+    """A "parse confirmation" finding tells the analyst that a forensic
+    parser ran cleanly against an artifact and produced output — it's
+    metadata about the parse, not an event in the attack timeline.
+
+    The kill-chain swimlane is a per-event scatter plot; placing a
+    parse-confirmation marker on it widens the time axis (registry
+    hives can contain timestamps decades older than the incident) and
+    inflates the event count without telling the analyst anything
+    about what the attacker did. The per-key / per-record findings
+    emitted alongside the parse-confirmation are the real events; they
+    land on the swimlane in their own right.
+
+    Concretely covers `windows_artifact._try()` outputs — RECmd batch,
+    EvtxECmd, MFTECmd, AmcacheParser, PECmd, SBECmd, JLECmd, LECmd,
+    RBCmd, etc. — whose claim always ends in "parsed successfully".
+    """
+    return (f.agent or "") == "windows_artifact" and \
+        (f.claim or "").endswith(": parsed successfully")
+
+
+# ---------------------------------------------------------------------------
 # Evidence-time extraction — prefer artifact time over EL's wall clock
 # ---------------------------------------------------------------------------
 

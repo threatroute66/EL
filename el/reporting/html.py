@@ -32,6 +32,7 @@ from el.reporting.graph_export import export_graph
 from el.reporting.narrative import (
     BEATS as _BEATS,
     evidence_time as _nar_evidence_time,
+    is_parse_confirmation as _nar_is_parse_confirmation,
     synthesize as _narrative_synth,
     _beat_from_finding as _nar_beat_from_finding,
     _BEAT_HEADING as _NAR_BEAT_HEADING,
@@ -726,6 +727,12 @@ _JS = r"""
     const events = [];
     (data.findings || []).forEach(f => {
       if (f.agent === "timeline_synthesist") return;
+      // Parse-confirmation findings (windows_artifact "parsed
+      // successfully" notes) are metadata about the parse, not
+      // discrete events. The server already set the flag — keep
+      // them off the strip so a hive-install timestamp doesn't
+      // stretch the X axis decades back.
+      if (f.swimlane_eligible === false) return;
       const t = f.evidence_time || f.created_utc || "";
       if (!t) return;
       if (laneIdx[f.beat] === undefined) return;
@@ -1405,6 +1412,13 @@ def _finding_to_dict(f: Finding) -> dict:
         # Reuses the same classifier the Markdown narrative uses, so
         # both views stay in lockstep with one beat-routing rule.
         "beat": _nar_beat_from_finding(f),
+        # Whether to plot on the kill-chain swimlane. Parse-confirmation
+        # findings (windows_artifact "parsed successfully" notes) are
+        # metadata about the parse, not discrete events — their per-key
+        # / per-record children carry the real swimlane points. Keeping
+        # them off the strip prevents a stray 1999 hive timestamp from
+        # stretching the X axis across decades.
+        "swimlane_eligible": not _nar_is_parse_confirmation(f),
     }
 
 
