@@ -120,6 +120,20 @@ _FILE_EXT_TLDS = {
     "mca", "wid", "mcs", "acm", "tsp", "srd", "jtx",
     # Misc extensions observed as fake TLDs in extraction output
     "data", "mo", "po",
+    # M57-Jean noise round: PostScript / printer / Windows-Help files
+    # surface as fake "domains" when the disk has random `tpog.hlp`,
+    # `pscript.ntf`, `tpps.ppd` content. The IANA allowlist below
+    # catches these too, but listing here is defense-in-depth so the
+    # rejection is visible in the noise-class catalog and a future
+    # refresh of the IANA list doesn't accidentally promote them.
+    "hlp",                  # Windows Help file
+    "ntf",                  # Lotus Notes template / Windows .ntf
+    "ppd",                  # PostScript Printer Description
+    "default",              # Firefox / Mozilla profile dir suffix
+    # PE-import garbage that the imphash regex sometimes paraphrases
+    # back into the domain stream (observed on M57-Jean's resource
+    # carving — `r.ngq`, `9ws.ko`, `5.spoi` etc. all rooted in
+    # binary content that the IANA allowlist will catch separately).
 }
 _NOISE_DOMAINS = {
     # SRL-2018 vol3 vadyarascan validation — IOC extractor was lifting
@@ -227,7 +241,32 @@ _WINDOWS_INTERNALS_PREFIXES = (
 )
 
 
+# Internal-/special-use TLDs not present in IANA but legitimately used
+# in enterprise / RFC-reserved contexts. Acts as a complement to the
+# IANA allowlist so corporate AD domains and mDNS hosts survive the
+# carved-noise filter. Kept tight — adding a TLD here re-opens the
+# door for that specific shape of garbage, so each entry needs a
+# real-case justification:
+#   .lan        — de-facto corporate AD (SRL-2018: shieldbase.lan)
+#   .local      — RFC 6762 mDNS (printer.local, files.local)
+#   .corp       — common AD (Microsoft historic example)
+#   .home       — IETF draft-cheshire-homenet-dot-home (consumer routers)
+#   .intranet   — common naming convention
+#   .private    — generic private-network usage
+#   .example    — RFC 2606 reserved for examples / documentation
+#   .test       — RFC 2606 reserved for testing
+#   .invalid    — RFC 2606 reserved for guaranteed-non-existent
+#   .localhost  — RFC 2606 reserved for loopback
+_INTERNAL_TLDS = frozenset({
+    "lan", "local", "corp", "home", "intranet", "private",
+    "example", "test", "invalid", "localhost",
+})
+
+
 def _filter_domains(domains: Iterable[str]) -> set[str]:
+    # Import here so test fixtures can monkeypatch the constant when
+    # they want to simulate refresh / different snapshots.
+    from el.skills._iana_tlds import IANA_TLDS
     out = set()
     for d in domains:
         d = d.lower().rstrip(".")
@@ -244,6 +283,23 @@ def _filter_domains(domains: Iterable[str]) -> set[str]:
         tld = d.rsplit(".", 1)[-1]
         if tld.isdigit() or tld in _FILE_EXT_TLDS:
             continue
+        # IANA TLD allowlist. Hard gate added 2026-05 after the
+        # M57-Jean Diamond audit found 43/46 carved-noise hits had
+        # fake TLDs (.spoi / .gkt / .del / .ntf / .ppd / .hlp / etc).
+        # If a refresh of the IANA list ever lags reality and a new
+        # gTLD is in the wild but not in our bundle, a tightly-scoped
+        # whitelist still beats the carve-noise volume that bypasses
+        # every other heuristic.
+        #
+        # _INTERNAL_TLDS extension covers de-facto enterprise AD
+        # domains (.lan, .corp, .intranet, .home, .private) plus the
+        # RFC 6762 special-use mDNS .local and the RFC 2606
+        # reserved-name TLDs (.example, .test, .invalid, .localhost).
+        # `shieldbase.lan` (SRL-2018 corp AD domain) is the canonical
+        # real-case driver — dropping it would lose the central IOC
+        # the entire SRL corpus revolves around.
+        if tld not in IANA_TLDS and tld not in _INTERNAL_TLDS:
+            continue
         # Drop fragments that look like memory-dumped strings (1.xxx, 2.xxx, ...)
         head = d.split(".", 1)[0]
         if head.isdigit() and len(head) <= 3 and any(c == "x" for c in tld):
@@ -255,8 +311,42 @@ def _filter_domains(domains: Iterable[str]) -> set[str]:
         labels = d.split(".")
         if not any(len(l) >= 3 and not l.isdigit() for l in labels):
             continue
+        # Repeat-run guard for IANA-valid-but-garbage shapes. The
+        # IANA gate above catches fake TLDs (.spoi / .gkt / .del),
+        # but a real ccTLD paired with a garbage label
+        # (`aaaaaa.aaaaaa`, `7la.baaaaaa`) still slips through.
+        # Drop when any label has the same character repeated 4+
+        # times consecutively — real domain labels don't have
+        # `aaaa` / `bbbb` runs. Threshold is 4 (not 3) to avoid
+        # FP on legitimate domains like `looool` / `kkkenya` /
+        # any future gTLD with a run of 3.
+        if any(_has_repeat_run(l, 4) for l in labels):
+            continue
+        # No `first_label < N chars` rule — real-world short-label
+        # domains like `n8n.io`, `bbc.com`, `mit.edu`, `t.co`,
+        # `goo.gl`, `4chan.org` are common. Carved garbage with
+        # short first labels (`nle.la`, `bb.bbg`) is an acceptable
+        # residual; the high-signal email IOC is prepended in the
+        # Adversary view anyway (see el.reporting.diamond).
         out.add(d)
     return out
+
+
+def _has_repeat_run(s: str, n: int) -> bool:
+    """True when `s` has the same character repeated `n` or more times
+    consecutively. Catches `aaaaaa` (run of 6) but not `6aaba6aaaba`
+    (max run of 3). 4-threshold avoids FP on legitimate domains with
+    3-letter runs like `kkkenya` or `looool` shortener-style brands."""
+    if len(s) < n:
+        return False
+    run = 1
+    prev = s[0]
+    for c in s[1:]:
+        run = run + 1 if c == prev else 1
+        if run >= n:
+            return True
+        prev = c
+    return False
 
 
 _EMPTY_IOCS = {k: set() for k in ("ipv4", "ipv6", "domain", "url", "md5", "sha1",
