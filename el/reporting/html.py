@@ -743,13 +743,38 @@ _JS = r"""
       svg.appendChild(txt);
       return;
     }
-    const tmin = Math.min(...events.map(e => Date.parse(e.ts)));
-    const tmax = Math.max(...events.map(e => Date.parse(e.ts)));
+    // Axis bounds: when ANY events carry a real artifact timestamp,
+    // compute tmin/tmax from those alone and drop the ingest-time
+    // fallback events from the plot. Otherwise an old case
+    // investigated today (M57-Jean is 2008-era events; we ran EL
+    // in 2026) compresses every real event into a one-pixel sliver
+    // on the left while the EL-ingest dots claim the rest of the
+    // axis. The accuracy report's case-glance fix (commit 55e1ad3)
+    // applied this same plausible-window principle to the
+    // narrative time range; this is the swimlane sibling.
+    const artifactEvents = events.filter(e => e.isArtifact);
+    let plotEvents, droppedIngest = 0;
+    if (artifactEvents.length > 0) {
+      plotEvents = artifactEvents;
+      droppedIngest = events.length - artifactEvents.length;
+    } else {
+      // No artifact-timed findings yet — fall back to all events
+      // (preserves the swimlane for cases where extraction hasn't
+      // surfaced a real-world clock anywhere).
+      plotEvents = events;
+    }
+    const tmin = Math.min(...plotEvents.map(e => Date.parse(e.ts)));
+    const tmax = Math.max(...plotEvents.map(e => Date.parse(e.ts)));
     const span = Math.max(tmax - tmin, 1);
 
     const wrap = svg.parentElement;
     const W = Math.max(wrap.clientWidth - 16, 600);
-    const LANE_H = 32, LABEL_W = 200, PAD_T = 18, PAD_B = 30;
+    const LANE_H = 32, LABEL_W = 200, PAD_T = 18;
+    // Bottom padding holds the x-axis labels + the off-axis count
+    // note (when droppedIngest > 0). +14 px for the italic note,
+    // unused but reserved when no drop is needed — keeps the chart
+    // height stable regardless of which axis-bounds branch ran.
+    const PAD_B = 44;
     const H = lanes.length * LANE_H + PAD_T + PAD_B;
     const plotW = W - LABEL_W - 16;
     svg.setAttribute("width", W);
@@ -796,7 +821,9 @@ _JS = r"""
     }
 
     // Markers — small jitter on Y so overlaps don't fully stack.
-    events.forEach(e => {
+    // plotEvents already filtered (artifact-time only when any exist)
+    // so the axis bounds match every dot we're about to draw.
+    plotEvents.forEach(e => {
       const x = LABEL_W + ((Date.parse(e.ts) - tmin) / span) * plotW;
       const li = laneIdx[e.beat];
       const yC = PAD_T + li * LANE_H + LANE_H / 2;
@@ -815,6 +842,29 @@ _JS = r"""
         openDrawer(findingsById[e.fid]));
       svg.appendChild(dot);
     });
+
+    // Off-axis annotation — when we dropped ingest-time fallback
+    // events from the plot (because we have real artifact times to
+    // anchor the axis), tell the analyst how many didn't land here
+    // so they know the swimlane intentionally undercounts the full
+    // finding set. Total count is in the timeline view below.
+    if (droppedIngest > 0) {
+      const tminLabel = new Date(tmin).toISOString().slice(0, 10);
+      const tmaxLabel = new Date(tmax).toISOString().slice(0, 10);
+      const note = document.createElementNS(ns, "text");
+      note.setAttribute("x", LABEL_W);
+      note.setAttribute("y", H - 4);
+      note.setAttribute("class", "sw-axis-label");
+      note.setAttribute("style",
+        "fill:#8b949e; font-style:italic; font-size:10px");
+      note.textContent =
+        `Showing ${plotEvents.length} artifact-timestamped event(s) ` +
+        `across ${tminLabel} → ${tmaxLabel}. ` +
+        `${droppedIngest} additional finding(s) carry only EL ingest ` +
+        `time (no real-world timestamp extracted) — see the Timeline ` +
+        `view for the full set.`;
+      svg.appendChild(note);
+    }
   }
 
   // ----- Timeline / diagnostic / matrix (narrative) --------------------
