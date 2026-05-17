@@ -39,22 +39,31 @@ _CSS = """
 html, body { margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont,
     "Segoe UI", system-ui, sans-serif; }
 body { background: #0d1117; color: #c9d1d9; line-height: 1.5; }
-/* Sticky-header offset for in-page anchor jumps. Without this,
-   the browser scrolls the target into the area covered by the
-   sticky topbar + subnav (~90 px), so the anchor appears to land
-   "several lines below" the actual section heading. */
-html { scroll-padding-top: 110px; }
-header.topbar { background: #161b22; border-bottom: 1px solid #30363d;
-    padding: 12px 24px; position: sticky; top: 0; z-index: 20; }
+/* Single sticky region wrapping topbar + subnav so they stack
+   naturally without brittle pixel offsets — the previous shape
+   (two separate stickies, subnav at `top: 57px`) silently slid
+   the subnav under the topbar by ~17px on layouts where the
+   topbar's meta-line wrapped or rendered taller than 57px,
+   clipping the tops of every nav label. Wrapping both into one
+   `<div class="stickyhdr">` makes the sticky height self-
+   adjust to whatever the content needs. */
+.stickyhdr { position: sticky; top: 0; z-index: 20;
+    background: #161b22; border-bottom: 1px solid #30363d; }
+header.topbar { padding: 12px 24px 4px; }
 header.topbar h1 { margin: 0; font-size: 18px; font-weight: 600; color: #f0f6fc; }
 header.topbar h1 .badge { background: #58a6ff; color: #0d1117; padding: 2px 8px;
     border-radius: 10px; font-size: 12px; font-weight: 600; margin-left: 10px; }
 header.topbar .meta { margin-top: 4px; font-size: 12px; color: #8b949e; }
-nav.subnav { background: #161b22; border-bottom: 1px solid #30363d;
-    padding: 6px 24px; position: sticky; top: 57px; z-index: 15; }
+nav.subnav { padding: 6px 24px 8px; }
 nav.subnav a { color: #8b949e; text-decoration: none; margin-right: 20px;
     font-size: 13px; padding: 4px 0; border-bottom: 2px solid transparent; }
 nav.subnav a:hover { color: #58a6ff; border-bottom-color: #58a6ff; }
+/* scroll-padding-top is updated dynamically from the rendered
+   sticky height (see the small inline script at the page bottom)
+   so anchor jumps land below the entire sticky region regardless
+   of viewport / content shape. The static fallback keeps anchors
+   working even if JS is disabled. */
+html { scroll-padding-top: 130px; }
 main { padding: 24px; max-width: 1800px; margin: 0 auto; }
 section { margin-bottom: 40px; }
 section h2 { color: #f0f6fc; font-size: 20px; font-weight: 600;
@@ -1596,6 +1605,7 @@ def render_combined_html(
 <title>EL combined — {html.escape(name)}</title>
 <style>{_CSS}</style>
 </head><body>
+<div class="stickyhdr">
 <header class="topbar">
   <h1>EL Combined Report <span class="badge">{html.escape(name)}</span>{exec_link_html}</h1>
   <div class="meta">
@@ -1615,6 +1625,7 @@ def render_combined_html(
   <a href="#attack">ATT&amp;CK</a>
   <a href="#iocs">IOC overlap</a>
 </nav>
+</div>
 <main>
 
 <section id="narrative">
@@ -1702,6 +1713,25 @@ def render_combined_html(
 </section>
 
 </main>
+<script>
+/* Sync scroll-padding-top to the actual sticky-header height —
+   the CSS fallback (130px) is a safe upper bound, but on wide
+   layouts the real height is closer to 110px and unused
+   padding makes anchor jumps land too low. Recalculate on load
+   and on resize (the meta line can wrap → topbar grows). */
+(function() {{
+  function syncPad() {{
+    var h = document.querySelector('.stickyhdr');
+    if (!h) return;
+    document.documentElement.style.scrollPaddingTop =
+        h.getBoundingClientRect().height + 'px';
+  }}
+  syncPad();
+  window.addEventListener('resize', syncPad);
+  /* In case fonts load late and reflow the header. */
+  if (document.fonts && document.fonts.ready) document.fonts.ready.then(syncPad);
+}})();
+</script>
 <script>{js}</script>
 </body></html>"""
     out_path.write_text(body)
