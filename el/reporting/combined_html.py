@@ -54,10 +54,17 @@ header.topbar h1 { margin: 0; font-size: 18px; font-weight: 600; color: #f0f6fc;
 header.topbar h1 .badge { background: #58a6ff; color: #0d1117; padding: 2px 8px;
     border-radius: 10px; font-size: 12px; font-weight: 600; margin-left: 10px; }
 header.topbar .meta { margin-top: 4px; font-size: 12px; color: #8b949e; }
-nav.subnav { padding: 6px 24px 8px; }
-nav.subnav a { color: #8b949e; text-decoration: none; margin-right: 20px;
-    font-size: 13px; padding: 4px 0; border-bottom: 2px solid transparent; }
-nav.subnav a:hover { color: #58a6ff; border-bottom-color: #58a6ff; }
+/* Same visual language as the per-case nav (header.topbar nav in
+   el/reporting/html.py): blue chip-pill links with a subtle grey
+   hover background, single-row flex with overflow-x for long
+   menus. Combined nav has 9 items today and could grow as more
+   cross-host panels land, so the overflow safety net matters. */
+nav.subnav { padding: 6px 24px 8px; display: flex; flex-wrap: nowrap;
+    gap: 4px; overflow-x: auto; scrollbar-width: thin; }
+nav.subnav a { color: #58a6ff; text-decoration: none;
+    font-size: 12px; font-weight: 500; padding: 3px 7px;
+    border-radius: 5px; white-space: nowrap; flex-shrink: 0; }
+nav.subnav a:hover { background: #21262d; text-decoration: none; }
 /* scroll-padding-top is updated dynamically from the rendered
    sticky height (see the small inline script at the page bottom)
    so anchor jumps land below the entire sticky region regardless
