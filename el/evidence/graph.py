@@ -33,6 +33,14 @@ REL_DDL = [
     "CREATE REL TABLE IF NOT EXISTS AUTHENTICATED_AS(FROM Event TO User)",
     "CREATE REL TABLE IF NOT EXISTS RAISED_BY(FROM Event TO Process)",
     "CREATE REL TABLE IF NOT EXISTS RUNS_ON(FROM Process TO Host)",
+    # Event provenance — every observed event lives on a host
+    # (lateral_movement_analyst writes one per finding). Without
+    # this rel Events floated as disconnected dots on case.html#graph.
+    "CREATE REL TABLE IF NOT EXISTS OBSERVED_ON(FROM Event TO Host)",
+    # Source IP for inbound events (RDP 4624 Type 10, EID 1149,
+    # SMB share-mount, etc.). Lets the graph show "attacker IP →
+    # event → host" without inventing synthetic Process / Flow nodes.
+    "CREATE REL TABLE IF NOT EXISTS SOURCE_IP(FROM Event TO IPAddress)",
     # Email case correlation — sender/recipient Users, attached Files,
     # sender-domain Domain. Populated by EmailForensicatorAgent.
     "CREATE REL TABLE IF NOT EXISTS SENT_FROM(FROM Email TO User)",

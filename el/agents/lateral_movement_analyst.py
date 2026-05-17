@@ -164,10 +164,19 @@ class LateralMovementAnalystAgent(Agent):
         return out
 
     def _populate_graph(self, ctx: AgentContext, hits: list) -> None:
-        """Emit Host + Event nodes for each lateral-movement hit so the
-        case.html entity graph shows the attack timeline. Event→Host
-        via an implicit `host` field; no direct Host rel in the schema
-        for Event so we keep Event nodes self-contained."""
+        """Populate Host + Event + User + IPAddress nodes (plus the
+        OBSERVED_ON / AUTHENTICATED_AS / SOURCE_IP edges between them)
+        for each lateral-movement hit. Drives the case.html entity
+        graph — without these edges Events floated as disconnected
+        dots and the analyst couldn't trace `inbound IP → event →
+        local user` at a glance.
+
+        IP-address breadth: pulls from each hit's `source_ips`
+        aggregate (every distinct source IP observed across the
+        finding window, not just the sampled rows) so an RDP brute-
+        force fan-in surfaces every attacker IP, not the 3 we
+        happened to sample.
+        """
         from el.evidence.graph import open_graph
         try:
             db, conn = open_graph(ctx.case_dir)
@@ -181,6 +190,16 @@ class LateralMovementAnalystAgent(Agent):
                 f"MERGE (h:Host {{name: '{_esc(host_id)}'}}) "
                 f"SET h.os='Windows'")
             for h in hits:
+                # Source IPs at the hit level — every distinct IP
+                # observed (not just sampled). MERGE keeps the node
+                # set deduplicated across hits + cases.
+                for ip in {ip for ip, _ in (getattr(h, "source_ips", []) or [])}:
+                    if not ip:
+                        continue
+                    version = 6 if ":" in ip else 4
+                    conn.execute(
+                        f"MERGE (:IPAddress "
+                        f"{{addr: '{_esc(ip)}', version: {version}}})")
                 for sample_ev in h.sample_events[:3]:
                     ts = getattr(sample_ev, "time_created", "") or ""
                     eid_val = getattr(sample_ev, "event_id", 0)
@@ -197,6 +216,42 @@ class LateralMovementAnalystAgent(Agent):
                         f"e.eid={eid_int}, "
                         f"e.ts_utc='{_esc(ts)}', "
                         f"e.host='{_esc(host_id)}'")
+                    # OBSERVED_ON edge — every event lives on a host.
+                    conn.execute(
+                        f"MATCH (e:Event {{event_id: '{_esc(eid_str)}'}}), "
+                        f"      (h:Host {{name: '{_esc(host_id)}'}}) "
+                        f"MERGE (e)-[:OBSERVED_ON]->(h)")
+                    # AUTHENTICATED_AS — when the sample event names
+                    # a TargetUserName / SubjectUserName, the Event
+                    # becomes a per-user authentication record. SID
+                    # is unknown from the EVTX CSV alone, so we use
+                    # `acct:<name>@<host>` as a deterministic synthetic
+                    # primary key (analyst can still see the user
+                    # name in the `name` attr; cross-host correlator
+                    # may join on `name` later).
+                    uname = (getattr(sample_ev, "user_name", "") or "").strip()
+                    if uname and uname not in ("-", "(null)"):
+                        synth_sid = f"acct:{uname}@{host_id}"
+                        conn.execute(
+                            f"MERGE (u:User {{sid: '{_esc(synth_sid)}'}}) "
+                            f"SET u.name='{_esc(uname)}', "
+                            f"u.host='{_esc(host_id)}'")
+                        conn.execute(
+                            f"MATCH (e:Event {{event_id: '{_esc(eid_str)}'}}), "
+                            f"      (u:User {{sid: '{_esc(synth_sid)}'}}) "
+                            f"MERGE (e)-[:AUTHENTICATED_AS]->(u)")
+                    # SOURCE_IP — for finding-level source IPs, connect
+                    # each sample event to the rolled-up source-IP set.
+                    # (Per-event source IP isn't reliably populated by
+                    # evtx_triage; the hit-level aggregate is the
+                    # forensically meaningful set.)
+                    for ip in {ip for ip, _ in (getattr(h, "source_ips", []) or [])}:
+                        if not ip:
+                            continue
+                        conn.execute(
+                            f"MATCH (e:Event {{event_id: '{_esc(eid_str)}'}}), "
+                            f"      (i:IPAddress {{addr: '{_esc(ip)}'}}) "
+                            f"MERGE (e)-[:SOURCE_IP]->(i)")
         except Exception:
             pass
         finally:

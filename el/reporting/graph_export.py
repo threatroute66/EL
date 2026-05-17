@@ -63,6 +63,8 @@ _REL_TABLES: tuple[tuple[str, str, str], ...] = (
     ("AUTHENTICATED_AS",   "Event",        "User"),
     ("RAISED_BY",          "Event",        "Process"),
     ("RUNS_ON",            "Process",      "Host"),
+    ("OBSERVED_ON",        "Event",        "Host"),
+    ("SOURCE_IP",          "Event",        "IPAddress"),
     ("SENT_FROM",          "Email",        "User"),
     ("SENT_TO",            "Email",        "User"),
     ("HAS_ATTACHMENT",     "Email",        "File"),
