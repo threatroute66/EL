@@ -97,6 +97,34 @@ table td.num { text-align: right; font-variant-numeric: tabular-nums; }
 .ach-matrix td.score.s4 { background: rgba(248, 81, 73, 0.45); color: #ffa198; }
 .ach-matrix td.score.s5 { background: rgba(248, 81, 73, 0.70); color: #ffffff; }
 
+/* Clock baselines — per-host TZ / sync / skew calibration table */
+.clock-baseline table { min-width: 100%; border-collapse: collapse;
+    font-size: 13px; }
+.clock-baseline th { color: #c9d1d9; text-align: left; padding: 6px 10px;
+    background: #161b22; border-bottom: 1px solid #30363d; font-weight: 600;
+    font-size: 12px; text-transform: uppercase; letter-spacing: 0.5px; }
+.clock-baseline td { padding: 8px 10px; border-bottom: 1px solid #21262d;
+    color: #c9d1d9; font-variant-numeric: tabular-nums; }
+.clock-baseline tr:hover td { background: rgba(56, 139, 253, 0.06); }
+.clock-baseline .tz, .clock-baseline .ntp { font-family: "SF Mono",
+    Consolas, monospace; font-size: 12px; }
+.clock-baseline .skew-zero { color: #3fb950; }
+.clock-baseline .skew-warn { color: #f2cc60; font-weight: 600; }
+.clock-baseline .sync-trust { color: #3fb950; }
+.clock-baseline .sync-warn { color: #f85149; font-weight: 600; }
+.clock-baseline .sync-unknown { color: #8b949e; }
+.clock-baseline .missing { color: #484f58; font-style: italic; }
+.clock-alerts { margin: 12px 0 8px 0; display: flex; flex-wrap: wrap;
+    gap: 8px; }
+.clock-alert { display: inline-block; padding: 4px 10px; border-radius: 4px;
+    font-size: 12px; border: 1px solid; }
+.clock-alert.warn { color: #f2cc60; border-color: rgba(210, 153, 34, 0.5);
+    background: rgba(210, 153, 34, 0.08); }
+.clock-alert.bad { color: #f85149; border-color: rgba(248, 81, 73, 0.5);
+    background: rgba(248, 81, 73, 0.08); }
+.clock-alert.ok { color: #3fb950; border-color: rgba(63, 185, 80, 0.4);
+    background: rgba(63, 185, 80, 0.08); }
+
 /* Signal matrix */
 .sig-matrix table { min-width: 100%; }
 .sig-matrix th.case { writing-mode: vertical-rl; transform: rotate(180deg);
@@ -648,6 +676,224 @@ def _signal_matrix_html(cases: list[CaseSlice]) -> str:
     return (f"<div class='sig-matrix'><table><thead><tr>"
             f"{''.join(hdr_cells)}</tr>"
             f"</thead><tbody>{''.join(rows_html)}</tbody></table></div>")
+
+
+def _clock_baselines(cases: list[CaseSlice]) -> dict:
+    """Aggregate the per-case time_baseline findings across all
+    stitched cases. Returns:
+
+      {
+        "rows": [ {host_label, case_id, tz_display, utc_offset,
+                    sync_mode, ntp_peer, skew_seconds, config_lwt}, ...],
+        "alerts": [ {level: 'warn'|'bad'|'ok', text: str}, ... ]
+      }
+
+    `rows` is one entry per case (missing-finding cases get a sentinel
+    entry so the analyst sees the gap rather than silently dropping
+    that host). `alerts` summarise the cross-host disagreements that
+    actually matter forensically — TZ mismatch (correlator must
+    apply offset), sync-mode mismatch (some hosts have unbounded
+    drift), large skew (acquirer's clock disagreed with the target).
+    """
+    rows: list[dict] = []
+    tz_seen: set[str] = set()
+    sync_seen: set[str] = set()
+    ntp_seen: set[str] = set()
+    skews: list[int] = []
+    nosync_hosts: list[str] = []
+    missing_hosts: list[str] = []
+    for c in cases:
+        # Skim findings for the time_baseline marker
+        baseline_facts = None
+        skew_facts = None
+        for f in c.findings:
+            for ev in (f.get("evidence") or []):
+                facts = (ev.get("extracted_facts") or {})
+                if facts.get("phase") != "time_baseline":
+                    continue
+                # Two shapes — disk_forensicator emits skew_seconds;
+                # windows_artifact emits the TZ + W32Time bundle.
+                if "skew_seconds" in facts:
+                    skew_facts = facts
+                if "tz_display_name" in facts or "tz_standard_name" in facts:
+                    baseline_facts = facts
+        if not baseline_facts and not skew_facts:
+            rows.append({
+                "host_label": c.host_label,
+                "case_id": c.case_id,
+                "tz_display": "", "utc_offset": "",
+                "sync_mode": "", "ntp_peer": "",
+                "skew_seconds": None,
+                "config_lwt": "",
+                "missing": True,
+            })
+            missing_hosts.append(c.host_label)
+            continue
+        b = baseline_facts or {}
+        tz_disp = (b.get("tz_display_name") or b.get("tz_standard_name")
+                   or "")
+        # Reconstruct UTC offset from active bias minutes (Windows
+        # convention: positive = local clock BEHIND UTC, so flip).
+        utc_off = ""
+        atb = b.get("tz_active_bias_minutes")
+        if isinstance(atb, int):
+            mins = -atb
+            sign = "+" if mins >= 0 else "-"
+            utc_off = f"UTC{sign}{abs(mins)//60:02d}:{abs(mins)%60:02d}"
+        sync_mode = (b.get("w32time_type") or "").upper()
+        ntp_peer = b.get("w32time_ntp_server") or ""
+        config_lwt = (b.get("w32time_config_last_write_utc") or "")[:10]
+        skew = None
+        if skew_facts and isinstance(skew_facts.get("skew_seconds"), int):
+            skew = skew_facts["skew_seconds"]
+            skews.append(skew)
+        if tz_disp:
+            tz_seen.add(tz_disp)
+        if sync_mode:
+            sync_seen.add(sync_mode)
+        if ntp_peer:
+            ntp_seen.add(ntp_peer)
+        if sync_mode == "NOSYNC":
+            nosync_hosts.append(c.host_label)
+        rows.append({
+            "host_label": c.host_label,
+            "case_id": c.case_id,
+            "tz_display": tz_disp,
+            "utc_offset": utc_off,
+            "sync_mode": sync_mode,
+            "ntp_peer": ntp_peer,
+            "skew_seconds": skew,
+            "config_lwt": config_lwt,
+            "missing": False,
+        })
+
+    alerts: list[dict] = []
+    if len(tz_seen) > 1:
+        alerts.append({
+            "level": "warn",
+            "text": ("TZ split across enterprise: "
+                     f"{', '.join(sorted(tz_seen))}. Apply the per-host "
+                     "offset when correlating local-time values between "
+                     "machines."),
+        })
+    if nosync_hosts:
+        alerts.append({
+            "level": "bad",
+            "text": (f"NoSync orphan clock on: "
+                     f"{', '.join(nosync_hosts)}. Drift is unbounded — "
+                     "treat wall-clock timestamps from this host with "
+                     "caution; cross-host correlation may be off by "
+                     "minutes."),
+        })
+    if len(sync_seen) > 1 and not nosync_hosts:
+        # Heterogeneous sync mode but no NoSync — usually NTP vs NT5DS
+        # (a host outside the domain). Informational, not bad.
+        alerts.append({
+            "level": "warn",
+            "text": ("Sync-mode mismatch across hosts: "
+                     f"{', '.join(sorted(sync_seen))}. Likely a host is "
+                     "outside the domain time hierarchy."),
+        })
+    if len(ntp_seen) > 1:
+        alerts.append({
+            "level": "warn",
+            "text": ("NTP-peer / flag mismatch: "
+                     f"{', '.join(sorted(ntp_seen))}. Minor config "
+                     "drift — typically benign, worth noting on the "
+                     "case timeline (one host was reconfigured)."),
+        })
+    if any(abs(s) > 60 for s in skews if isinstance(s, int)):
+        big = max(skews, key=abs)
+        alerts.append({
+            "level": "bad",
+            "text": (f"Large acquirer-vs-target skew observed (max "
+                     f"{big}s). Back this out of FAT / EXIF / Office-"
+                     "metadata local-time values."),
+        })
+    if missing_hosts:
+        alerts.append({
+            "level": "warn",
+            "text": ("No time-baseline finding emitted for: "
+                     f"{', '.join(missing_hosts)}. Likely a non-Windows "
+                     "or non-EWF input — baseline parsers can't read "
+                     "those hives. Calibration unavailable for those "
+                     "hosts."),
+        })
+    if not alerts and rows:
+        alerts.append({
+            "level": "ok",
+            "text": ("Per-host baselines consistent — single TZ, single "
+                     "sync mode, zero acquirer skew. Wall-clock "
+                     "timestamps can be trusted across all hosts in "
+                     "the bundle."),
+        })
+
+    return {"rows": rows, "alerts": alerts}
+
+
+def _clock_baselines_html(cases: list[CaseSlice]) -> str:
+    data = _clock_baselines(cases)
+    if not data["rows"]:
+        return ("<p style='color:#8b949e'>No per-case time baselines "
+                "emitted.</p>")
+    # Alerts block — render up-top so the analyst sees the call-to-
+    # action before the table.
+    alert_html = ""
+    if data["alerts"]:
+        chips = "".join(
+            f"<span class='clock-alert {html.escape(a['level'])}'>"
+            f"{html.escape(a['text'])}</span>"
+            for a in data["alerts"])
+        alert_html = f"<div class='clock-alerts'>{chips}</div>"
+    rows_html = []
+    for r in data["rows"]:
+        if r["missing"]:
+            rows_html.append(
+                f"<tr>"
+                f"<td><b>{html.escape(r['host_label'])}</b></td>"
+                f"<td class='missing' colspan='6'>"
+                f"no time-baseline finding emitted for this case</td>"
+                f"</tr>")
+            continue
+        skew = r["skew_seconds"]
+        if skew is None:
+            skew_cell = "<td class='missing'>—</td>"
+        elif skew == 0:
+            skew_cell = "<td class='skew-zero'>0s</td>"
+        else:
+            cls = "skew-warn" if abs(skew) > 60 else ""
+            sign = "+" if skew > 0 else ""
+            skew_cell = f"<td class='{cls}'>{sign}{skew}s</td>"
+        sync = r["sync_mode"]
+        if sync in ("NTP", "NT5DS"):
+            sync_cell = (f"<td class='sync-trust'>{html.escape(sync)}"
+                         " — trusted</td>")
+        elif sync == "NOSYNC":
+            sync_cell = ("<td class='sync-warn'>NoSync — drift "
+                         "unbounded</td>")
+        else:
+            sync_cell = (f"<td class='sync-unknown'>"
+                         f"{html.escape(sync) or '(unknown)'}</td>")
+        rows_html.append(
+            f"<tr>"
+            f"<td><b>{html.escape(r['host_label'])}</b></td>"
+            f"<td class='tz'>{html.escape(r['tz_display'] or '?')}</td>"
+            f"<td>{html.escape(r['utc_offset'] or '?')}</td>"
+            f"{sync_cell}"
+            f"<td class='ntp'>{html.escape(r['ntp_peer'] or '—')}</td>"
+            f"{skew_cell}"
+            f"<td>{html.escape(r['config_lwt'] or '—')}</td>"
+            f"</tr>")
+    table_html = (
+        "<div class='clock-baseline'><table>"
+        "<thead><tr>"
+        "<th>Host</th><th>TZ (display)</th><th>UTC offset</th>"
+        "<th>Sync mode</th><th>NTP peer</th>"
+        "<th>Acq. skew</th><th>W32Time config LWT</th>"
+        "</tr></thead>"
+        f"<tbody>{''.join(rows_html)}</tbody>"
+        "</table></div>")
+    return alert_html + table_html
 
 
 def _attack_heatmap_html(techniques: dict) -> str:
@@ -1240,6 +1486,7 @@ def render_combined_html(
     # Server-rendered blocks
     ach_html = _joint_ach_html(cases, joint)
     sig_html = _signal_matrix_html(cases)
+    clock_html = _clock_baselines_html(cases)
     attack_html = _attack_heatmap_html(techniques)
     ioc_html = _ioc_overlap_html(cases)
     hosts_html = _per_case_links_html(cases, out_path)
@@ -1343,6 +1590,7 @@ def render_combined_html(
 <nav class="subnav">
   <a href="#narrative">Narrative</a>
   <a href="#hosts">Hosts</a>
+  <a href="#clocks">Clock baselines</a>
   <a href="#ach">Joint ACH</a>
   <a href="#signals">Signal matrix</a>
   <a href="#timeline">Findings timeline</a>
@@ -1367,6 +1615,19 @@ def render_combined_html(
 <section id="hosts">
   <h2>Hosts &amp; drill-down</h2>
   {hosts_html}
+</section>
+
+<section id="clocks">
+  <h2>Per-Host Clock Baselines</h2>
+  <p style="color:#8b949e">
+    Calibration data extracted from each host's SYSTEM hive + EWF
+    acquisition header. <b>Document-only</b> — no timestamps are
+    modified anywhere in the case data. Use this matrix when
+    correlating local-time values across hosts (FAT / EXIF / Office
+    metadata) or when a finding's wall-clock time needs to be
+    trusted against an external reference.
+  </p>
+  {clock_html}
 </section>
 
 <section id="ach">
