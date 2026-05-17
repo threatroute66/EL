@@ -127,9 +127,18 @@ table td.num { text-align: right; font-variant-numeric: tabular-nums; }
 
 /* Signal matrix */
 .sig-matrix table { min-width: 100%; }
-.sig-matrix th.case { writing-mode: vertical-rl; transform: rotate(180deg);
-    height: 120px; vertical-align: bottom; padding: 6px 4px;
-    color: #c9d1d9; text-transform: none; letter-spacing: 0; font-size: 12px; }
+/* Rotate the header LABEL (inner span), not the cell — keeps the
+   rotated text horizontally centered within its column, so the dots
+   in data rows below line up with the host name above. Rotating the
+   <th> itself with `writing-mode: vertical-rl + rotate(180deg)`
+   pushed the visible text to the right edge of the cell, leaving
+   the dots ~25px left of where each header appeared. */
+.sig-matrix th.case { height: 120px; vertical-align: bottom; padding: 6px 4px;
+    text-align: center; color: #c9d1d9; text-transform: none;
+    letter-spacing: 0; font-size: 12px; font-weight: 500;
+    white-space: nowrap; }
+.sig-matrix th.case span { display: inline-block;
+    writing-mode: vertical-rl; transform: rotate(180deg); }
 .sig-matrix td.dot { text-align: center; font-size: 14px; color: #3fb950; }
 .sig-matrix td.signame { color: #c9d1d9; font-weight: 500; }
 
@@ -666,7 +675,15 @@ def _signal_matrix_html(cases: list[CaseSlice]) -> str:
         f"<th class='signame'>{html.escape(header[0])}</th>"
     ]
     for h in header[1:]:
-        hdr_cells.append(f"<th class='case'>{html.escape(h)}</th>")
+        # Wrap the rotated label in a span so CSS can rotate just
+        # the text node (not the cell box). The <th> stays a normal
+        # block with text-align: center; the inner span is what gets
+        # writing-mode: vertical-rl + rotate(180deg). Without the
+        # wrapper, rotating the <th> directly puts the visible text
+        # on the cell's right edge and the dots in data rows below
+        # drift ~25px out of alignment with each host name.
+        hdr_cells.append(
+            f"<th class='case'><span>{html.escape(h)}</span></th>")
     rows_html = []
     for row in matrix[1:]:
         cells = [f"<td class='signame'>{html.escape(row[0])}</td>"]

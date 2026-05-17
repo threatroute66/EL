@@ -18,6 +18,9 @@ pip-wheel-metadata/
 .coverage
 htmlcov/
 
+# --- Playwright MCP transient artifacts (browser snapshots, console logs) ---
+.playwright-mcp/
+
 # --- IDE / editor ---
 .vscode/
 .idea/
