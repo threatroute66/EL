@@ -29,6 +29,10 @@ Fire when **any** of the following is true:
 - The user explicitly invokes `/el-ai-brief` (with or without a case-id arg).
 - A new `_ai_brief_request.json` file appears under any
   `/opt/EL/cases/<id>/reports/` directory (e.g. after an `el investigate`).
+- A new `_combined_ai_brief_request.json` file appears under any
+  `/opt/EL/cases/_combined/<bundle>/` directory (after an
+  `el combined-report`). Same shape as per-case requests but carries
+  `brief_kind: "combined_executive"` and a different output path.
 
 If the user hasn't asked for it and there are no pending requests on
 disk, do nothing — this skill is a worker, not a watchdog.
@@ -37,11 +41,14 @@ disk, do nothing — this skill is a worker, not a watchdog.
 
 1. **Discover pending requests**.
    ```bash
-   find /opt/EL/cases -maxdepth 3 -name "_ai_brief_request.json" -type f
+   find /opt/EL/cases -maxdepth 4 \
+        \( -name "_ai_brief_request.json" \
+        -o -name "_combined_ai_brief_request.json" \) -type f
    ```
-   If the user passed a case-id, scope to
-   `/opt/EL/cases/<case-id>/reports/_ai_brief_request.json`. If
-   nothing matches, tell the user "no pending requests" and stop.
+   If the user passed a case-id, scope to that case's per-case
+   request OR (when the id matches a `_combined/<bundle>/` dir) the
+   combined request under that bundle. If nothing matches, tell the
+   user "no pending requests" and stop.
 
 2. **For each request file**, read it. The schema is:
    ```json
@@ -58,27 +65,45 @@ disk, do nothing — this skill is a worker, not a watchdog.
    }
    ```
 
-3. **Generate the ExecutiveBrief**. Apply the `system_prompt` verbatim
-   to the `context` payload. The output must be a JSON object with
-   these exact string fields:
+3. **Generate the brief**. Apply the request's `system_prompt`
+   verbatim to its `context` payload — the prompt itself spells out
+   the exact schema fields the response must contain. There are two
+   request shapes:
+
+   **Per-case** (`reports/_ai_brief_request.json`, schema_version=2)
+   produces an `ExecutiveBrief` with these fields:
    - `schema_version` (integer, value **2**)
    - `what_happened` — 1-2 plain-English paragraphs
    - `what_was_taken` — markdown bullet list
-   - `where_it_went` — markdown table with columns *Channel | Destination | Evidence*
-   - `when_timeline` — markdown table with columns *Date (UTC) | Window | What*
+   - `where_it_went` — markdown table *Channel | Destination | Evidence*
+   - `when_timeline` — markdown table *Date (UTC) | Window | What*
    - `risk_implications` — numbered markdown list
-   - `confidence_and_limits` — one paragraph naming what the
-     ledger cannot prove
+   - `confidence_and_limits` — one paragraph
 
-   **Constraints — non-negotiable:**
+   **Combined / cross-host** (`_combined_ai_brief_request.json`,
+   `brief_kind: "combined_executive"`, schema_version=1) produces a
+   `CombinedExecutiveBrief` with these fields:
+   - `schema_version` (integer, value **1**)
+   - `cross_host_overview` — 1-2 plain-English paragraphs
+   - `attack_chain` — markdown table *Step | Host | What | Evidence*
+   - `affected_hosts` — markdown table *Host | Role | Confidence | Key finding*
+   - `data_movement` — markdown table *From | To | Channel | Evidence*
+   - `enterprise_risk` — numbered markdown list
+   - `confidence_and_gaps` — one paragraph
+
+   **Constraints — non-negotiable for both shapes:**
    - No ATT&CK technique IDs (T1003, T1566, …). Use plain English.
    - No ACH hypothesis tag IDs (`H_APT_ESPIONAGE`, …).
    - No internal agent identifiers (`disk_forensicator`, …).
-   - No fact that isn't in the supplied findings.
+   - No fact that isn't in the supplied context.
    - Every section must be non-empty (the EL renderer rejects empty
      sections and falls back to the deterministic digest).
    - Acknowledge uncertainty / open questions honestly in
-     `confidence_and_limits`.
+     `confidence_and_limits` (per-case) or `confidence_and_gaps`
+     (combined).
+   - For combined: use the `clock_baselines` matrix when discussing
+     timing — if hosts have a TZ split or NoSync orphan clock, name
+     it in `confidence_and_gaps`.
 
 4. **Write the response** to `output_path` (NOT the request path),
    wrapped in the cache envelope:
@@ -101,17 +126,32 @@ disk, do nothing — this skill is a worker, not a watchdog.
 
 6. **Re-render the report** so the new brief surfaces in the HTML
    and PDF the user will actually read:
+
+   **Per-case** request:
    ```bash
    /opt/EL/.venv/bin/el report /opt/EL/cases/<case-id> --html
    ```
-   (PDF regenerates as a side effect of the HTML pipeline; if the
-   case has `executive.pdf` already, the next `--html` pass updates
-   the upstream HTML and a follow-up rasterise picks it up.)
+   (PDF regenerates as a side effect of the HTML pipeline.)
 
-7. **Tell the user** which case(s) you fulfilled and the new
-   `reports/executive.html` URL on the case server
-   (`http://localhost:8089/<case-id>/reports/executive.html`).
-   Stay terse — one line per case.
+   **Combined** request: re-run `el combined-report` against the
+   same bundle membership (the cache hit on the next pass picks up
+   your response).
+   ```bash
+   /opt/EL/.venv/bin/el combined-report \
+     /opt/EL/cases/<case-A> /opt/EL/cases/<case-B> ... \
+     --name <bundle-name>
+   ```
+   The bundle name is the directory name under
+   `/opt/EL/cases/_combined/`. Member case dirs can be inferred from
+   the response `output_path` parent — every host that contributed
+   to the bundle.
+
+7. **Tell the user** which case(s) or bundle you fulfilled and the
+   new URL on the case server:
+   - Per-case: `http://localhost:8089/<case-id>/reports/executive.html`
+   - Combined: `http://localhost:8089/_combined/<bundle>/combined_executive.html`
+
+   Stay terse — one line per case / bundle.
 
 ## Failure modes
 

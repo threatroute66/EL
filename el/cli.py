@@ -445,6 +445,13 @@ def combined_report_cmd(
              "combined.html dashboard. Off by default — large multi-host "
              "HTML can take minutes to paginate and adds a ~500KB-1MB "
              "PDF. Implies --html (the PDF is rendered FROM the HTML)."),
+    regenerate_ai_summary: bool = typer.Option(
+        False, "--regenerate-ai-summary",
+        help="Bypass the cached cross-host AI brief at "
+             "combined_executive_ai_brief.json and re-generate it. "
+             "Costs an API call (or another skill round-trip in defer "
+             "mode). Use after the bundle's per-case ledgers have "
+             "materially changed."),
 ) -> None:
     """Stitch N per-case ledgers into a single multi-host report.
 
@@ -498,7 +505,8 @@ def combined_report_cmd(
         from el.reporting.combined_executive import (
             render_combined_executive, render_combined_executive_pdf,
         )
-        render_combined_executive(dirs, exec_html_path, name=name)
+        render_combined_executive(dirs, exec_html_path, name=name,
+                                    regenerate_ai_summary=regenerate_ai_summary)
         console.print(
             f"[green]wrote combined executive HTML:[/green] {exec_html_path}")
         try:

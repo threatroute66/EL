@@ -179,6 +179,60 @@ def _render_executive_summary(slices: list[_HostSlice]) -> str:
            "".join(parts) + "</div>"
 
 
+# Cross-host AI brief section ordering — six sections from
+# CombinedExecutiveBrief in the order the reader should consume them.
+# Mirrors executive._AI_BRIEF_SECTIONS but with the cross-host shape.
+_COMBINED_AI_BRIEF_SECTIONS: tuple[tuple[str, str], ...] = (
+    ("cross_host_overview",    "Cross-Host Overview"),
+    ("attack_chain",           "Attack Chain"),
+    ("affected_hosts",         "Affected Hosts"),
+    ("data_movement",          "Data Movement"),
+    ("enterprise_risk",        "Enterprise Risk"),
+    ("confidence_and_gaps",    "Confidence & Gaps"),
+)
+
+
+def _render_cross_host_ai_brief(brief: dict | None) -> str:
+    """Render the six-section cross-host AI brief at the top of the
+    combined executive HTML. When `brief` is None (no API key + no
+    defer fulfilled, or cache miss + skill not yet run) return an
+    empty string — the deterministic per-host blocks below carry
+    the fallback narrative.
+
+    The disclaimer banner + per-section AI chips mirror the per-
+    case executive renderer's vocabulary so a reader scanning a
+    multi-host report sees the same AI-provenance affordances they
+    saw on each case.html."""
+    if not brief:
+        return ""
+    from el.reporting.combined_executive_ai import (
+        DISCLAIMER_LABEL, SECTION_AI_CHIP,
+    )
+    sections_html: list[str] = []
+    for field_name, display_title in _COMBINED_AI_BRIEF_SECTIONS:
+        body = (brief or {}).get(field_name, "") or ""
+        if not body.strip():
+            continue
+        sections_html.append(
+            f"<section class='ai-section'>"
+            f"<h3>{_e(display_title)} "
+            f"<span class='ai-chip'>{_e(SECTION_AI_CHIP)}</span></h3>"
+            f"{_markdown_to_html(body)}"
+            f"</section>"
+        )
+    if not sections_html:
+        return ""
+    return (
+        "<h2>Cross-Host Executive Brief</h2>"
+        "<div class='ai-disclaimer'>"
+        f"{_e(DISCLAIMER_LABEL)}"
+        "</div>"
+        "<div class='summary-box ai-brief'>"
+        f"{''.join(sections_html)}"
+        "</div>"
+    )
+
+
 def _render_per_host_ai_briefs(slices: list[_HostSlice]) -> str:
     """Surface each host's cached six-section AI brief verbatim. When a
     host has no brief on disk we silently skip it — the deterministic
@@ -327,16 +381,102 @@ def _render_glossary(slices: list[_HostSlice]) -> str:
     return "<h2>Glossary</h2>" + items
 
 
+def _maybe_synthesize_cross_host_brief(
+    name: str, slices: list[_HostSlice],
+    case_dirs: list[Path], combined_dir: Path,
+    regenerate: bool = False,
+) -> dict | None:
+    """Pull the cross-host context combined.html uses (joint ACH,
+    clock baselines, IOC overlap, ATT&CK union), pass it through
+    synthesize_combined_executive_ai, return the brief dict for
+    rendering. Returns None when no API key / defer is set and no
+    cached brief exists — caller renders without the AI section.
+
+    Wrapped in a defensive try/except: a failure here must NEVER
+    block the rest of the exec render (deterministic fallback is
+    fine and is what the renderer already does)."""
+    try:
+        from el.reporting.combined import load_case
+        from el.reporting.combined_executive_ai import (
+            synthesize_combined_executive_ai,
+        )
+        from el.reporting.combined_html import (
+            _clock_baselines, _joint_ach, _technique_union,
+        )
+        cases = []
+        for d in case_dirs:
+            try:
+                cases.append(load_case(d))
+            except Exception:
+                continue
+        joint_matrix = _joint_ach(cases) if cases else {}
+        # _joint_ach returns {hyp_id: {case_id: score}}; flatten to
+        # a per-hypothesis total + per-case breakdown so the LLM
+        # can name "the joint leading hypothesis is X across N
+        # hosts" without us computing it for them in prose.
+        joint_ranking = []
+        for hyp_id, per_case in joint_matrix.items():
+            total = sum((per_case or {}).values())
+            if total > 0:
+                joint_ranking.append({
+                    "hyp_id": hyp_id, "score": total,
+                    "per_case": dict(per_case or {}),
+                })
+        joint_ranking.sort(key=lambda r: -r["score"])
+
+        clocks = _clock_baselines(cases) if cases else {"rows": [],
+                                                        "alerts": []}
+        techniques = _technique_union(cases) if cases else {}
+        shared = _collect_shared_iocs(cases) if cases else {}
+        result = synthesize_combined_executive_ai(
+            bundle_name=name, slices=slices, combined_dir=combined_dir,
+            joint_ach=joint_ranking,
+            clock_baselines=clocks, shared_iocs=shared,
+            technique_union=techniques, regenerate=regenerate,
+        )
+        if result is None:
+            return None
+        brief, _meta = result
+        return brief.model_dump()
+    except Exception:
+        return None
+
+
+def _collect_shared_iocs(cases: list) -> dict[str, list[str]]:
+    """IOCs observed in ≥2 cases. Reuses the per-case iocs dicts
+    each CaseSlice carries. Returns {value: [case_id, …]}.
+
+    Capped at 60 entries — the AI brief only needs the top-by-
+    breadth pivots; surface more and the LLM context fills with
+    noise."""
+    from collections import defaultdict
+    overlap: dict[str, set[str]] = defaultdict(set)
+    for c in cases:
+        for _kind, values in (c.iocs or {}).items():
+            for v in values:
+                overlap[v].add(c.case_id)
+    multi = [(v, cids) for v, cids in overlap.items() if len(cids) >= 2]
+    multi.sort(key=lambda kv: (-len(kv[1]), kv[0]))
+    return {v: sorted(cids) for v, cids in multi[:60]}
+
+
 def render_combined_executive(
     case_dirs: list[Path],
     output_path: Path,
     *,
     name: str = "combined-case",
+    regenerate_ai_summary: bool = False,
 ) -> Path:
     """Render the multi-host executive HTML for *case_dirs* into *output_path*.
 
     The output path SHOULD be ``<combined>/combined_executive.html``;
     callers can render it to PDF afterwards via WeasyPrint (see CLI).
+
+    When ``ANTHROPIC_API_KEY`` is set OR ``EL_AI_BRIEF_DEFER`` is
+    enabled, also synthesises a cross-host AI brief and embeds it at
+    the top of the body (parallel to executive.py's per-case
+    behaviour). Otherwise the body opens with the deterministic
+    executive summary as before.
     """
     case_dirs = [Path(d) for d in case_dirs]
     slices: list[_HostSlice] = []
@@ -349,8 +489,19 @@ def render_combined_executive(
             # combined.html if needed.
             continue
 
+    # Cross-host AI brief synthesis — happens BEFORE body assembly so
+    # the brief (or its absence) is reflected in the rendered HTML.
+    # Build the same cross-host context combined.html uses so the
+    # brief reasons about the same joint ACH / clock baselines / IOC
+    # overlap the analyst would see in the technical view.
+    cross_host_brief = _maybe_synthesize_cross_host_brief(
+        name, slices, case_dirs, output_path.parent,
+        regenerate=regenerate_ai_summary,
+    )
+
     body = (
         _render_header(name, slices)
+        + _render_cross_host_ai_brief(cross_host_brief)
         + _render_executive_summary(slices)
         + _render_per_host_ai_briefs(slices)
         + _render_per_host_table(slices)
