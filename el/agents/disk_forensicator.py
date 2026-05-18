@@ -412,18 +412,28 @@ class DiskForensicatorAgent(Agent):
             # "fls failed" with no explanation. Detect the signature
             # first and route to refsprogs (the userspace ReFS
             # toolset) which CAN walk it. See el.skills.refsprogs.
+            #
+            # The two exception handlers are split intentionally:
+            # the signature check is defensive (must never block the
+            # fls path for other partition types), but if signature
+            # IS positive then bugs in the handler should propagate
+            # rather than silently fall through to fls and confuse
+            # the analyst with a "fls failed" message on a partition
+            # we know is ReFS. (Earlier debugging caught a Pydantic
+            # validation error in _walk_refs_partition that a broader
+            # except clause was swallowing.)
+            is_refs = False
             try:
                 from el.skills import refsprogs as rp
-                if rp.is_refs_signature(
-                        raw_image,
-                        offset=p["start_sector"] * sector_size):
-                    out.extend(self._walk_refs_partition(
-                        ctx, raw_image, p, sector_size, analysis, label))
-                    continue
+                is_refs = rp.is_refs_signature(
+                    raw_image,
+                    offset=p["start_sector"] * sector_size)
             except Exception:
-                # Defensive — a refs-check failure must NEVER block
-                # the normal fls path for other partition types.
                 pass
+            if is_refs:
+                out.extend(self._walk_refs_partition(
+                    ctx, raw_image, p, sector_size, analysis, label))
+                continue
             try:
                 fls_run = sk.fls(raw_image, analysis,
                                  offset=p["start_sector"], timeout=1800)
@@ -682,6 +692,13 @@ class DiskForensicatorAgent(Agent):
                        "ReFS walk."),
             )))
             return out
+        # Phase 2: refslabel — fold into the probe finding's claim
+        # so we don't emit a label-only finding (which would have
+        # no evidence to satisfy the Finding contract; the label
+        # value isn't itself evidence-worthy beyond the volume
+        # info already captured).
+        label_str = rp.read_label(carved)
+        label_clause = (f", label={label_str!r}" if label_str else "")
         out.append(self.emit(ctx, Finding(
             case_id=ctx.case_id, agent=self.name, confidence="medium",
             claim=(f"ReFS partition {label} ({partition['description']}): "
@@ -689,21 +706,13 @@ class DiskForensicatorAgent(Agent):
                    f"sector_size={info.sector_size}, "
                    f"cluster_size={info.cluster_size}, "
                    f"{info.sector_count:,} sectors, "
-                   f"serial={info.volume_serial}. "
+                   f"serial={info.volume_serial}"
+                   f"{label_clause}. "
                    "Walked via refsprogs (best-effort — upstream "
                    "warns ReFS on-disk format is reverse-engineered)."),
-            evidence=[info.as_evidence()],
+            evidence=[info.as_evidence({"volume_label": label_str})],
             hypotheses_supported=["H_DISK_ARTIFACTS"],
         )))
-
-        # Phase 2: refslabel
-        label_str = rp.read_label(carved)
-        if label_str:
-            out.append(self.emit(ctx, Finding(
-                case_id=ctx.case_id, agent=self.name, confidence="medium",
-                claim=(f"ReFS partition {label} volume label: "
-                       f"{label_str!r}"),
-            )))
 
         # Phase 3: refsls walk → directory listing
         try:

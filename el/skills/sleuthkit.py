@@ -1005,7 +1005,16 @@ def ewfumount(mount_point: Path, timeout: int = 30) -> None:
 def parse_mmls(mmls_output: str) -> list[dict]:
     """Parse mmls stdout into list of {slot, start, end, length, description}.
     Skips meta/unallocated rows. Returns dicts with int byte_offset assuming
-    512-byte sectors (caller should adjust for 4K via img_stat)."""
+    512-byte sectors (caller should adjust for 4K via img_stat).
+
+    The description column is OPTIONAL — Sleuth Kit leaves it blank
+    for partition-type GUIDs it doesn't recognise (ReFS / Storage
+    Spaces / vendor-specific). Previously the >=6-field check
+    silently dropped those rows, which meant ReFS partitions were
+    invisible to the per-partition walker. Now we accept rows with
+    no description and let downstream signature-detection handle
+    the FS classification.
+    """
     rows: list[dict] = []
     for line in mmls_output.splitlines():
         line = line.strip()
@@ -1014,11 +1023,25 @@ def parse_mmls(mmls_output: str) -> list[dict]:
                 or line.startswith("Sector Size") or line.startswith("---"):
             continue
         parts = line.split(maxsplit=5)
-        if len(parts) < 6:
+        # The first 5 fields (slot:, slot_index, start, end, length)
+        # are mandatory. The 6th (description) is optional — present
+        # when Sleuth Kit recognises the partition-type GUID, absent
+        # for ReFS / Storage Spaces / vendor-specific.
+        if len(parts) < 5:
             continue
         slot, start, end, length = parts[1], parts[2], parts[3], parts[4]
-        desc = parts[5]
-        if "Unallocated" in desc or "Meta" in desc or "Primary Table" in desc:
+        desc = parts[5] if len(parts) >= 6 else ""
+        # mmls's first column is the slot indicator ("Meta", "---"
+        # for Unallocated, or a slot index like "000"). The Meta /
+        # Unallocated rows describe GPT housekeeping (Safety Table,
+        # GPT Header, Partition Table, free-space gaps) — not real
+        # partitions an analyst would want to walk. The legacy desc-
+        # substring filter ("Meta in desc") never matched because
+        # those words only appear in the SLOT column; relocate the
+        # check there.
+        if slot.startswith(("Meta", "---")) \
+                or "Unallocated" in desc \
+                or "Primary Table" in desc:
             continue
         try:
             start_sector = int(start)
