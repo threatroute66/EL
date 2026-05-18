@@ -145,6 +145,36 @@ if [[ ${skip_apt} -eq 0 ]] && command -v gcc >/dev/null 2>&1; then
     fi
 fi
 
+# --- MITRE CAR analytic rule pack -------------------------------------------
+# `el.skills.car_import` is wired into SigmaAnalystAgent and looks for
+# CAR YAMLs at /opt/EL/rules/car/ by default. The loader was shipped in
+# `9d10bd3` but no analytics live at that path on a fresh clone, so the
+# loader sat idle. Clone the official MITRE CAR repo to populate the
+# default location — ~100 analytics tagged tightly against ATT&CK.
+# Idempotent: re-runs noop when the directory already exists.
+CAR_DIR="/opt/EL/rules/car"
+if [[ ! -d "${CAR_DIR}" ]]; then
+    log "fetching MITRE CAR analytics -> ${CAR_DIR}"
+    CAR_TMP="$(mktemp -d)"
+    if git clone --depth 1 https://github.com/mitre-attack/car.git \
+            "${CAR_TMP}/car" >/dev/null 2>&1; then
+        sudo mkdir -p "${CAR_DIR}"
+        if [[ -d "${CAR_TMP}/car/analytics" ]]; then
+            sudo cp -r "${CAR_TMP}/car/analytics/." "${CAR_DIR}/"
+            sudo chown -R "$(id -u):$(id -g)" "${CAR_DIR}"
+            n="$(find "${CAR_DIR}" -maxdepth 1 -name 'CAR-*.yaml' | wc -l)"
+            log "CAR analytics installed: ${n} YAML files"
+        else
+            log "CAR repo has no analytics/ subdir — schema changed upstream?"
+        fi
+        rm -rf "${CAR_TMP}"
+    else
+        log "CAR clone failed — SigmaAnalystAgent will run sigma rules only"
+    fi
+else
+    log "CAR analytics already at ${CAR_DIR} — skipping clone"
+fi
+
 # --- EZ Tools phase ---------------------------------------------------------
 # Check for and install EZ Tools that EL expects but may be missing from
 # SIFT's default installation. Downloads from Eric Zimmerman's official site.

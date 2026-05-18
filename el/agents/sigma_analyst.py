@@ -140,11 +140,25 @@ class SigmaAnalystAgent(Agent):
         # objects the rest of this loop already knows how to run.
         car_dir = _resolve_car_dir(ctx)
         car_loaded_count = 0
+        car_total_analytics = 0
         if car_dir is not None:
-            from el.skills.car_import import load_car_rules
+            from el.skills.car_import import load_car_rules, parse_analytic
             car_rules = load_car_rules(car_dir)
             rules.extend(car_rules)
             car_loaded_count = sum(1 for r in car_rules if not r.skipped_reason)
+            # Also count the analytics that DIDN'T have an embedded
+            # sigma snippet. MITRE's upstream CAR repo carries
+            # `type: Sigma` implementations as URL references rather
+            # than inline `code:` blocks, so the loader returns 0 on
+            # a fresh clone even when 100+ analytics are present.
+            # Surfacing both counts in the summary keeps the analyst
+            # from chasing a phantom misconfiguration.
+            from pathlib import Path as _P
+            d = _P(car_dir)
+            yamls = (list(d.glob("*.yaml")) + list(d.glob("*.yml"))
+                     if d.is_dir() else [d])
+            car_total_analytics = sum(
+                1 for p in yamls if parse_analytic(p) is not None)
         loaded = [r for r in rules if not r.skipped_reason]
         skipped = [r for r in rules if r.skipped_reason]
         if not loaded:
@@ -172,8 +186,26 @@ class SigmaAnalystAgent(Agent):
                 "car_rules_dir": str(car_dir) if car_dir else "",
             },
         )
-        car_note = (f" + {car_loaded_count} CAR analytic(s) from {car_dir}"
-                    if car_loaded_count else "")
+        # CAR note reflects 3 distinct shapes:
+        #   1. CAR dir + analytics + sigma snippets all present
+        #   2. CAR dir + analytics but 0 sigma snippets (typical for
+        #      a fresh clone of MITRE's upstream CAR — their Sigma
+        #      impls reference SigmaHQ URLs rather than inlining
+        #      `code:` blocks). Doesn't degrade the run; the rules
+        #      are still discoverable by the analyst.
+        #   3. CAR dir absent (operator never set EL_CAR_RULES /
+        #      didn't run install.sh's CAR clone)
+        if car_loaded_count:
+            car_note = f" + {car_loaded_count} CAR analytic(s) from {car_dir}"
+        elif car_total_analytics:
+            car_note = (
+                f" ({car_total_analytics} CAR analytic(s) found at "
+                f"{car_dir} but 0 carried embedded sigma snippets — "
+                "MITRE's upstream CAR references SigmaHQ URLs rather "
+                "than inlining sigma code; loader works against forks "
+                "that embed it)")
+        else:
+            car_note = ""
         out.append(self.emit(ctx, Finding(
             case_id=ctx.case_id, agent=self.name, confidence="high",
             claim=(f"SigmaAnalyst summary: {len(loaded)} rule(s) loaded "
