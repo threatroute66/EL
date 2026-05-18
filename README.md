@@ -13,7 +13,7 @@ quickstart with a 5-min contract verification, a 30-min end-to-end run
 against the public M57-Jean scenario, and a reference table mapping the
 six judging criteria to specific files and commands.
 
-> **"Every contact leaves a trace."** — Edmond Locard, 1910
+> **"Every contact leaves a trace."** — [Edmond Locard](https://numerabilis.u-paris.fr/ressources/pdf/sfhm/hsm/HSMx2007x041x003/HSMx2007x041x003x0269.pdf), 1910
 >
 > EL takes Locard's exchange principle as its data model. Every artifact is
 > a trace; every trace has a contact (entity) on each end. The per-case
