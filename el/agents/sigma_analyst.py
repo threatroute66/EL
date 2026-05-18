@@ -87,6 +87,26 @@ def _resolve_rules_dir(ctx: AgentContext) -> Path | None:
     return None
 
 
+def _resolve_car_dir(ctx: AgentContext) -> Path | None:
+    """MITRE CAR analytics directory — sibling concept to SIGMA but
+    governed by MITRE. Resolution order mirrors `_resolve_rules_dir`:
+    ctx.shared override → env var → default at /opt/EL/rules/car/."""
+    override = ctx.shared.get("car_rules_dir")
+    if override:
+        p = Path(override)
+        if p.exists():
+            return p
+    env = os.environ.get("EL_CAR_RULES")
+    if env:
+        p = Path(env)
+        if p.exists():
+            return p
+    default = Path("/opt/EL/rules/car")
+    if default.exists():
+        return default
+    return None
+
+
 class SigmaAnalystAgent(Agent):
     name = "sigma_analyst"
 
@@ -112,6 +132,19 @@ class SigmaAnalystAgent(Agent):
             ))]
 
         rules = se.load_rules(rules_dir)
+        # Stitch CAR analytics (MITRE Cyber Analytics Repository)
+        # into the same evaluator pass. Each CAR YAML may carry a
+        # sigma implementation snippet; we extract those, inject
+        # the analytic's ATT&CK tags + a car.CAR-YYYY-MM-NNN
+        # provenance tag, and the result is just more SigmaRule
+        # objects the rest of this loop already knows how to run.
+        car_dir = _resolve_car_dir(ctx)
+        car_loaded_count = 0
+        if car_dir is not None:
+            from el.skills.car_import import load_car_rules
+            car_rules = load_car_rules(car_dir)
+            rules.extend(car_rules)
+            car_loaded_count = sum(1 for r in car_rules if not r.skipped_reason)
         loaded = [r for r in rules if not r.skipped_reason]
         skipped = [r for r in rules if r.skipped_reason]
         if not loaded:
@@ -135,13 +168,17 @@ class SigmaAnalystAgent(Agent):
                 "rules_skipped": len(skipped),
                 "rules_matched": len(hits),
                 "rules_dir": str(rules_dir),
+                "car_rules_loaded": car_loaded_count,
+                "car_rules_dir": str(car_dir) if car_dir else "",
             },
         )
+        car_note = (f" + {car_loaded_count} CAR analytic(s) from {car_dir}"
+                    if car_loaded_count else "")
         out.append(self.emit(ctx, Finding(
             case_id=ctx.case_id, agent=self.name, confidence="high",
             claim=(f"SigmaAnalyst summary: {len(loaded)} rule(s) loaded "
-                   f"from {rules_dir}; {len(hits)} rule(s) matched the "
-                   f"case's EvtxECmd CSV "
+                   f"from {rules_dir}{car_note}; {len(hits)} rule(s) "
+                   f"matched the case's EvtxECmd CSV "
                    f"({'; '.join(f'{h.rule.id}:{h.event_count}' for h in hits[:5]) if hits else 'no matches'})."),
             evidence=[summary_ev],
             hypotheses_supported=["H_DISK_ARTIFACTS"],

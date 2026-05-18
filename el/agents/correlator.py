@@ -137,6 +137,43 @@ class CorrelatorAgent(Agent):
         except Exception as e:
             notes.append(f"entity count query failed: {e}")
 
+        # Case-local DNS cross-reference enrichment. Builds an index
+        # of (domain ↔ IP) from the case's own Zeek dns.log (if
+        # NetworkAnalyst ran) and writes RESOLVED_TO edges into the
+        # graph for the pairs it learned. Air-gap-safe — no external
+        # resolver is queried.
+        try:
+            from el.skills.dns_enrichment import build_case_index
+            idx = build_case_index(ctx.case_dir)
+            if idx.record_count > 0:
+                edges_written = self._write_resolved_to_edges(conn, idx)
+                top_pairs = []
+                # Surface the busiest IPs (most domains pointing at them)
+                # in the finding's claim so the analyst sees a digestible
+                # sample, not a 500-row dump.
+                ip_breadth = sorted(
+                    idx.ip_to_domains.items(),
+                    key=lambda kv: -len(kv[1]))[:5]
+                for ip, doms in ip_breadth:
+                    top_pairs.append(
+                        f"{ip} ← {', '.join(sorted(doms)[:3])}"
+                        f"{' …' if len(doms) > 3 else ''}")
+                notes.append(
+                    f"dns enrichment: {idx.record_count} answer(s) from "
+                    f"{len(idx.source_files)} zeek log(s); "
+                    f"{edges_written} RESOLVED_TO edge(s) written")
+                out.append(self._emit_correlation(
+                    ctx,
+                    f"DNS cross-reference (case-local): "
+                    f"{len(idx.ip_to_domains)} IP(s) ↔ "
+                    f"{len(idx.domain_to_ips)} domain(s) from "
+                    f"{len(idx.source_files)} Zeek log(s). Top by "
+                    f"breadth: {'; '.join(top_pairs)}",
+                    "medium", [], report_path,
+                ))
+        except Exception as e:
+            notes.append(f"dns enrichment failed: {e}")
+
         report_path.write_text("\n".join(notes))
 
         if not out:
@@ -145,6 +182,41 @@ class CorrelatorAgent(Agent):
                 claim="Correlator ran but no cross-agent overlaps were observed in the graph",
             ))]
         return out
+
+    def _write_resolved_to_edges(self, conn,
+                                   idx: "DnsIndex") -> int:
+        """Persist the case-local DNS index into the Kùzu graph via
+        RESOLVED_TO edges (Domain → IPAddress, already in the schema).
+        MERGE keeps the writes idempotent across re-investigations.
+        Returns the number of edges materialised.
+
+        Single-quote escaping is the only injection vector here — the
+        index values come from EL's own Zeek output, but a malicious
+        pcap could try to smuggle a single quote into a TXT-record-
+        shaped DNS answer. Escape defensively."""
+        def _esc(s: str) -> str:
+            return (s or "").replace("'", "''").replace("\\", "\\\\")
+        written = 0
+        for domain, ips in idx.domain_to_ips.items():
+            try:
+                conn.execute(
+                    f"MERGE (:Domain {{name: '{_esc(domain)}'}})")
+            except Exception:
+                continue
+            for ip in ips:
+                version = 6 if ":" in ip else 4
+                try:
+                    conn.execute(
+                        f"MERGE (:IPAddress "
+                        f"{{addr: '{_esc(ip)}', version: {version}}})")
+                    conn.execute(
+                        f"MATCH (d:Domain {{name: '{_esc(domain)}'}}), "
+                        f"      (i:IPAddress {{addr: '{_esc(ip)}'}}) "
+                        f"MERGE (d)-[:RESOLVED_TO]->(i)")
+                    written += 1
+                except Exception:
+                    continue
+        return written
 
     def _emit_correlation(self, ctx: AgentContext, claim: str, confidence: str,
                           hyps: list[str], report_path) -> Finding:
