@@ -77,6 +77,11 @@ KIND_TO_AGENT: dict[str, type[Agent]] = {
     "vhd": DiskForensicatorAgent,
     "vmdk (sparse)": DiskForensicatorAgent,
     "vmdk (descriptor)": DiskForensicatorAgent,
+    # BitLocker / FVE-FS encrypted volumes — DiskForensicator's
+    # _handle_bitlocker probes the FVE metadata, unlocks via
+    # operator-supplied recovery key(s), then runs the standard
+    # raw-disk walk against the decrypted stream.
+    "bitlocker": DiskForensicatorAgent,
     "EVTX (Windows Event Log)": LogAnalystAgent,
     "windows-artifacts-dir": WindowsArtifactAgent,
     # KAPE-Triage output (drive-letter root preserving native Windows
