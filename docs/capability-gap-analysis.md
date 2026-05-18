@@ -126,7 +126,7 @@ Every plugin below is already in vol3; EL just doesn't run it.
 
 **Medium:**
 - `windows.ssdt.SSDT` + `windows.driverirp.DriverIRP` — kernel-mode hook detection. ✅ Shipped.
-- `windows.filescan.FileScan` ✅ + `windows.mftscan.MFTScan` ✅ shipped. `windows.dumpfiles.DumpFiles` still open (needs per-PID iteration glue).
+- `windows.filescan.FileScan` ✅ + `windows.mftscan.MFTScan` ✅ + `windows.dumpfiles.DumpFiles` ✅ shipped. Dumpfiles runs against malfind-flagged PIDs via `memory_forensicator._carve_dumpfiles` with an 8-PID cap (caps runtime on big workstation images); carved DLL / EXE handles feed the threat_hunter YARA sweep.
 - ✅ **`windows.vadyarascan.VadYaraScan`** — shipped via `el.skills.vol3.yarascan()` + `threat_hunter._vol3_yarascan`. Process-attributed YARA matches (PID + ImageFileName + VA). Volume-noise suppression: rules firing ≥10× the case median (or ≥1000 absolute) auto-downgrade to LOW with no hypothesis lift, so generic Windows-DLL substrings can't drown real C2 hits. Validated against `srl2018-admin-memory` — `shieldbase.lan` × 9,822 + `1.3.33.17` × 40 surfaced as in-process hits.
 
 **Highest-impact single add:** `windows.modules.Modules` + `modscan` for rootkit / unlinked-driver detection.
@@ -358,7 +358,7 @@ rows as evidence lands and a case completes end-to-end._
 | ~~VHD / VHDX (Microsoft)~~ ✅ | Same path as VMDK — VHDX detected by `vhdxfile` head-magic; legacy fixed-VHD detected by the `conectix` tail-cookie via `_detect_vhd_footer`. Validated end-to-end on Andrew Rathbun's Anti-Forensics-VHDX (4 partitions, 14.6 KB fls bodyfile, MACB_TIMESTOMP_SKEW detector also added). | — |
 | VDI (VirtualBox) | untested | DFIR training VMs, public CTFs |
 | APFS encrypted container | **not supported** — needs FileVault recovery key ingestion | Operator-supplied key case |
-| BitLocker-encrypted NTFS / ReFS | untested — `dislocker` path exists but no validated case | SANS FOR500/FOR508 course images with BitLocker on |
+| ~~BitLocker-encrypted NTFS~~ ✅ (NTFS inner only — ReFS open) | Shipped triage detection (`-FVE-FS-` at offset 0x03 → `evidence_kind="bitlocker"`), `el.skills.dislocker` wrapper (probe metadata + FUSE-mount with recovery-key / user-password / BEK protectors), `disk_forensicator._handle_bitlocker` (probe → unlock → walk → cleanup), `H_DISK_ENCRYPTED` hypothesis. Credentials carry only sha256 digest in the ledger — raw key never persisted. Mount path uses ntfs-3g first (FUSE-file aware) with kernel-loop fallback. Validated end-to-end on a 4 GB AES-128-DIFFUSER image with 2× recovery-key protectors (commits `f47e55a` + `135765b` + `f92588e`). XTS-AES-128/256 path regex-pinned but not yet driven end-to-end. TPM / BEK protectors detected but only recovery-key driven E2E. **ReFS inner FS still open** — Sleuth Kit ReFS support is limited; needs a Dev Drive image to start. | Operator-built 4 GB image staged at `/mnt/hgfs/hackathon/bitlocker`; SANS FOR500/FOR508 course images |
 | ReFS (incl. Dev Drive on Win11) | **not supported** — Sleuth Kit ReFS support is limited | Microsoft-published Dev Drive lab, ReFS server images |
 | ~~LUKS / LUKS2~~ ✅ | Shipped `mount_luks_ro` + `umount_luks` in `el/skills/sleuthkit.py`; `mount_linux_ro` auto-raises with a hint when a LUKS header is detected instead of returning the kernel's opaque `wrong fs type` error. Validated end-to-end: 32 MiB LUKS1 container → ext4 inside → unlock → read canary → RO-write-blocked assertion. `cryptsetup-bin` + `losetup` already on SIFT. | — |
 | FileVault (CoreStorage legacy) | **not supported** | Pre-APFS macOS 10.12 images |
@@ -539,7 +539,7 @@ Beyond the Tier 1–4 shortlist, the following category items landed:
 | ~~JA3 known-bad + cross-case rarity~~ ✅ | `9c2df40` | Umbrella top-1M allowlist still pending |
 | Cloud breadth — Azure Activity + GCP Cloud Audit + AWS VPC Flow | `d070478` | Google Workspace + AWS GuardDuty |
 | PowerShell breadth — EID 4103 + PSReadline + transcription scans | `15fdaee` | Windows Cloud-Clipboard (UWP state) |
-| vol3 extras — ssdt + driverirp + kernel-hook detector + filescan + mftscan | `8de8f9d` | `windows.dumpfiles.DumpFiles` per-PID still open |
+| vol3 extras — ssdt + driverirp + kernel-hook detector + filescan + mftscan + dumpfiles per-PID | `8de8f9d` | `_carve_dumpfiles` runs dumpfiles against malfind-flagged PIDs (8-PID cap); carved files feed threat_hunter |
 | ~~vol3 yarascan~~ ✅ | `811764c` + `0874487` | Wraps `windows.vadyarascan.VadYaraScan` with PID + ImageFileName attribution; volume-noise suppression (≥10× median or ≥1000 absolute → low confidence). Validated end-to-end on `srl2018-admin-memory`. |
 | Windows artifact extras — RecentDocs + OpenSave-MRU | `b6ead0d` | CapabilityAccess / UAL mdb / VSS mounting |
 | ~~IIS W3C parser~~ ✅ | `71a9a1c` | 5 detectors (webshell URI, scripted UA, admin path, upload burst, verb tunnel) |
@@ -556,6 +556,13 @@ Beyond the Tier 1–4 shortlist, the following category items landed:
 | ~~ACH corpus regression golden~~ ✅ | `0904840` | tests/fixtures/ach_golden.json locks leading hypothesis + score per case |
 | ~~IOC noise — Windows filename TLDs~~ ✅ | `66c9894` | .pf / .fon / .ttc / .mum / .cat etc. dropped from domain bucket |
 | Detection engineering — IOC rarity scoring + ubiquitous-noise suppression | `84359ba` | MITRE CAR analytic import (overlaps SIGMA) |
+| ~~MITRE CAR analytic import~~ ✅ | `9d10bd3` | Loader at `el.skills.car_import` wired into `SigmaAnalystAgent` — extracts the sigma snippet from CAR YAMLs, injects ATT&CK + provenance tags, reuses the existing evaluator |
+| ~~Case-local DNS enrichment~~ ✅ | `9d10bd3` | `el.skills.dns_enrichment` walks Zeek dns.log answers; `correlator` writes RESOLVED_TO edges into the Kùzu graph + emits a per-case "IPs ↔ domains" finding |
+| ~~Low-entropy IOC filter~~ ✅ | `4ead5c1` | Drops padding-shaped tokens (`aaaa…`, `AAAA…`) that satisfied the hash/crypto regex but were memory slack — SRL-2018 r9's shared-IOC table no longer fabricates ghost overlaps |
+| ~~BitLocker volume support~~ ✅ | `f47e55a` + `135765b` + `f92588e` | Triage detect → DiskForensicator `_handle_bitlocker` → `dislocker` skill (probe + mount with cred-digest-only audit) → ntfs-3g-first NTFS mount with kernel-loop fallback. Validated on 4 GB AES-128-DIFFUSER image. ReFS inner FS still open. |
+| ~~Cross-host AI executive brief~~ ✅ | `4656572` | `el.reporting.combined_executive_ai` — six-section CombinedExecutiveBrief (cross-host overview / attack chain / affected hosts / data movement / enterprise risk / confidence). Same three-path synthesis as per-case (cache → API → defer-skill). Validated on SRL-2015-r9 + SRL-2018-r9. |
+| ~~Per-host clock-skew + TZ baseline~~ ✅ | `6535824` + `2aa8857` | `el.skills.ewf_skew` (acquirer-vs-target delta from `ewfinfo`) + `el.skills.time_baseline` (SYSTEM hive TimeZoneInformation + W32Time). Combined dashboard surfaces a `#clocks` panel + TZ-split / NoSync alerts. |
+| ~~Lateral-movement graph populates Users + IPs + edges~~ ✅ | `be78e92` | `lateral_movement_analyst._populate_graph` writes Host + Event + User + IPAddress nodes + OBSERVED_ON / AUTHENTICATED_AS / SOURCE_IP edges. SRL-2015-dc graph went from 11 nodes / 0 edges to 23 nodes / 32 edges. |
 
 ## Corpus-gated tier-3 status (refreshed April 2026)
 
