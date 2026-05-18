@@ -140,7 +140,17 @@ def intake(input_path: str | Path, case_id: str | None = None,
     if src.is_file():
         mode = src.stat().st_mode
         if mode & stat.S_IWUSR and _evidence_is_protected(src):
-            os.chmod(src, mode & ~stat.S_IWUSR & ~stat.S_IWGRP & ~stat.S_IWOTH)
+            # Best-effort write-bit strip — chain-of-custody belt + braces.
+            # Some filesystems (vmhgfs / VMware shared folders, read-only
+            # NFS mounts, fuse-mounted EWF) reject chmod with EPERM even
+            # when the bit being cleared is already clear semantically.
+            # The manifest still records the file's sha256 + path so the
+            # chmod failing is not load-bearing for chain-of-custody.
+            try:
+                os.chmod(src,
+                          mode & ~stat.S_IWUSR & ~stat.S_IWGRP & ~stat.S_IWOTH)
+            except (PermissionError, OSError):
+                pass
         sha256, sha1, md5 = _hash_file(src)
         size = src.stat().st_size
         magic = _peek_magic(src)

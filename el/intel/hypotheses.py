@@ -436,6 +436,18 @@ def _h_shadow_copy_artifact_deleted(f: Finding) -> int:
     return 3
 
 
+def _h_disk_encrypted(f: Finding) -> int:
+    """Status hypothesis surfaced when a BitLocker / FileVault /
+    LUKS volume was detected at intake. Advisory: tells the
+    analyst the case interacted with an encrypted volume so they
+    know to verify recovery-key handling appears in the chain of
+    custody. Low score (+1) — this is a configuration fact, not an
+    attack signal."""
+    if "H_DISK_ENCRYPTED" in f.hypotheses_supported:
+        return 1
+    return 0
+
+
 def _h_paired_capture(f: Finding) -> int:
     """Two memory captures of the same host were detected in the bundle —
     a paired-capture configuration. This hypothesis is *advisory*: it
@@ -587,6 +599,15 @@ HYPOTHESES: list[Hypothesis] = [
                "Stands alone as a deliberate-tampering signal even when the "
                "live ledger is otherwise quiet.",
                _h_shadow_copy_artifact_deleted),
+    Hypothesis("H_DISK_ENCRYPTED",
+               "Encrypted disk volume detected",
+               "A BitLocker / FileVault / LUKS volume was identified at "
+               "intake. Advisory: surfaces the encryption state so the "
+               "report calls out the configuration; combined with the "
+               "key-protector inventory it tells the analyst which "
+               "recovery material to retrieve. Low score — this is a "
+               "configuration fact, not an attack signal.",
+               _h_disk_encrypted),
     Hypothesis("H_PAIRED_CAPTURE_CANDIDATE",
                "Paired capture detected",
                "Two memory captures of the same host appear in this bundle "

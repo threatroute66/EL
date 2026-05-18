@@ -6,6 +6,7 @@ rather than silently degrading — keeps the contract honest.
 """
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 from el.agents.base import Agent, AgentContext
@@ -29,6 +30,8 @@ class DiskForensicatorAgent(Agent):
             return self._handle_ewf(ctx, analysis)
         if kind.startswith(("vhdx", "vhd", "vmdk")):
             return self._handle_vm_disk(ctx, analysis, kind)
+        if kind == "bitlocker":
+            return self._handle_bitlocker(ctx, analysis)
 
         return out + self._raw_disk_walk(ctx, analysis, ctx.input_path)
 
@@ -65,6 +68,153 @@ class DiskForensicatorAgent(Agent):
             hypotheses_supported=["H_DISK_IMAGE"],
         )))
         return out + self._raw_disk_walk(ctx, analysis, result.raw_path)
+
+    def _handle_bitlocker(self, ctx: AgentContext,
+                            analysis: Path) -> list[Finding]:
+        """BitLocker volume path: probe header → unlock with operator-
+        supplied recovery key(s) → walk decrypted volume like raw.
+
+        Credential sources, checked in order:
+          1. ctx.shared['bitlocker_recovery_keys'] — list[str] of
+             48-digit passwords (typically 1; supplying multiple
+             handles the multi-protector case).
+          2. EL_BITLOCKER_RECOVERY_KEYS env var — comma-separated.
+
+        Without credentials we emit a high-confidence `H_DISK_ENCRYPTED`
+        finding reporting the volume GUID + key-protector GUIDs so the
+        analyst knows WHICH recovery key to retrieve, then stop —
+        downstream filesystem walks would be meaningless on encrypted
+        ciphertext."""
+        from el.skills import dislocker as dl
+        out: list[Finding] = []
+
+        # Phase 1: probe metadata — always runs, no credentials needed.
+        try:
+            md = dl.probe_metadata(ctx.input_path, analysis,
+                                     timeout=120)
+        except dl.DislockerError as e:
+            out.append(self.emit(ctx, Finding(
+                case_id=ctx.case_id, agent=self.name,
+                confidence="insufficient",
+                claim=(f"BitLocker probe failed: {e}. Install "
+                       "`dislocker` (apt: dislocker on SIFT) to enable "
+                       "BitLocker handling."),
+            )))
+            return out
+        if not md.recovery_key_guids:
+            # No protectors parsed — likely a corrupt header or a
+            # signature collision (extremely unlikely false positive).
+            out.append(self.emit(ctx, Finding(
+                case_id=ctx.case_id, agent=self.name,
+                confidence="insufficient",
+                claim=(f"`-FVE-FS-` signature detected but "
+                       "`dislocker-metadata` could not extract any "
+                       "key-protector GUIDs from the FVE metadata. "
+                       "Header may be corrupt or this is a "
+                       "non-BitLocker volume that happens to carry the "
+                       "magic. Raw walk SKIPPED to avoid analysing "
+                       "ciphertext."),
+                evidence=[md.as_evidence()],
+            )))
+            return out
+
+        # Surface the probe result first — analyst sees the volume
+        # is BitLocker, knows which protector GUIDs to find keys for.
+        protectors_summary = (
+            f"{len(md.recovery_key_guids)} recovery-key protector(s)"
+            f"{' + TPM' if md.has_tpm_protector else ''}"
+            f"{' + password' if md.has_password_protector else ''}"
+            f"{' + BEK' if md.has_bek_protector else ''}")
+        out.append(self.emit(ctx, Finding(
+            case_id=ctx.case_id, agent=self.name, confidence="high",
+            claim=(f"BitLocker volume detected: "
+                   f"{md.encryption_type or 'unknown encryption'}, "
+                   f"state={md.state or '?'}, volume size "
+                   f"{md.volume_size:,} bytes, "
+                   f"GUID={md.volume_guid or '?'}; "
+                   f"protectors: {protectors_summary} "
+                   f"(GUIDs: {', '.join(md.recovery_key_guids)})"),
+            evidence=[md.as_evidence()],
+            hypotheses_supported=["H_DISK_ENCRYPTED"],
+        )))
+
+        # Phase 2: gather credentials. Operator may supply 0+ recovery
+        # passwords via ctx.shared or env. We do NOT try every key
+        # against every protector — dislocker tries them all internally
+        # and rejects with rc!=0 if none match.
+        recovery_keys: list[str] = list(
+            ctx.shared.get("bitlocker_recovery_keys") or [])
+        env_keys = (os.environ.get("EL_BITLOCKER_RECOVERY_KEYS") or "").strip()
+        if env_keys:
+            for k in env_keys.split(","):
+                k = k.strip()
+                if k:
+                    recovery_keys.append(k)
+        if not recovery_keys:
+            out.append(self.emit(ctx, Finding(
+                case_id=ctx.case_id, agent=self.name,
+                confidence="insufficient",
+                claim=("BitLocker recovery key not supplied — filesystem "
+                       "walk skipped. Provide via "
+                       "ctx.shared['bitlocker_recovery_keys'] (list[str] "
+                       "of 48-digit passwords) or the "
+                       "EL_BITLOCKER_RECOVERY_KEYS env var "
+                       "(comma-separated). Match a key to one of the "
+                       f"protector GUIDs above: "
+                       f"{', '.join(md.recovery_key_guids)}"),
+            )))
+            return out
+
+        # Phase 3: try recovery keys until one unlocks. Multiple keys
+        # supplied = the operator has keys for several protectors and
+        # doesn't know which one this volume belongs to (multi-host
+        # bundle). Try each; first match wins.
+        mount_point = Path("/tmp/el-bitlocker") / ctx.case_id
+        unlocked: dl.DislockerMount | None = None
+        last_error = ""
+        for pw in recovery_keys:
+            try:
+                unlocked = dl.mount(ctx.input_path, mount_point,
+                                      recovery_password=pw,
+                                      stderr_out=analysis / "dislocker-fuse.stderr",
+                                      timeout=60)
+                break
+            except dl.DislockerError as e:
+                last_error = str(e)
+                # Wrong key for this protector — try next.
+                dl.umount(mount_point)
+                continue
+        if unlocked is None:
+            out.append(self.emit(ctx, Finding(
+                case_id=ctx.case_id, agent=self.name,
+                confidence="insufficient",
+                claim=(f"BitLocker unlock failed with "
+                       f"{len(recovery_keys)} candidate recovery key(s) "
+                       f"against {len(md.recovery_key_guids)} protector "
+                       f"GUID(s) — none matched. Last dislocker error: "
+                       f"{last_error[:200]}. Verify keys against the "
+                       f"protector GUIDs and re-run."),
+            )))
+            return out
+        out.append(self.emit(ctx, Finding(
+            case_id=ctx.case_id, agent=self.name, confidence="high",
+            claim=(f"BitLocker volume unlocked via recovery key "
+                   f"(protector kind: {unlocked.used_protector_kind}, "
+                   f"sha256 of supplied key: "
+                   f"{unlocked.used_protector_digest[:16]}…); "
+                   f"decrypted stream available at "
+                   f"{unlocked.decrypted_file}."),
+            evidence=[unlocked.as_evidence()],
+            hypotheses_supported=["H_DISK_ENCRYPTED"],
+        )))
+
+        # Phase 4: standard raw-disk walk against the decrypted file.
+        try:
+            out.extend(self._raw_disk_walk(
+                ctx, analysis, unlocked.decrypted_file))
+        finally:
+            dl.umount(mount_point)
+        return out
 
     def _handle_ewf(self, ctx: AgentContext, analysis) -> list[Finding]:
         """E01 path: ewfinfo (metadata + chain of custody) → ewfmount → walk

@@ -47,6 +47,22 @@ MAGIC_HINTS = {
 }
 
 
+def _detect_bitlocker(path: Path) -> str | None:
+    """BitLocker volume header has `-FVE-FS-` (BitLocker To Go /
+    post-Vista BitLocker) at file offset 0x03 — the leading 3
+    bytes are the boot-sector JMP instruction so the magic doesn't
+    sit at byte 0 where `MAGIC_HINTS.startswith` would catch it.
+    Read 11 bytes and check the suffix."""
+    try:
+        with path.open("rb") as f:
+            head = f.read(11)
+    except OSError:
+        return None
+    if head[3:11] == b"-FVE-FS-":
+        return "bitlocker"
+    return None
+
+
 def _detect_vhd_footer(path: Path) -> str | None:
     """VHD (Connectix/Microsoft, legacy) has no header magic for fixed
     images — the signature lives in the last 512-byte footer as the
@@ -182,6 +198,12 @@ class TriageAgent(Agent):
             vhd_kind = _detect_vhd_footer(ctx.input_path)
             if vhd_kind:
                 magic_hint = vhd_kind
+        if not magic_hint:
+            # BitLocker `-FVE-FS-` sits at file offset 0x03 (after the
+            # 3-byte JMP). Not picked up by the byte-0 prefix loop above.
+            bl_kind = _detect_bitlocker(ctx.input_path)
+            if bl_kind:
+                magic_hint = bl_kind
 
         evidence = [EvidenceItem(
             tool="el.triage", version="0.1.0",
@@ -205,7 +227,7 @@ class TriageAgent(Agent):
             )))
 
         non_memory = ("pcap", "pcapng", "EWF", "EVTX", "Registry",
-                      "vhdx", "vhd", "vmdk")
+                      "vhdx", "vhd", "vmdk", "bitlocker")
         if magic_hint and any(n in magic_hint for n in non_memory):
             return out
         if head[:1] in (b"{", b"[") or head[:5] in (b"<?xml", b"<html"):
