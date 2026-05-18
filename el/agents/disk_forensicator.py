@@ -407,6 +407,23 @@ class DiskForensicatorAgent(Agent):
         linux_dirs: list[Path] = []            # Linux ext{2,3,4}
         for p in partitions:
             label = f"slot{p['slot']}-off{p['start_sector']}"
+            # ReFS pre-check — Sleuth Kit can't read ReFS, so fls
+            # would just fail with rc=1 and the analyst would see
+            # "fls failed" with no explanation. Detect the signature
+            # first and route to refsprogs (the userspace ReFS
+            # toolset) which CAN walk it. See el.skills.refsprogs.
+            try:
+                from el.skills import refsprogs as rp
+                if rp.is_refs_signature(
+                        raw_image,
+                        offset=p["start_sector"] * sector_size):
+                    out.extend(self._walk_refs_partition(
+                        ctx, raw_image, p, sector_size, analysis, label))
+                    continue
+            except Exception:
+                # Defensive — a refs-check failure must NEVER block
+                # the normal fls path for other partition types.
+                pass
             try:
                 fls_run = sk.fls(raw_image, analysis,
                                  offset=p["start_sector"], timeout=1800)
@@ -604,6 +621,113 @@ class DiskForensicatorAgent(Agent):
                           f"'{top_author}' across {top_n} file(s)",
                     evidence=[ev],
                 )))
+        return out
+
+    def _walk_refs_partition(
+            self, ctx: AgentContext, raw_image: Path, partition: dict,
+            sector_size: int, analysis: Path, label: str
+    ) -> list[Finding]:
+        """ReFS partition walk via refsprogs (userspace ReFS toolset).
+        Sleuth Kit + Linux kernel have no ReFS support, so this is the
+        only path EL has to read Windows 11 Dev Drives + Server 2016+
+        ReFS volumes.
+
+        Carves the partition out of the raw image first (refsprogs has
+        no offset flag — expects a standalone ReFS volume), runs
+        refsinfo → refslabel → refsls, emits one finding per stage.
+        Confidence is `medium` per the upstream caveat that refsprogs
+        coverage is best-effort.
+        """
+        from el.skills import refsprogs as rp
+        out: list[Finding] = []
+        carved = analysis / f"refs-{label}.raw"
+        try:
+            rp.carve_partition(
+                raw_image,
+                partition_start_sector=partition["start_sector"],
+                partition_length_sectors=partition["length_sectors"],
+                sector_size=sector_size, out_path=carved)
+        except OSError as e:
+            return [self.emit(ctx, Finding(
+                case_id=ctx.case_id, agent=self.name,
+                confidence="insufficient",
+                claim=(f"ReFS partition {label} ({partition['description']}) "
+                       f"detected but carve-to-raw failed: {e}. "
+                       "Walk skipped — needs disk space equal to the "
+                       "partition's declared size."),
+            ))]
+        # Verify signature on the carved file too — protects against
+        # mmls reporting a length that doesn't actually contain the
+        # FS magic at the carved start.
+        if not rp.is_refs_signature(carved):
+            out.append(self.emit(ctx, Finding(
+                case_id=ctx.case_id, agent=self.name,
+                confidence="insufficient",
+                claim=(f"ReFS signature detected at partition {label} "
+                       "but disappeared after carve — partition table "
+                       "metadata may be inconsistent. Walk skipped."),
+            )))
+            return out
+
+        # Phase 1: refsinfo
+        try:
+            info = rp.probe_volume(carved, analysis, timeout=120)
+        except rp.RefsprogsError as e:
+            out.append(self.emit(ctx, Finding(
+                case_id=ctx.case_id, agent=self.name,
+                confidence="insufficient",
+                claim=(f"ReFS partition {label}: refsinfo failed — {e}. "
+                       "Install refsprogs (build from "
+                       "https://github.com/unsound/refsprogs) to enable "
+                       "ReFS walk."),
+            )))
+            return out
+        out.append(self.emit(ctx, Finding(
+            case_id=ctx.case_id, agent=self.name, confidence="medium",
+            claim=(f"ReFS partition {label} ({partition['description']}): "
+                   f"version {info.refs_version}, "
+                   f"sector_size={info.sector_size}, "
+                   f"cluster_size={info.cluster_size}, "
+                   f"{info.sector_count:,} sectors, "
+                   f"serial={info.volume_serial}. "
+                   "Walked via refsprogs (best-effort — upstream "
+                   "warns ReFS on-disk format is reverse-engineered)."),
+            evidence=[info.as_evidence()],
+            hypotheses_supported=["H_DISK_ARTIFACTS"],
+        )))
+
+        # Phase 2: refslabel
+        label_str = rp.read_label(carved)
+        if label_str:
+            out.append(self.emit(ctx, Finding(
+                case_id=ctx.case_id, agent=self.name, confidence="medium",
+                claim=(f"ReFS partition {label} volume label: "
+                       f"{label_str!r}"),
+            )))
+
+        # Phase 3: refsls walk → directory listing
+        try:
+            listing = rp.walk(carved, analysis)
+        except rp.RefsprogsError as e:
+            out.append(self.emit(ctx, Finding(
+                case_id=ctx.case_id, agent=self.name,
+                confidence="insufficient",
+                claim=(f"ReFS partition {label}: refsls failed — {e}"),
+            )))
+            return out
+        sample_entries = "; ".join(
+            f"{e['name']} ({e['size_bytes']}B)"
+            for e in listing.entries[:5])
+        out.append(self.emit(ctx, Finding(
+            case_id=ctx.case_id, agent=self.name, confidence="medium",
+            claim=(f"ReFS partition {label}: "
+                   f"{listing.entry_count} file/dir entries listed via "
+                   f"refsls -l -R"
+                   f"{' (TRUNCATED at cap)' if listing.truncated else ''}"
+                   f". Sample: {sample_entries}"),
+            evidence=[listing.as_evidence()],
+            hypotheses_supported=["H_DISK_ARTIFACTS"],
+        )))
         return out
 
     def _extract_linux_artifacts_partition(

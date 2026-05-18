@@ -8,3 +8,7 @@ hashdeep
 testdisk
 libimage-exiftool-perl
 unyaffs
+autoconf
+automake
+libtool
+libfuse-dev

@@ -112,6 +112,39 @@ if [[ ${skip_apt} -eq 0 ]] && command -v gcc >/dev/null 2>&1; then
     fi
 fi
 
+# --- refsprogs (source-built) -----------------------------------------------
+# Linux + Sleuth Kit have no ReFS support, so the Windows 11 Dev Drive +
+# Server 2016+ ReFS volumes go unreadable on SIFT by default. refsprogs
+# (https://github.com/unsound/refsprogs, GPLv2+) is the only userspace
+# ReFS reader. We clone + build into /usr/local/ so the refsls / refscat /
+# refsinfo / refslabel binaries plus librefs are on the standard library
+# search path. Idempotent — re-runs noop when already installed.
+if [[ ${skip_apt} -eq 0 ]] && command -v gcc >/dev/null 2>&1; then
+    if ! command -v refsinfo >/dev/null 2>&1; then
+        log "building refsprogs from source -> /usr/local/{bin,lib}"
+        RFP_BUILD="$(mktemp -d)"
+        if git clone --depth 1 https://github.com/unsound/refsprogs.git \
+                "${RFP_BUILD}/refsprogs" >/dev/null 2>&1; then
+            (cd "${RFP_BUILD}/refsprogs" \
+                && ./autogen.sh >/dev/null 2>&1 \
+                && ./configure --prefix=/usr/local >/dev/null 2>&1 \
+                && make -j2 -s >/dev/null 2>&1 \
+                && sudo make install >/dev/null 2>&1) \
+                || log "refsprogs build failed — continuing without ReFS support"
+            # librefs.so lands under /usr/local/lib; refresh linker cache.
+            sudo ldconfig
+            rm -rf "${RFP_BUILD}"
+            if command -v refsinfo >/dev/null 2>&1; then
+                log "refsprogs installed (refsinfo / refsls / refscat / refslabel)"
+            fi
+        else
+            log "refsprogs clone failed — ReFS partitions will fall through to fls (which fails) instead of refsls"
+        fi
+    else
+        log "refsprogs already installed — skipping build"
+    fi
+fi
+
 # --- EZ Tools phase ---------------------------------------------------------
 # Check for and install EZ Tools that EL expects but may be missing from
 # SIFT's default installation. Downloads from Eric Zimmerman's official site.
