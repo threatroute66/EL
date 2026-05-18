@@ -306,6 +306,15 @@ def mount(image_path: Path, mount_point: Path, *,
             raise DislockerError(f"cannot read BEK file: {e}") from e
         args.extend(["-f", str(bek_file)])
     args.append(str(mount_point))
+    # Pass `allow_other` through to FUSE so the downstream `sudo
+    # ntfs-3g <dislocker-file>` (run by mount_ntfs) can read this
+    # mount. Default FUSE policy is owner-only access; without
+    # allow_other a root subprocess gets EACCES on the FUSE inode
+    # even though it could read any other file on disk. Requires
+    # /etc/fuse.conf to carry `user_allow_other` — present on SIFT
+    # by default. Falls through silently if FUSE rejects (older
+    # kernels may report errors but still mount with default ACL).
+    args.extend(["--", "-o", "allow_other"])
     if stderr_out is None:
         stderr_out = mount_point.parent / "dislocker-fuse.stderr"
     stderr_path = Path(stderr_out)

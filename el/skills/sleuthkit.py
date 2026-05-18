@@ -154,14 +154,54 @@ def ewfmount(image: Path, mount_point: Path, timeout: int = 60) -> Path:
 
 def mount_ntfs(raw_image: Path, offset_sectors: int, mount_point: Path,
                sector_size: int = 512, timeout: int = 60) -> None:
-    """Read-only loopback-mount an NTFS partition from a raw disk stream.
+    """Read-only mount an NTFS partition from a raw disk stream.
 
-    Per sleuthkit SKILL: always pass ro,loop,offset,norecovery. norecovery
+    Per sleuthkit SKILL: always pass ro,offset,norecovery. norecovery
     prevents NTFS journal replay (which would alter the on-disk state).
-    Requires sudo and ntfs-3g (present on SIFT).
+
+    Two-stage strategy:
+
+      1. **ntfs-3g direct mount** — works against any file shape
+         including FUSE-exposed virtual files (`dislocker-file`,
+         `ewfmount` exports, anything backed by a userspace fuse
+         driver). ntfs-3g handles its own block I/O internally and
+         doesn't need a kernel loop device. Tried FIRST.
+
+      2. **Kernel `mount -o loop,offset=...`** — fallback for the
+         rare case where ntfs-3g is unavailable or the image has
+         a quirk ntfs-3g rejects. Cannot stack on FUSE files (loop
+         device requires a real backing inode), so this path is
+         only useful for plain raw files.
+
+    The order matters: dislocker-fuse exposed `dislocker-file` is
+    a FUSE virtual file; the kernel loop path rc=32 there even
+    when the underlying NTFS is healthy. ntfs-3g works against it
+    directly.
     """
     mount_point.mkdir(parents=True, exist_ok=True)
     offset_bytes = offset_sectors * sector_size
+    errors: list[str] = []
+
+    # Path 1: ntfs-3g direct mount. -o option list mirrors kernel
+    # mount's; ntfs-3g understands offset= the same way.
+    ntfs3g = shutil.which("ntfs-3g")
+    if ntfs3g:
+        cmd = ["sudo", ntfs3g, "-o",
+               f"ro,offset={offset_bytes},norecovery",
+               str(raw_image), str(mount_point)]
+        try:
+            proc = subprocess.run(cmd, capture_output=True, text=True,
+                                    timeout=timeout)
+            if proc.returncode == 0:
+                return
+            errors.append(
+                f"ntfs-3g rc={proc.returncode}: "
+                f"{(proc.stderr or proc.stdout).strip()[:200]}")
+        except subprocess.TimeoutExpired as e:
+            raise SleuthkitError(f"ntfs-3g mount timeout: {e}") from e
+
+    # Path 2: kernel loop mount. Won't work on FUSE files but covers
+    # the case where ntfs-3g is missing or rejected the image.
     cmd = ["sudo", "mount", "-o",
            f"ro,loop,offset={offset_bytes},norecovery",
            str(raw_image), str(mount_point)]
@@ -170,8 +210,12 @@ def mount_ntfs(raw_image: Path, offset_sectors: int, mount_point: Path,
     except subprocess.TimeoutExpired as e:
         raise SleuthkitError(f"mount timeout: {e}") from e
     if proc.returncode != 0:
-        raise SleuthkitError(f"NTFS mount failed (rc={proc.returncode}): "
-                             f"{(proc.stderr or proc.stdout).strip()[:300]}")
+        errors.append(
+            f"kernel mount rc={proc.returncode}: "
+            f"{(proc.stderr or proc.stdout).strip()[:200]}")
+        raise SleuthkitError(
+            "NTFS mount failed via all attempted strategies: "
+            + " | ".join(errors))
 
 
 def umount(mount_point: Path, timeout: int = 30) -> None:
