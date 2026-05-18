@@ -353,6 +353,39 @@ _EMPTY_IOCS = {k: set() for k in ("ipv4", "ipv6", "domain", "url", "md5", "sha1"
                                    "sha256", "email", "regkey", "winpath", "btc")}
 
 
+# ----- Low-entropy filter ----------------------------------------------------
+#
+# A 32-char hex token matches the MD5 regex even when it's clearly memory
+# padding or wiped disk slack — e.g. `aaaaaaaaaaaaaaa6aaaaa6a6aaaaaaaa`
+# (32 hex chars but only 2 distinct characters). Real cryptographic
+# hashes / BTC addresses approach the uniform distribution of their
+# alphabets; padding garbage doesn't. SRL-2018 r9 surfaced this on
+# wkstn01 + wkstn05 — both hosts share memory-region padding that
+# carved as identical "shared IOCs".
+#
+# Threshold = roughly half the alphabet for hex hashes, ~20% for the
+# larger Base58 / Bech32 BTC alphabets. Tuned empirically against the
+# SRL-2018 noise + known real-world IOCs from prior cases (all real
+# ones cross the threshold by a wide margin).
+_MIN_UNIQUE_CHARS = {
+    "md5":     8,   # 32 chars over 16-char alphabet — real ones use most of them
+    "sha1":    10,  # 40 chars over 16
+    "sha256":  12,  # 64 chars over 16
+    "btc":     12,  # 26-35 chars over 58 (Base58)
+}
+
+
+def _has_sufficient_entropy(token: str, kind: str) -> bool:
+    """Return True when `token` has enough distinct characters to
+    plausibly be a real hash / BTC address of `kind`. Used to reject
+    padding-shaped tokens (`aaaa...`, `AAAA6AAA...`) that satisfy the
+    length + character-class regex but couldn't be a real artefact."""
+    threshold = _MIN_UNIQUE_CHARS.get(kind)
+    if threshold is None:
+        return True
+    return len(set(token.lower())) >= threshold
+
+
 def _filter_btc_legacy(addrs: set[str]) -> set[str]:
     """Base58 regex yields plenty of noise (random tokens, short hex strings,
     bearer tokens). Real BTC legacy addresses are mixed alphanumeric with at
@@ -406,6 +439,9 @@ def extract(text: str, drop_noise: bool = True,
         if drop_noise:
             ipv4 = _filter_ipv4(ipv4)
             sha1 = sha1 - {h for h in sha1 if len(h) != 40}
+            md5 = {h for h in md5 if _has_sufficient_entropy(h, "md5")}
+            sha1 = {h for h in sha1 if _has_sufficient_entropy(h, "sha1")}
+            sha256 = {h for h in sha256 if _has_sufficient_entropy(h, "sha256")}
         return {"ipv4": ipv4, "ipv6": ipv6, "domain": set(), "url": set(),
                 "md5": md5, "sha1": sha1, "sha256": sha256, "email": set(),
                 "regkey": regkey, "winpath": winpath, "btc": set()}
@@ -433,6 +469,11 @@ def extract(text: str, drop_noise: bool = True,
         sha1 = sha1 - {h for h in sha1 if len(h) != 40}
         url = {u for u in url if not any(_filter_domains({u.split('/')[2]}) == set() for _ in [0])}
         btc_legacy = _filter_btc_legacy(btc_legacy)
+        md5 = {h for h in md5 if _has_sufficient_entropy(h, "md5")}
+        sha1 = {h for h in sha1 if _has_sufficient_entropy(h, "sha1")}
+        sha256 = {h for h in sha256 if _has_sufficient_entropy(h, "sha256")}
+        btc_legacy = {a for a in btc_legacy if _has_sufficient_entropy(a, "btc")}
+        btc_bech32 = {a for a in btc_bech32 if _has_sufficient_entropy(a, "btc")}
     btc = btc_legacy | btc_bech32
 
     return {"ipv4": ipv4, "ipv6": ipv6, "domain": domain, "url": url,

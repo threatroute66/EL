@@ -69,14 +69,21 @@ def test_fs_paths_mode_skips_domain_regex():
 
 def test_fs_paths_mode_still_extracts_hashes_and_ips():
     """Hashes and IPs in fs_paths output ARE real (e.g. an IP or hash that
-    appears in a filename or connection-log entry). Keep them."""
+    appears in a filename or connection-log entry). Keep them.
+
+    Real hash shape — `d41d8cd98f00b204e9800998ecf8427e` (MD5 of empty
+    string, 12 unique chars). The earlier fixture used `"d" * 32` which
+    looked like a hash to the regex but was 1 unique char; the low-
+    entropy filter now correctly rejects that shape, so the fixture
+    has to match what a real artefact would look like."""
+    real_md5 = "d41d8cd98f00b204e9800998ecf8427e"
     body = (
         "0|/logs/connection-from-203.0.113.17 src|1|r|0|0|0|0|0|0|0\n"
-        "0|/tmp/" + ("d" * 32) + " payload|1|r|0|0|0|0|0|0|0\n"
+        f"0|/tmp/{real_md5} payload|1|r|0|0|0|0|0|0|0\n"
     )
     out = extract(body, source_kind="fs_paths")
     assert "203.0.113.17" in out["ipv4"]
-    assert "d" * 32 in out["md5"]
+    assert real_md5 in out["md5"]
 
 
 def test_fs_paths_mode_preserves_winpath_and_regkey():

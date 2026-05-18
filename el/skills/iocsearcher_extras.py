@@ -109,6 +109,33 @@ EXTRA_TARGETS: tuple[str, ...] = tuple(sorted(_TYPE_TO_KEY.keys()))
 EXTRA_KEYS: tuple[str, ...] = tuple(sorted(set(_TYPE_TO_KEY.values())))
 
 
+# Per-EL-key minimum unique-character thresholds. Cryptocurrency
+# addresses across all 13 chains share the same length-and-alphabet
+# shape iocsearcher matches by regex — so do onion v3 addresses. A
+# 42-char Base58-shaped token with two unique characters
+# (`AAAAAAAAA…AAAAA6A…`) satisfies the regex but is memory padding or
+# wiped slack, not a wallet. SRL-2018 r9 surfaced this on wkstn01 +
+# wkstn05: both hosts share NTFS padding patterns that carved as
+# identical "shared IOCs" in the cross-host overlap report.
+_MIN_UNIQUE_CHARS: dict[str, int] = {
+    "cryptocurrency":  12,   # 26-64 chars over 32-58 alphabet
+    # Onion v2 = 16-char base32, v3 = 56-char base32. A v2 hidden
+    # service typically uses ~10-13 distinct characters (16 chars of
+    # entropy spread over 32-char alphabet); v3 spans well above that.
+    # Use 10 as the floor so v2 onions still pass while pure-padding
+    # shapes (1-5 unique chars) get dropped. Deprecated since 2021
+    # but old evidence still cites them.
+    "onion":           10,
+}
+
+
+def _has_sufficient_entropy(token: str, key: str) -> bool:
+    threshold = _MIN_UNIQUE_CHARS.get(key)
+    if threshold is None:
+        return True
+    return len(set(token.lower())) >= threshold
+
+
 def _empty() -> dict[str, set[str]]:
     return {k: set() for k in EXTRA_KEYS}
 
@@ -143,6 +170,8 @@ def extract_extras(text: str) -> dict[str, set[str]]:
         for typ, value, *_ in s.search_raw(text, targets=EXTRA_TARGETS):
             key = _TYPE_TO_KEY.get(typ)
             if not key:
+                continue
+            if not _has_sufficient_entropy(value, key):
                 continue
             out[key].add(value)
     except Exception:
