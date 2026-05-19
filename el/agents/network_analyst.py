@@ -26,6 +26,11 @@ class NetworkAnalystAgent(Agent):
         analysis.mkdir(parents=True, exist_ok=True)
 
         kind = ctx.shared.get("evidence_kind") or ""
+        # Suricata EVE JSON — standalone (operator brings the eve log
+        # without the source pcap). Single parser pass + per-cluster
+        # findings; no pcap-replay path needed.
+        if kind == "suricata-eve":
+            return self._handle_eve_json(ctx, analysis)
         if "pcap" not in kind:
             return [self.emit(ctx, Finding(
                 case_id=ctx.case_id, agent=self.name, confidence="insufficient",
@@ -97,6 +102,91 @@ class NetworkAnalystAgent(Agent):
         # Statistical beaconing detection over Zeek conn.log
         # (RITA-algorithm implementation; strengthens H_C2_BEACONING).
         out.extend(self._run_beaconing(ctx, analysis))
+        return out
+
+    def _handle_eve_json(self, ctx: AgentContext,
+                          analysis: Path) -> list[Finding]:
+        """Parse a standalone Suricata `eve.json` and emit findings.
+        Same logic the pcap path uses for its post-suricata processing,
+        but here the operator skipped pcap and brought the eve log
+        directly. The skill caps at 200k events; truncation is
+        recorded but not failure."""
+        from el.skills import suricata_eve as se
+        out: list[Finding] = []
+        try:
+            summary = se.parse_eve_json(ctx.input_path, analysis)
+        except Exception as e:
+            return [self.emit(ctx, Finding(
+                case_id=ctx.case_id, agent=self.name,
+                confidence="insufficient",
+                claim=f"Suricata EVE parse failed: {e}",
+            ))]
+        ev = summary.as_evidence()
+        # Top-level summary finding
+        out.append(self.emit(ctx, Finding(
+            case_id=ctx.case_id, agent=self.name, confidence="high",
+            claim=(f"Suricata EVE parsed: {summary.total_events:,} event(s); "
+                   f"{summary.alert_count} alert(s) across "
+                   f"{summary.unique_signatures} unique signature(s); "
+                   f"types={summary.by_event_type}"),
+            evidence=[ev],
+            hypotheses_supported=["H_NETWORK_TRAFFIC_OBSERVED"],
+        )))
+        # Per-cluster alert findings (top 10 by count). Severity 1 = high
+        # in Suricata's convention; 2 = medium; 3+ = low. Cluster severity
+        # maps directly to finding confidence.
+        sev_to_conf = {1: "high", 2: "medium", 3: "low"}
+        for c in summary.alert_clusters[:10]:
+            conf = sev_to_conf.get(c.severity, "low")
+            dst_clause = (", → ".join(c.dest_ips[:3])
+                          if c.dest_ips else "(no dst)")
+            port_clause = (f" ports={c.dest_ports[:5]}"
+                           if c.dest_ports else "")
+            techniques_clause = (f" ATT&CK={','.join(c.attack_techniques)}"
+                                 if c.attack_techniques else "")
+            out.append(self.emit(ctx, Finding(
+                case_id=ctx.case_id, agent=self.name, confidence=conf,
+                claim=(f"Suricata alert cluster: SID {c.signature_id} "
+                       f"`{c.signature[:120]}` × {c.count} hit(s) — "
+                       f"{c.first_seen[:19]} → {c.last_seen[:19]}, "
+                       f"dst {dst_clause}{port_clause}{techniques_clause}"),
+                evidence=[ev],
+                hypotheses_supported=["H_NETWORK_TRAFFIC_OBSERVED"],
+            )))
+        # Extracted files (fileinfo events with sha256) — high-value
+        # IOCs. Each one gets its own finding so the cross-case
+        # knowledge store + malware-triage tier can pivot on them.
+        for f in summary.fileinfo[:20]:
+            out.append(self.emit(ctx, Finding(
+                case_id=ctx.case_id, agent=self.name, confidence="medium",
+                claim=(f"Suricata extracted file: "
+                       f"sha256={f['sha256'][:16]}…, "
+                       f"name={f.get('filename', '?')!r}, "
+                       f"magic={f.get('magic', '?')!r}, "
+                       f"src={f.get('src_ip')} → dst={f.get('dest_ip')}"),
+                evidence=[ev],
+                hypotheses_supported=["H_IOC_CORROBORATED"],
+            )))
+        # Anomaly events (protocol-decode weirdness) — under-rated
+        # signal that doesn't depend on rule coverage.
+        if summary.anomaly_types:
+            top_anom = sorted(summary.anomaly_types.items(),
+                               key=lambda kv: -kv[1])[:5]
+            out.append(self.emit(ctx, Finding(
+                case_id=ctx.case_id, agent=self.name, confidence="low",
+                claim=(f"Suricata decode anomalies: "
+                       + "; ".join(f"{n}={k}" for n, k in top_anom)),
+                evidence=[ev],
+            )))
+        if summary.truncated:
+            out.append(self.emit(ctx, Finding(
+                case_id=ctx.case_id, agent=self.name,
+                confidence="insufficient",
+                claim=("Suricata EVE parse stopped at the 200k-event cap "
+                       "— summary reflects partial data. Re-invoke "
+                       "`suricata_eve.parse_eve_json` with a higher "
+                       "max_events for full coverage."),
+            )))
         return out
 
     def _run_beaconing(self, ctx: AgentContext, analysis) -> list[Finding]:
@@ -270,6 +360,67 @@ class NetworkAnalystAgent(Agent):
             evidence=[r.as_evidence()],
             hypotheses_supported=tags,
         )))
+        # Hand the freshly-written eve.json to the standalone EVE
+        # parser to surface per-cluster + fileinfo + anomaly findings
+        # the rc-summary above doesn't expose. Defensive — any failure
+        # here must not block the existing pcap path.
+        if r.eve_path.is_file():
+            try:
+                from el.skills import suricata_eve as se
+                eve_summary = se.parse_eve_json(r.eve_path, analysis)
+                ev = eve_summary.as_evidence({"source": "pcap_replay"})
+                sev_to_conf = {1: "high", 2: "medium", 3: "low"}
+                for c in eve_summary.alert_clusters[:10]:
+                    conf = sev_to_conf.get(c.severity, "low")
+                    dst_clause = (", → ".join(c.dest_ips[:3])
+                                  if c.dest_ips else "(no dst)")
+                    port_clause = (f" ports={c.dest_ports[:5]}"
+                                   if c.dest_ports else "")
+                    tech = (f" ATT&CK={','.join(c.attack_techniques)}"
+                            if c.attack_techniques else "")
+                    out.append(self.emit(ctx, Finding(
+                        case_id=ctx.case_id, agent=self.name,
+                        confidence=conf,
+                        claim=(f"Suricata alert cluster: SID "
+                               f"{c.signature_id} `{c.signature[:120]}` "
+                               f"× {c.count} hit(s) — "
+                               f"{c.first_seen[:19]} → "
+                               f"{c.last_seen[:19]}, dst {dst_clause}"
+                               f"{port_clause}{tech}"),
+                        evidence=[ev],
+                        hypotheses_supported=tags,
+                    )))
+                for f in eve_summary.fileinfo[:20]:
+                    out.append(self.emit(ctx, Finding(
+                        case_id=ctx.case_id, agent=self.name,
+                        confidence="medium",
+                        claim=(f"Suricata extracted file: "
+                               f"sha256={f['sha256'][:16]}…, "
+                               f"name={f.get('filename', '?')!r}, "
+                               f"magic={f.get('magic', '?')!r}, "
+                               f"src={f.get('src_ip')} → "
+                               f"dst={f.get('dest_ip')}"),
+                        evidence=[ev],
+                        hypotheses_supported=["H_IOC_CORROBORATED"],
+                    )))
+                if eve_summary.anomaly_types:
+                    top_anom = sorted(eve_summary.anomaly_types.items(),
+                                       key=lambda kv: -kv[1])[:5]
+                    out.append(self.emit(ctx, Finding(
+                        case_id=ctx.case_id, agent=self.name,
+                        confidence="low",
+                        claim=("Suricata decode anomalies: "
+                               + "; ".join(f"{n}={k}"
+                                            for n, k in top_anom)),
+                        evidence=[ev],
+                    )))
+            except Exception as e:
+                out.append(self.emit(ctx, Finding(
+                    case_id=ctx.case_id, agent=self.name, confidence="low",
+                    claim=(f"Suricata EVE post-parse skipped: {e}. "
+                           "Per-cluster + fileinfo findings unavailable; "
+                           "the rc-count summary above still stands."),
+                )))
         return out
 
     # ----- Zeek -----

@@ -70,6 +70,10 @@ KIND_TO_AGENT: dict[str, type[Agent]] = {
     # Triage merges them with mergecap and rewrites ctx.input_path
     # so NetworkAnalystAgent sees a single normal pcap.
     "pcap-collection": NetworkAnalystAgent,
+    # Standalone Suricata EVE JSON (operator brings the EVE log
+    # without the source pcap). NetworkAnalystAgent has a dedicated
+    # eve-ingest branch — parser + per-cluster findings.
+    "suricata-eve": NetworkAnalystAgent,
     "EWF (E01)": DiskForensicatorAgent,
     # VM disk wrappers — DiskForensicator converts to raw via qemu-img
     # then runs the normal mmls + fls pipeline.

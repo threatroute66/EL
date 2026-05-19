@@ -254,6 +254,27 @@ class TriageAgent(Agent):
         if magic_hint and any(n in magic_hint for n in non_memory):
             return out
         if head[:1] in (b"{", b"[") or head[:5] in (b"<?xml", b"<html"):
+            # Suricata EVE JSON — JSONL of {"event_type":..., ...} rows.
+            # Detect by peeking at the first few rows for canonical
+            # event-type values. Cheap: 10-line read, no full parse.
+            try:
+                from el.skills.suricata_eve import is_suricata_eve
+                if head[:1] == b"{" and is_suricata_eve(ctx.input_path):
+                    ctx.shared["evidence_kind"] = "suricata-eve"
+                    out.append(self.emit(ctx, Finding(
+                        case_id=ctx.case_id, agent=self.name,
+                        confidence="high",
+                        claim=(f"Input identified as Suricata EVE JSON "
+                               f"({ctx.input_path.name}) — routes to "
+                               f"NetworkAnalystAgent."),
+                        evidence=evidence,
+                        hypotheses_supported=["H_NETWORK_ARTIFACTS"],
+                    )))
+                    return out
+            except Exception:
+                # Defensive — Suricata detection must never block the
+                # structured-text fallback path.
+                pass
             ctx.shared["evidence_kind"] = ctx.shared.get("evidence_kind") or "structured-text"
             return out
 
