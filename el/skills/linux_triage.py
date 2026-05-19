@@ -74,6 +74,10 @@ _SHELL_PATTERNS: dict[str, tuple[str, ...]] = {
         r">>\s*~/\.ssh/authorized_keys",
         r">>\s*/root/\.ssh/authorized_keys",
         r">\s*/root/\.ssh/authorized_keys",
+        # Interactive edit of authorized_keys — same outcome as `>>`
+        # but linguistically distinct. SANS Find Evil rubicon-mac
+        # surfaced `vi authorized_keys` after `chmod 700 .ssh`.
+        r"\b(?:vi|vim|nano|emacs|sublime|code|pico|micro)\s+\S*authorized_keys\b",
     ),
     "defense_evasion": (
         r"\bsystemctl\s+(?:stop|disable)\s+auditd\b",

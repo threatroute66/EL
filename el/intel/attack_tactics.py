@@ -157,6 +157,7 @@ TECHNIQUE_TACTIC: dict[str, str] = {
     "T1481":      "Command and Control",  # Mobile: Web Service C2
     "T1462":      "Defense Evasion",       # Mobile: Manipulate Device Communication (MDM abuse)
     "T1571":      "Command and Control",
+    "T1572":      "Command and Control",  # Protocol Tunneling (e.g. ssh -L VNC)
     # Exfiltration
     "T1041":      "Exfiltration",
     "T1048.003":  "Exfiltration",

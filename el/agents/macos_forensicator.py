@@ -30,6 +30,11 @@ _HIGH_FAMILIES = {
     "shell_history_defense_evasion",
     "shell_history_persistence_ssh",
     "shell_history_persistence_cron",
+    # macOS-only — both extremely specific (launchctl-screensharing
+    # enablement + ssh-port-forward of VNC). False-positive surface
+    # is essentially zero; ship at high confidence.
+    "shell_history_remote_access_screensharing",
+    "shell_history_tunnel_vnc",
 }
 
 
@@ -37,16 +42,39 @@ class MacOSForensicatorAgent(Agent):
     name = "macos_forensicator"
 
     def run(self, ctx: AgentContext) -> list[Finding]:
-        # Three input modes (mirrors LinuxForensicatorAgent):
+        # Input modes (mirrors LinuxForensicatorAgent):
         # (1) Chained from DiskForensicator with `macos_artifacts_dir`
         #     set in shared context (existing wiring)
         # (2) Triage routed evidence_kind == "macos-fs-dir" → use
         #     `ctx.input_path` directly as the extracted FS root
-        # (3) Default fallback to `<case_dir>/exports/macos-artifacts`
+        # (3) CyLR macOS zip — auto-extract once into <case>/raw/cylr/,
+        #     then point the detectors at the resulting tree (private/var/,
+        #     System/Library/, Users/, Library/ — a macOS FS root by
+        #     construction). Idempotent on re-render.
+        # (4) Default fallback to `<case_dir>/exports/macos-artifacts`
         kind = ctx.shared.get("evidence_kind") or ""
         exports = ctx.shared.get("macos_artifacts_dir")
         if not exports and kind == "macos-fs-dir":
             exports = ctx.input_path
+        if not exports and kind == "cylr-collection-macos":
+            import zipfile
+            extracted_dir = ctx.case_dir / "raw" / "cylr"
+            extracted_dir.mkdir(parents=True, exist_ok=True)
+            already_extracted = any(
+                extracted_dir.glob("CyLR_Collection_Log_*.log"))
+            if not already_extracted:
+                try:
+                    with zipfile.ZipFile(ctx.input_path) as zf:
+                        zf.extractall(extracted_dir)
+                except (zipfile.BadZipFile, OSError) as e:
+                    return [self.emit(ctx, Finding(
+                        case_id=ctx.case_id, agent=self.name,
+                        confidence="insufficient",
+                        claim=(f"CyLR zip extraction failed: {e}. "
+                               "Pre-extract the archive and re-investigate "
+                               "the resulting directory."),
+                    ))]
+            exports = extracted_dir
         if not exports:
             default = ctx.case_dir / "exports" / "macos-artifacts"
             if default.is_dir() and any(default.rglob("*")):
