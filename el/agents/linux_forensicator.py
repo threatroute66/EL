@@ -60,6 +60,33 @@ class LinuxForensicatorAgent(Agent):
         exports = ctx.shared.get("linux_artifacts_dir")
         if not exports and kind in ("linux-fs-dir", "qnap-nas-dir"):
             exports = ctx.input_path
+        # CyLR zip — auto-extract once into <case>/raw/cylr/ then
+        # point the detectors at the resulting tree (which IS a
+        # Linux FS root by construction: var/log/, etc/, home/...).
+        # Idempotent: a re-render that finds the directory already
+        # populated skips the extract.
+        if not exports and kind == "cylr-collection":
+            import zipfile
+            extracted_dir = ctx.case_dir / "raw" / "cylr"
+            extracted_dir.mkdir(parents=True, exist_ok=True)
+            # Detect "already-extracted" by checking for the canonical
+            # marker file at the expected location — re-extracting a
+            # 24 MB zip every render is wasteful.
+            already_extracted = any(
+                extracted_dir.glob("CyLR_Collection_Log_*.log"))
+            if not already_extracted:
+                try:
+                    with zipfile.ZipFile(ctx.input_path) as zf:
+                        zf.extractall(extracted_dir)
+                except (zipfile.BadZipFile, OSError) as e:
+                    return [self.emit(ctx, Finding(
+                        case_id=ctx.case_id, agent=self.name,
+                        confidence="insufficient",
+                        claim=(f"CyLR zip extraction failed: {e}. "
+                               "Pre-extract the archive and re-investigate "
+                               "the resulting directory."),
+                    ))]
+            exports = extracted_dir
         if not exports:
             default = ctx.case_dir / "exports" / "linux-artifacts"
             if default.is_dir() and any(default.rglob("*")):

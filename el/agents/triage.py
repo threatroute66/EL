@@ -160,6 +160,29 @@ class TriageAgent(Agent):
             return out
         if (ctx.input_path.is_file()
                 and ctx.input_path.suffix.lower() == ".zip"
+                and self._archive_looks_cylr(ctx.input_path)):
+            ctx.shared["evidence_kind"] = "cylr-collection"
+            sha = hashlib.sha256(name.encode()).hexdigest()
+            ev = EvidenceItem(
+                tool="el.triage", version="0.1.0",
+                command=f"cylr-zip probe {name}",
+                output_sha256=sha, output_path=str(ctx.input_path),
+                extracted_facts={
+                    "signature":
+                        "CyLR_Collection_Log_*.log marker / Linux FS root"},
+            )
+            out.append(self.emit(ctx, Finding(
+                case_id=ctx.case_id, agent=self.name,
+                confidence="high",
+                claim=(f"Input is a CyLR collection zip ({name}) — "
+                       f"routes to LinuxForensicatorAgent via "
+                       f"auto-extract."),
+                evidence=[ev],
+                hypotheses_supported=["H_DISK_ARTIFACTS"],
+            )))
+            return out
+        if (ctx.input_path.is_file()
+                and ctx.input_path.suffix.lower() == ".zip"
                 and self._archive_looks_velociraptor(ctx.input_path)):
             ctx.shared["evidence_kind"] = "velociraptor-collection"
             sha = hashlib.sha256(name.encode()).hexdigest()
@@ -335,6 +358,36 @@ class TriageAgent(Agent):
                 confidence="insufficient",
             )))
         return out
+
+    @staticmethod
+    def _archive_looks_cylr(path: Path) -> bool:
+        """CyLR's offline-collector zip has a canonical marker file
+        at the zip root: `CyLR_Collection_Log_<YYYY-MM-DD_HH-MM-SS>.log`.
+        Look for that pattern alongside a Linux FS-root layout
+        (var/log / etc / home prefixes). Either marker is sufficient;
+        both is the high-confidence shape. Cheap probe — namelist only."""
+        name = path.name.lower()
+        if not name.endswith(".zip"):
+            return False
+        try:
+            import zipfile
+            with zipfile.ZipFile(path) as zf:
+                names = zf.namelist()
+                if len(names) > 2000:
+                    names = names[:2000]
+                has_marker = any(
+                    n.startswith("CyLR_Collection_Log_") and n.endswith(".log")
+                    for n in names)
+                fs_root_hits = sum(
+                    1 for n in names
+                    if n.startswith(("var/log/", "etc/", "home/", "root/")))
+                # Marker file alone is canonical CyLR; otherwise need
+                # a strong Linux-FS-root signal to avoid false-positive
+                # routing of every Linux-tarball-as-zip we encounter.
+                return has_marker or fs_root_hits >= 5
+        except (OSError, Exception):                       # noqa: BLE001
+            return False
+        return False
 
     @staticmethod
     def _archive_looks_velociraptor(path: Path) -> bool:
