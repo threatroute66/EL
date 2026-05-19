@@ -109,12 +109,13 @@ KIND_TO_AGENT: dict[str, type[Agent]] = {
     "ios-sysdiagnose": IOSForensicatorAgent,
     "linux-fs-dir": LinuxForensicatorAgent,
     "qnap-nas-dir": LinuxForensicatorAgent,
-    # CyLR offline-collector zip — auto-extracts to a Linux-FS-root
-    # tree (var/log/ + etc/ + home/ + root/) inside the agent.
-    # Reuses every LinuxForensicator detector that already handles
-    # linux-fs-dir (auditd / utmp / systemd_journal / webserver_access
-    # / bash_history / cron / ld.so.preload / rootkit scanners).
-    "cylr-collection": LinuxForensicatorAgent,
+    # CyLR offline-collector zip — triage classifies target OS by
+    # inspecting the zip's tree shape (drive-letter prefix → Windows,
+    # var/log/ → Linux, private/var/ → macOS) and routes accordingly.
+    # Each downstream agent auto-extracts on first run.
+    "cylr-collection-linux":   LinuxForensicatorAgent,
+    "cylr-collection-windows": WindowsArtifactAgent,
+    "cylr-collection-macos":   MacOSForensicatorAgent,
     "macos-fs-dir": MacOSForensicatorAgent,
     "bulk-extractor-output": BulkExtractorFeaturesAgent,
     "k8s-audit-log": K8sAuditAnalystAgent,

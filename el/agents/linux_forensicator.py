@@ -65,7 +65,8 @@ class LinuxForensicatorAgent(Agent):
         # Linux FS root by construction: var/log/, etc/, home/...).
         # Idempotent: a re-render that finds the directory already
         # populated skips the extract.
-        if not exports and kind == "cylr-collection":
+        if not exports and kind in ("cylr-collection-linux",
+                                      "cylr-collection-macos"):
             import zipfile
             extracted_dir = ctx.case_dir / "raw" / "cylr"
             extracted_dir.mkdir(parents=True, exist_ok=True)

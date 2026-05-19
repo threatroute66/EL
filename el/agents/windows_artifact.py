@@ -194,14 +194,51 @@ class WindowsArtifactAgent(Agent):
 
     def run(self, ctx: AgentContext) -> list[Finding]:
         out: list[Finding] = []
+        analysis = ctx.case_dir / "analysis" / self.name
+        analysis.mkdir(parents=True, exist_ok=True)
+
+        # CyLR Windows zip — auto-extract once into <case>/raw/cylr/.
+        # CyLR writes drive-letter prefixed paths (`C/Windows/...`,
+        # `C/Users/...`, `C/$MFT`, `C/$LogFile`), which the rglob-based
+        # finders in this agent already walk natively (same as the
+        # KAPE shape — drive letter at depth 1, real Windows tree
+        # underneath). Idempotent: a re-render with the extracted dir
+        # already present skips the extract.
+        if (ctx.shared.get("evidence_kind") == "cylr-collection-windows"
+                and ctx.input_path.is_file()
+                and ctx.input_path.suffix.lower() == ".zip"):
+            import zipfile
+            extracted_dir = ctx.case_dir / "raw" / "cylr"
+            extracted_dir.mkdir(parents=True, exist_ok=True)
+            # Marker-file (or any pre-extracted Windows tree at the
+            # root) means we've already done this; skip the re-unzip.
+            already = (any(extracted_dir.glob("CyLR_Collection_Log_*.log"))
+                       or any((extracted_dir / drv).is_dir()
+                              for drv in ("C", "D", "E", "F")))
+            if not already:
+                try:
+                    with zipfile.ZipFile(ctx.input_path) as zf:
+                        zf.extractall(extracted_dir)
+                except (zipfile.BadZipFile, OSError) as e:
+                    return [self.emit(ctx, Finding(
+                        case_id=ctx.case_id, agent=self.name,
+                        confidence="insufficient",
+                        claim=(f"CyLR Windows zip extraction failed: {e}. "
+                               "Pre-extract the archive and re-investigate "
+                               "the resulting directory."),
+                    ))]
+            # Re-anchor input_path at the extracted root for the rest
+            # of this agent's logic — every downstream finder uses
+            # rglob from this point, so the drive-letter subdir is
+            # transparent.
+            ctx.input_path = extracted_dir
+
         if not ctx.input_path.is_dir():
             return [self.emit(ctx, Finding(
                 case_id=ctx.case_id, agent=self.name, confidence="insufficient",
                 claim="Windows Artifact Agent expects a directory input",
             ))]
 
-        analysis = ctx.case_dir / "analysis" / self.name
-        analysis.mkdir(parents=True, exist_ok=True)
         root = ctx.input_path
 
         # KAPE preflight — if Triage tagged this as a KAPE collection,

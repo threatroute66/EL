@@ -158,29 +158,49 @@ class TriageAgent(Agent):
                 hypotheses_supported=["H_DISK_ARTIFACTS"],
             )))
             return out
-        if (ctx.input_path.is_file()
-                and ctx.input_path.suffix.lower() == ".zip"
-                and self._archive_looks_cylr(ctx.input_path)):
-            ctx.shared["evidence_kind"] = "cylr-collection"
-            sha = hashlib.sha256(name.encode()).hexdigest()
-            ev = EvidenceItem(
-                tool="el.triage", version="0.1.0",
-                command=f"cylr-zip probe {name}",
-                output_sha256=sha, output_path=str(ctx.input_path),
-                extracted_facts={
-                    "signature":
-                        "CyLR_Collection_Log_*.log marker / Linux FS root"},
-            )
-            out.append(self.emit(ctx, Finding(
-                case_id=ctx.case_id, agent=self.name,
-                confidence="high",
-                claim=(f"Input is a CyLR collection zip ({name}) — "
-                       f"routes to LinuxForensicatorAgent via "
-                       f"auto-extract."),
-                evidence=[ev],
-                hypotheses_supported=["H_DISK_ARTIFACTS"],
-            )))
-            return out
+        if ctx.input_path.is_file() and ctx.input_path.suffix.lower() == ".zip":
+            cylr_target = self._classify_cylr_zip(ctx.input_path)
+            if cylr_target is not None:
+                # Map classification → evidence_kind. Linux + macOS + the
+                # "unknown" fallback all walk through LinuxForensicator
+                # (its detectors are mostly nondestructive on
+                # heterogeneous trees); Windows routes to
+                # WindowsArtifactAgent which already understands
+                # drive-letter prefixed paths via its rglob walkers.
+                kind_map = {
+                    "windows": "cylr-collection-windows",
+                    "linux":   "cylr-collection-linux",
+                    "macos":   "cylr-collection-macos",
+                    "unknown": "cylr-collection-linux",
+                }
+                route_label = {
+                    "windows": "WindowsArtifactAgent",
+                    "linux":   "LinuxForensicatorAgent",
+                    "macos":   "MacOSForensicatorAgent",
+                    "unknown": "LinuxForensicatorAgent (best-effort)",
+                }
+                ctx.shared["evidence_kind"] = kind_map[cylr_target]
+                sha = hashlib.sha256(name.encode()).hexdigest()
+                ev = EvidenceItem(
+                    tool="el.triage", version="0.1.0",
+                    command=f"cylr-zip probe {name}",
+                    output_sha256=sha, output_path=str(ctx.input_path),
+                    extracted_facts={
+                        "target_os": cylr_target,
+                        "signature":
+                            "CyLR_Collection_Log_*.log marker / "
+                            "platform FS-root prefix"},
+                )
+                out.append(self.emit(ctx, Finding(
+                    case_id=ctx.case_id, agent=self.name,
+                    confidence="high",
+                    claim=(f"Input is a CyLR collection zip ({name}) — "
+                           f"target OS: {cylr_target}; routes to "
+                           f"{route_label[cylr_target]} via auto-extract."),
+                    evidence=[ev],
+                    hypotheses_supported=["H_DISK_ARTIFACTS"],
+                )))
+                return out
         if (ctx.input_path.is_file()
                 and ctx.input_path.suffix.lower() == ".zip"
                 and self._archive_looks_velociraptor(ctx.input_path)):
@@ -360,15 +380,33 @@ class TriageAgent(Agent):
         return out
 
     @staticmethod
-    def _archive_looks_cylr(path: Path) -> bool:
-        """CyLR's offline-collector zip has a canonical marker file
-        at the zip root: `CyLR_Collection_Log_<YYYY-MM-DD_HH-MM-SS>.log`.
-        Look for that pattern alongside a Linux FS-root layout
-        (var/log / etc / home prefixes). Either marker is sufficient;
-        both is the high-confidence shape. Cheap probe — namelist only."""
+    def _classify_cylr_zip(path: Path) -> str | None:
+        """Two-stage CyLR detection: recognise the zip shape AND
+        classify the target OS so dispatch routes to the right
+        downstream agent.
+
+        Stage 1 — recognise CyLR shape via either:
+          * canonical `CyLR_Collection_Log_<YYYY-MM-DD_HH-MM-SS>.log`
+            marker at the zip root (written on every platform), OR
+          * a strong FS-root signal (≥5 entries under known
+            absolute-path prefixes — `C/Windows/` for Windows,
+            `var/log/` for Linux, `private/var/` for macOS).
+            Per-OS thresholds keep the structural fallback robust
+            even when CyLR was run with --DisableLogging.
+
+        Stage 2 — classify target OS from the prefix pattern:
+          * `C/Windows/` or `C/Users/` or `C/$MFT` / `C/$LogFile`
+            → "windows"
+          * `var/log/` / `etc/` / `home/` / `root/` → "linux"
+          * `private/var/` / `System/Library/` / `Users/<u>/Library/`
+            → "macos"
+
+        Returns the platform string or None when the zip isn't
+        CyLR-shaped. Cheap probe — namelist only, no decompression.
+        """
         name = path.name.lower()
         if not name.endswith(".zip"):
-            return False
+            return None
         try:
             import zipfile
             with zipfile.ZipFile(path) as zf:
@@ -376,18 +414,61 @@ class TriageAgent(Agent):
                 if len(names) > 2000:
                     names = names[:2000]
                 has_marker = any(
-                    n.startswith("CyLR_Collection_Log_") and n.endswith(".log")
+                    n.startswith("CyLR_Collection_Log_")
+                    and n.endswith(".log")
                     for n in names)
-                fs_root_hits = sum(
+                # Per-OS structural counters
+                linux_hits = sum(
                     1 for n in names
-                    if n.startswith(("var/log/", "etc/", "home/", "root/")))
-                # Marker file alone is canonical CyLR; otherwise need
-                # a strong Linux-FS-root signal to avoid false-positive
-                # routing of every Linux-tarball-as-zip we encounter.
-                return has_marker or fs_root_hits >= 5
+                    if n.startswith(("var/log/", "etc/", "home/",
+                                       "root/")))
+                # Windows: drive-letter prefix (`C/`, `D/`, etc.)
+                # carries `Windows/`, `Users/`, or `$MFT` / `$LogFile`
+                # underneath. Check just for paths like `C/Windows/`
+                # to be conservative.
+                windows_hits = sum(
+                    1 for n in names
+                    if (len(n) > 2 and n[1] == "/"
+                        and n[0].isalpha()
+                        and n[2:].startswith(
+                            ("Windows/", "Users/", "ProgramData/",
+                             "$MFT", "$LogFile", "$Recycle.Bin/"))))
+                # macOS: `private/var/`, `System/`, `Users/<u>/Library/`
+                macos_hits = sum(
+                    1 for n in names
+                    if n.startswith(("private/var/",
+                                     "System/Library/",
+                                     "Library/")))
+                # Don't fire unless we have either the marker file
+                # or a per-OS structural threshold.
+                if not has_marker and (
+                        linux_hits < 5
+                        and windows_hits < 5
+                        and macos_hits < 5):
+                    return None
+                # Stage 2: classify. Highest hit-count wins; marker-
+                # only zips with no clear platform shape get "unknown"
+                # which the dispatch can degrade gracefully.
+                top = max(("linux", linux_hits),
+                           ("windows", windows_hits),
+                           ("macos", macos_hits),
+                           key=lambda kv: kv[1])
+                if top[1] >= 5:
+                    return top[0]
+                # Marker present but no clear platform — return a
+                # sentinel so dispatch can still route to the most
+                # universal handler (LinuxForensicator is best-effort
+                # on a heterogeneous tree).
+                return "unknown" if has_marker else None
         except (OSError, Exception):                       # noqa: BLE001
-            return False
-        return False
+            return None
+
+    # Back-compat alias — earlier code called the boolean form. Keep
+    # the old name working as a thin wrapper so any external caller
+    # (tests, scripts) doesn't break in one go.
+    @staticmethod
+    def _archive_looks_cylr(path: Path) -> bool:
+        return TriageAgent._classify_cylr_zip(path) is not None
 
     @staticmethod
     def _archive_looks_velociraptor(path: Path) -> bool:
