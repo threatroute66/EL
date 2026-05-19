@@ -159,6 +159,29 @@ class TriageAgent(Agent):
             )))
             return out
         if (ctx.input_path.is_file()
+                and ctx.input_path.suffix.lower() == ".zip"
+                and self._archive_looks_velociraptor(ctx.input_path)):
+            ctx.shared["evidence_kind"] = "velociraptor-collection"
+            sha = hashlib.sha256(name.encode()).hexdigest()
+            ev = EvidenceItem(
+                tool="el.triage", version="0.1.0",
+                command=f"velociraptor-zip probe {name}",
+                output_sha256=sha, output_path=str(ctx.input_path),
+                extracted_facts={
+                    "signature":
+                        "hunt_info.json / client_info.json / "
+                        "collection_context.json"},
+            )
+            out.append(self.emit(ctx, Finding(
+                case_id=ctx.case_id, agent=self.name,
+                confidence="high",
+                claim=(f"Input is a Velociraptor collection zip "
+                       f"({name}) — routes to EndpointAnalystAgent."),
+                evidence=[ev],
+                hypotheses_supported=["H_ENDPOINT_COLLECTION"],
+            )))
+            return out
+        if (ctx.input_path.is_file()
                 and ctx.input_path.suffix.lower() in (".tar", ".zip")
                 and self._archive_looks_android(ctx.input_path)):
             ctx.shared["evidence_kind"] = "android-archive"
@@ -291,6 +314,41 @@ class TriageAgent(Agent):
                 confidence="insufficient",
             )))
         return out
+
+    @staticmethod
+    def _archive_looks_velociraptor(path: Path) -> bool:
+        """Cheap probe — list the archive without extracting and
+        look for Velociraptor canonical markers in the member names.
+        Two shapes covered:
+
+          1. Single-host offline collector: zip with
+             `Collection-<host>-<ts>/uploads.json` or a top-level
+             `client_info.json`.
+          2. Hunt download: zip with `hunt_info.json` at root +
+             per-client subdirs containing `client_info.json` and
+             `collection_context.json`.
+
+        Either marker is sufficient. Files are read by name only —
+        no decompression, so this is cheap even on large hunt zips."""
+        name = path.name.lower()
+        if not name.endswith(".zip"):
+            return False
+        try:
+            import zipfile
+            with zipfile.ZipFile(path) as zf:
+                names = zf.namelist()
+                if len(names) > 2000:
+                    names = names[:2000]
+                for n in names:
+                    nl = n.lower()
+                    if (nl.endswith("hunt_info.json")
+                            or nl.endswith("client_info.json")
+                            or nl.endswith("collection_context.json")
+                            or nl.endswith("velociraptor.config.yaml")):
+                        return True
+        except (OSError, Exception):                       # noqa: BLE001
+            return False
+        return False
 
     @staticmethod
     def _archive_looks_android(path: Path) -> bool:

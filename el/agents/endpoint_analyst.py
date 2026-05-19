@@ -12,7 +12,7 @@ import hashlib
 
 from el.agents.base import Agent, AgentContext
 from el.evidence.graph import open_graph
-from el.schemas.finding import Finding
+from el.schemas.finding import EvidenceItem, Finding
 from el.skills import velociraptor
 
 
@@ -35,8 +35,32 @@ class EndpointAnalystAgent(Agent):
         analysis = ctx.case_dir / "analysis" / self.name
         analysis.mkdir(parents=True, exist_ok=True)
 
+        # Auto-extract zip-shaped inputs (hunt downloads + offline-
+        # collector outputs) into <case_dir>/raw/velociraptor/ so
+        # the existing directory walker handles them. Triage flags
+        # the zip by peeking for hunt_info.json / client_info.json
+        # without unzipping; the heavy work happens here.
+        scan_root: Path = ctx.input_path
+        extracted_dir: Path | None = None
+        if ctx.input_path.is_file() and ctx.input_path.suffix.lower() == ".zip":
+            import zipfile
+            extracted_dir = ctx.case_dir / "raw" / "velociraptor"
+            extracted_dir.mkdir(parents=True, exist_ok=True)
+            try:
+                with zipfile.ZipFile(ctx.input_path) as zf:
+                    zf.extractall(extracted_dir)
+            except (zipfile.BadZipFile, OSError) as e:
+                return [self.emit(ctx, Finding(
+                    case_id=ctx.case_id, agent=self.name,
+                    confidence="insufficient",
+                    claim=(f"Velociraptor zip extraction failed: {e}. "
+                           "Pre-extract the archive and re-investigate "
+                           "the resulting directory."),
+                ))]
+            scan_root = extracted_dir
+
         try:
-            s = velociraptor.parse(ctx.input_path, analysis)
+            s = velociraptor.parse(scan_root, analysis)
         except Exception as e:
             return [self.emit(ctx, Finding(
                 case_id=ctx.case_id, agent=self.name, confidence="insufficient",
@@ -128,6 +152,59 @@ class EndpointAnalystAgent(Agent):
                 case_id=ctx.case_id, agent=self.name, confidence="medium",
                 claim=(f"Linux.Network.Netstat: {s.linux_netstat_count} "
                        "connection(s) from a Linux endpoint collection"),
+                evidence=[ev],
+            )))
+
+        # Tier-1 generic ingest — every artifact file the operator's
+        # hunt collected that doesn't have a dedicated parser. One
+        # `medium`-confidence finding per artifact so the analyst
+        # sees what ran, what columns it produced, and what time
+        # window it covers. Cap at 50 to keep the ledger readable
+        # on hunts that ran 200+ artifacts.
+        for ga in s.generic_artifacts[:50]:
+            cols = ", ".join(ga.column_names[:8])
+            cols_suffix = (f", … (+{len(ga.column_names)-8} more)"
+                           if len(ga.column_names) > 8 else "")
+            tr_clause = ""
+            if ga.time_range_utc:
+                tr_clause = (f", time {ga.time_range_utc[0][:19]} → "
+                             f"{ga.time_range_utc[1][:19]}")
+            ga_facts = {
+                "artifact_name": ga.artifact_name,
+                "file_path": ga.file_path,
+                "file_format": ga.file_format,
+                "row_count": ga.row_count,
+                "column_names": ga.column_names[:20],
+                "time_range_utc": (list(ga.time_range_utc)
+                                    if ga.time_range_utc else None),
+                "sample_rows": ga.sample_rows,
+                "phase": "velociraptor_generic_ingest",
+            }
+            ga_ev = EvidenceItem(
+                tool="el.velociraptor", version="0.2.0",
+                command=f"velociraptor.parse({ctx.input_path.name})",
+                output_sha256=ev.output_sha256,
+                output_path=ga.file_path,
+                extracted_facts=ga_facts,
+            )
+            out.append(self.emit(ctx, Finding(
+                case_id=ctx.case_id, agent=self.name, confidence="medium",
+                claim=(f"Velociraptor artifact {ga.artifact_name}: "
+                       f"{ga.row_count} {ga.file_format.upper()} row(s), "
+                       f"columns=[{cols}{cols_suffix}]{tr_clause}. "
+                       "(generic ingest — no dedicated parser; analyst "
+                       "review for high-signal columns)."),
+                evidence=[ga_ev],
+                hypotheses_supported=["H_ENDPOINT_COLLECTION"],
+            )))
+        if len(s.generic_artifacts) > 50:
+            out.append(self.emit(ctx, Finding(
+                case_id=ctx.case_id, agent=self.name, confidence="low",
+                claim=(f"Velociraptor generic-ingest tier capped at 50 "
+                       f"artifact summaries; {len(s.generic_artifacts)-50} "
+                       "additional artifact(s) parsed but not surfaced "
+                       "individually. See velociraptor_summary.json for "
+                       "the full inventory."),
                 evidence=[ev],
             )))
 
