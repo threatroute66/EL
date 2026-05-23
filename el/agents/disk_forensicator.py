@@ -994,6 +994,37 @@ class DiskForensicatorAgent(Agent):
                        f"{type(e).__name__}: {str(e)[:160]}"),
             ))
 
+        # Lone Wolf 2018 trio — runs on the LIVE NTFS mount because
+        # extract_windows_artifacts only copies registry / EVTX / Prefetch
+        # and would skip the user-profile cloud-sync directories that
+        # are the entire point of these detectors. Each call is wrapped
+        # in its own try/except so a single failure can't abort the
+        # remaining detectors (or the umount below).
+        try:
+            self._cross_cloud_mirror_live(ctx, fs_mount, label)
+        except Exception as e:
+            self.emit(ctx, Finding(
+                case_id=ctx.case_id, agent=self.name, confidence="insufficient",
+                claim=(f"Cross-cloud-mirror detector skipped for "
+                       f"{label}: {type(e).__name__}: {str(e)[:160]}"),
+            ))
+        try:
+            self._pre_attack_planning_live(ctx, fs_mount, label)
+        except Exception as e:
+            self.emit(ctx, Finding(
+                case_id=ctx.case_id, agent=self.name, confidence="insufficient",
+                claim=(f"Pre-attack-planning lexicon skipped for "
+                       f"{label}: {type(e).__name__}: {str(e)[:160]}"),
+            ))
+        try:
+            self._aws_credential_exposure_live(ctx, fs_mount, label)
+        except Exception as e:
+            self.emit(ctx, Finding(
+                case_id=ctx.case_id, agent=self.name, confidence="insufficient",
+                claim=(f"AWS credential exposure scan skipped for "
+                       f"{label}: {type(e).__name__}: {str(e)[:160]}"),
+            ))
+
         # FOR508 ex 2.5: hibernation-file shell history. C:\hiberfil.sys
         # is a frozen RAM snapshot from the moment the host last
         # hibernated; running vol3 cmdscan/consoles against it surfaces
@@ -1335,3 +1366,136 @@ class DiskForensicatorAgent(Agent):
                 evidence=[ev], hypotheses_supported=h.hypotheses,
             )))
         return out
+
+    # ---------------------------------------------------------------
+    # Lone Wolf 2018 trio — invoked from `_extract_partition` while
+    # the NTFS mount is still live. extract_windows_artifacts() only
+    # copies registry / EVTX / Prefetch / PSTs etc. into exports —
+    # not the user-profile cloud-sync directories these detectors
+    # need. Walking the live mount avoids a multi-GB copy.
+    # ---------------------------------------------------------------
+
+    def _cross_cloud_mirror_live(self, ctx: AgentContext,
+                                  fs_mount: Path, label: str) -> None:
+        from el.skills import cross_cloud_mirror as ccm
+        for profile in ccm.find_user_profiles(fs_mount):
+            result = ccm.scan(profile)
+            if not result.mirrored:
+                continue
+            top = result.mirrored[0]
+            sample_names = ", ".join(m.name for m in result.mirrored[:3])
+            providers_top = ", ".join(sorted(top.providers.keys()))
+            self.emit(ctx, Finding(
+                case_id=ctx.case_id, agent=self.name, confidence="high",
+                claim=(f"Multi-cloud evidence mirror in profile "
+                       f"{profile.name!r} on {label}: "
+                       f"{len(result.mirrored)} file(s) present in "
+                       f"≥3 cloud-sync directories on the same host. "
+                       f"Most-mirrored: {top.name!r} across "
+                       f"[{providers_top}]. Sample: [{sample_names}]. "
+                       f"Cloud roots: "
+                       f"[{', '.join(sorted(result.cloud_roots.keys()))}]."),
+                evidence=[result.as_evidence()],
+                hypotheses_supported=["H_MULTI_CLOUD_MIRROR",
+                                        "H_PRE_ATTACK_PLANNING",
+                                        "H_INSIDER_DATA_EXFIL"],
+            ))
+
+    def _pre_attack_planning_live(self, ctx: AgentContext,
+                                    fs_mount: Path, label: str) -> None:
+        import hashlib
+        from el.skills import cross_cloud_mirror as ccm
+        from el.skills import pre_attack_planning_lexicon as papl
+        seen_content_hashes: set[str] = set()
+        for profile in ccm.find_user_profiles(fs_mount):
+            hits = papl.walk_files(profile)
+            for m in hits:
+                try:
+                    content_sha = hashlib.sha256(
+                        m.path.read_bytes()).hexdigest()
+                except OSError:
+                    content_sha = ""
+                if content_sha and content_sha in seen_content_hashes:
+                    continue
+                if content_sha:
+                    seen_content_hashes.add(content_sha)
+                conf = "high" if m.signal_strength == "high" else "medium"
+                cats = []
+                if m.weapon_hits:
+                    cats.append(f"weapons={m.weapon_hits[:2]}")
+                if m.ammo_hits:
+                    cats.append(f"ammo={m.ammo_hits[:2]}")
+                if m.opsec_hits:
+                    cats.append(f"opsec={m.opsec_hits[:2]}")
+                if m.intent_hits:
+                    cats.append(f"intent={m.intent_hits[:2]}")
+                if m.destination_hits:
+                    cats.append(f"destination={m.destination_hits[:2]}")
+                self.emit(ctx, Finding(
+                    case_id=ctx.case_id, agent=self.name, confidence=conf,
+                    claim=(f"Pre-attack planning lexicon match in "
+                           f"{m.path.name} on {label}: "
+                           f"{m.categories_fired} categories fired with "
+                           f"{m.total_hits} total hit(s). "
+                           f"{'; '.join(cats)}."),
+                    evidence=[m.as_evidence()],
+                    hypotheses_supported=["H_PRE_ATTACK_PLANNING"],
+                ))
+
+    def _aws_credential_exposure_live(self, ctx: AgentContext,
+                                        fs_mount: Path,
+                                        label: str) -> None:
+        import hashlib
+        from el.skills import cross_cloud_mirror as ccm
+        from el.skills import ioc_extract as iex
+        candidate_names = frozenset({
+            "rootkey.csv", "credentials", "accesskeys.csv",
+            "aws_credentials", "aws_credentials.csv",
+            "rootkey.txt",
+        })
+        for profile in ccm.find_user_profiles(fs_mount):
+            for p in profile.rglob("*"):
+                if not p.is_file():
+                    continue
+                if p.name.lower() not in candidate_names:
+                    continue
+                try:
+                    text = p.read_text(encoding="utf-8", errors="replace")
+                except OSError:
+                    continue
+                iocs = iex.extract(text)
+                if not iocs.get("aws_access_key"):
+                    continue
+                try:
+                    sha = hashlib.sha256(p.read_bytes()).hexdigest()
+                except OSError:
+                    sha = "0" * 64
+                access_keys = sorted(iocs["aws_access_key"])
+                secret_present = bool(iocs.get("aws_secret_key"))
+                ev = EvidenceItem(
+                    tool="el.ioc_extract", version="0.1.0",
+                    command=f"extract({p.name})",
+                    output_sha256=sha, output_path=str(p),
+                    extracted_facts={
+                        "file_name": p.name,
+                        "aws_access_key": access_keys,
+                        "aws_secret_key_present": secret_present,
+                        "aws_secret_key_sha256": (
+                            hashlib.sha256(
+                                next(iter(iocs["aws_secret_key"])).encode()
+                            ).hexdigest()
+                            if secret_present else None),
+                    },
+                )
+                self.emit(ctx, Finding(
+                    case_id=ctx.case_id, agent=self.name, confidence="high",
+                    claim=(f"AWS access key cleartext in {p.name!r} under "
+                           f"profile {profile.name!r} on {label}: "
+                           f"key_id={access_keys[0] if access_keys else '?'}, "
+                           f"secret_key_present={secret_present}. "
+                           f"Cleartext credential exposure of a long-lived "
+                           f"AWS root identity. Treat as compromised."),
+                    evidence=[ev],
+                    hypotheses_supported=["H_PRE_ATTACK_PLANNING",
+                                            "H_CREDENTIAL_ACCESS"],
+                ))
