@@ -707,6 +707,194 @@ def serve_cmd(
             # Quiet per-request logs; keep only errors
             return
 
+        # Override the default SimpleHTTPRequestHandler index — by
+        # default it emits one bare <a> per entry with no metadata,
+        # which makes it impossible to tell multiple cases apart when
+        # the names alone are similar (e.g. lonewolf vs lonewolf-mem).
+        # We render a table with name + modified time, and at the case
+        # root layer in intake_utc + investigator from case_metadata.json
+        # / manifest.json so the cases sort chronologically and the
+        # operator can pick the right one at a glance.
+        def list_directory(self, path):
+            import datetime as _dt
+            import html as _html
+            import io as _io
+            import json as _json
+            import os as _os
+            import urllib.parse as _up
+
+            try:
+                entries = _os.listdir(path)
+            except OSError:
+                self.send_error(404, "No permission to list directory")
+                return None
+            entries.sort(key=lambda n: n.lower())
+
+            is_case_root = _os.path.realpath(path) == _os.path.realpath(
+                str(root_path))
+
+            def _fmt_size(n: int) -> str:
+                if n < 1024:
+                    return f"{n} B"
+                for unit in ("KB", "MB", "GB", "TB"):
+                    n /= 1024.0
+                    if n < 1024:
+                        return f"{n:.1f} {unit}"
+                return f"{n:.1f} PB"
+
+            def _fmt_mtime(ts: float) -> str:
+                return _dt.datetime.fromtimestamp(
+                    ts, tz=_dt.timezone.utc
+                ).strftime("%Y-%m-%d %H:%M:%S UTC")
+
+            rows = []
+            for name in entries:
+                full = _os.path.join(path, name)
+                display = name + ("/" if _os.path.isdir(full) else "")
+                href = _up.quote(name + ("/" if _os.path.isdir(full) else ""))
+                try:
+                    st = _os.stat(full)
+                except OSError:
+                    continue
+                mtime = _fmt_mtime(st.st_mtime)
+                size = "" if _os.path.isdir(full) else _fmt_size(st.st_size)
+
+                # At the case root, pull intake_utc + investigator from
+                # case_metadata.json (preferred — has investigator name)
+                # falling back to manifest.json (always present after
+                # intake — has intake_utc). Empty cell when neither is
+                # readable; never raises.
+                intake_utc = ""
+                investigator = ""
+                report_link = ""
+                if is_case_root and _os.path.isdir(full):
+                    for src, keys in (
+                        ("case_metadata.json",
+                         ("created_utc", "investigator_name")),
+                        ("manifest.json",
+                         ("intake_utc", None)),
+                    ):
+                        meta_path = _os.path.join(full, src)
+                        if not _os.path.isfile(meta_path):
+                            continue
+                        try:
+                            meta = _json.loads(
+                                Path(meta_path).read_text())
+                        except (OSError, ValueError):
+                            continue
+                        if not intake_utc and keys[0]:
+                            v = meta.get(keys[0])
+                            if isinstance(v, str):
+                                intake_utc = v[:19].replace("T", " ") + " UTC"
+                        if not investigator and len(keys) > 1 and keys[1]:
+                            v = meta.get(keys[1])
+                            if isinstance(v, str):
+                                investigator = v
+                    case_html = _os.path.join(full, "reports", "case.html")
+                    if _os.path.isfile(case_html):
+                        case_url = (
+                            f"{_up.quote(name)}/reports/case.html")
+                        report_link = (
+                            f'<a class="report" href="{case_url}">case</a>')
+                        exec_html = _os.path.join(
+                            full, "reports", "executive.html")
+                        if _os.path.isfile(exec_html):
+                            exec_url = (
+                                f"{_up.quote(name)}/reports/executive.html")
+                            report_link += (
+                                f' &middot; <a class="report" '
+                                f'href="{exec_url}">exec</a>')
+
+                rows.append({
+                    "href": href,
+                    "display": display,
+                    "mtime": mtime,
+                    "size": size,
+                    "intake_utc": intake_utc,
+                    "investigator": investigator,
+                    "report_link": report_link,
+                })
+
+            # Sort case-root by intake_utc desc (newest first) so the
+            # most recent investigation lands at the top — for other
+            # dirs keep name order, which is what SimpleHTTPRequestHandler
+            # would have produced.
+            if is_case_root:
+                rows.sort(
+                    key=lambda r: (r["intake_utc"] or r["mtime"]),
+                    reverse=True)
+
+            displaypath = _html.escape(
+                _up.unquote(self.path), quote=False)
+            title = (
+                "EL cases" if is_case_root
+                else f"Index of {displaypath}")
+            header_cols = (
+                "<th>case</th><th>intake (UTC)</th>"
+                "<th>investigator</th><th>reports</th>"
+                "<th>modified</th>"
+                if is_case_root else
+                "<th>name</th><th>modified</th><th>size</th>"
+            )
+
+            buf = _io.StringIO()
+            buf.write("<!doctype html><html><head><meta charset='utf-8'>")
+            buf.write(f"<title>{_html.escape(title)}</title>")
+            buf.write("<style>"
+                       "body{font-family:system-ui,-apple-system,"
+                       "Segoe UI,Roboto,sans-serif;"
+                       "background:#0d1117;color:#c9d1d9;padding:20px;"
+                       "max-width:1200px;margin:0 auto}"
+                       "h1{font-size:1.2em;color:#58a6ff;"
+                       "border-bottom:1px solid #30363d;"
+                       "padding-bottom:8px}"
+                       "table{border-collapse:collapse;width:100%;"
+                       "font-size:0.92em;margin-top:8px}"
+                       "th,td{padding:6px 12px;text-align:left;"
+                       "border-bottom:1px solid #21262d}"
+                       "th{color:#8b949e;font-weight:600;"
+                       "background:#161b22}"
+                       "tr:hover td{background:#161b22}"
+                       "a{color:#58a6ff;text-decoration:none}"
+                       "a:hover{text-decoration:underline}"
+                       "a.report{color:#7ee787;font-weight:500}"
+                       ".muted{color:#6e7681;font-style:italic}"
+                       "</style></head><body>")
+            buf.write(f"<h1>{_html.escape(title)}</h1>")
+            buf.write(f"<table><thead><tr>{header_cols}</tr></thead><tbody>")
+            for r in rows:
+                if is_case_root:
+                    buf.write(
+                        f"<tr><td><a href=\"{r['href']}\">"
+                        f"{_html.escape(r['display'])}</a></td>"
+                        f"<td>{_html.escape(r['intake_utc']) or '<span class=muted>—</span>'}</td>"
+                        f"<td>{_html.escape(r['investigator']) or '<span class=muted>—</span>'}</td>"
+                        f"<td>{r['report_link'] or '<span class=muted>—</span>'}</td>"
+                        f"<td>{_html.escape(r['mtime'])}</td></tr>"
+                    )
+                else:
+                    buf.write(
+                        f"<tr><td><a href=\"{r['href']}\">"
+                        f"{_html.escape(r['display'])}</a></td>"
+                        f"<td>{_html.escape(r['mtime'])}</td>"
+                        f"<td>{_html.escape(r['size'])}</td></tr>"
+                    )
+            if not rows:
+                buf.write("<tr><td colspan='5' class='muted'>"
+                          "(empty)</td></tr>")
+            buf.write("</tbody></table></body></html>")
+            encoded = buf.getvalue().encode("utf-8", "surrogateescape")
+
+            f = _io.BytesIO()
+            f.write(encoded)
+            f.seek(0)
+            self.send_response(200)
+            self.send_header(
+                "Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(encoded)))
+            self.end_headers()
+            return f
+
     console.print(f"[bold]serving[/bold]: {root_path}")
     console.print(f"[bold]  URL[/bold]: http://{bind}:{port}/")
     console.print(f"[bold]  cases with case.html[/bold]: "

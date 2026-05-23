@@ -616,6 +616,74 @@ class TriageAgent(Agent):
                 )))
                 return out
 
+        # Disk-image + memory-dump bundle (e.g. the SANS LoneWolf shape:
+        # multi-segment .E01 + memdump.mem + pagefile.sys + FTK Imager log
+        # in one directory). Top-level glob only — cheap. We treat the
+        # disk image as the primary investigator input (route via the
+        # existing EWF (E01) kind → DiskForensicator) and hand off the
+        # memory image to the coordinator via ctx.shared so it runs the
+        # MemoryForensicator pass after disk extraction. Without this
+        # detector the directory falls through to "directory-unclassified"
+        # and neither agent ever sees the right input.
+        e01_segments = sorted(
+            list(d.glob("*.E01")) + list(d.glob("*.e01")))
+        if e01_segments:
+            # Candidate memory image: top-level file matching a known
+            # vol3-compatible extension or canonical name. pagefile.sys
+            # is NOT a memory image — it's the swap, picked up separately
+            # as a vol3 swap layer when present.
+            mem_exts = (".mem", ".vmem", ".raw", ".dmp", ".bin", ".lime")
+            mem_names = ("memdump", "memory", "memcap", "ram")
+            mem_candidates = [
+                p for p in sorted(d.iterdir())
+                if p.is_file()
+                and p.name.lower() != "pagefile.sys"
+                and (p.suffix.lower() in mem_exts
+                     or p.stem.lower() in mem_names)
+            ]
+            if mem_candidates:
+                primary_e01 = e01_segments[0]
+                mem_image = mem_candidates[0]
+                pagefile = (d / "pagefile.sys"
+                            if (d / "pagefile.sys").is_file() else None)
+                ctx.shared["evidence_kind"] = "EWF (E01)"
+                ctx.shared["paired_memory_image"] = str(mem_image)
+                if pagefile is not None:
+                    ctx.shared["paired_pagefile"] = str(pagefile)
+                # Rewrite input_path so DiskForensicator (which expects a
+                # single .E01) sees the primary segment. EWF tooling
+                # walks the .E0N siblings automatically.
+                ctx.input_path = primary_e01
+                facts_blob = ":".join(
+                    [str(primary_e01), str(mem_image),
+                     str(pagefile or "")]).encode()
+                sha = hashlib.sha256(facts_blob).hexdigest()
+                ev = EvidenceItem(
+                    tool="el.triage", version="0.1.0",
+                    command=f"disk-and-memory-bundle probe {d.name}",
+                    output_sha256=sha, output_path=str(d),
+                    extracted_facts={
+                        "e01_segment_count": len(e01_segments),
+                        "primary_e01": primary_e01.name,
+                        "memory_image": mem_image.name,
+                        "memory_image_size_bytes": mem_image.stat().st_size,
+                        "pagefile_present": pagefile is not None,
+                    },
+                )
+                out.append(self.emit(ctx, Finding(
+                    case_id=ctx.case_id, agent=self.name, confidence="high",
+                    claim=(f"Input directory looks like a disk+memory "
+                           f"evidence bundle ({len(e01_segments)} .E01 "
+                           f"segment(s) + memory image '{mem_image.name}'"
+                           + (f" + pagefile.sys" if pagefile else "")
+                           + f"). Disk routes to DiskForensicator; "
+                           f"coordinator chains MemoryForensicator on "
+                           f"'{mem_image.name}' after disk extraction."),
+                    evidence=[ev],
+                    hypotheses_supported=["H_DISK_ARTIFACTS"],
+                )))
+                return out
+
         # iTunes / Finder backup directory — Manifest.plist + Manifest.db
         # at the top level. Distinct from a generic iOS FS tree because
         # it's blob-keyed-by-sha1, not a real filesystem.

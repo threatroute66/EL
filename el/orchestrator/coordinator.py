@@ -454,6 +454,52 @@ class Coordinator:
                         evidence_kind=ctx.shared.get("evidence_kind"))
         self._run_agent(investigator, ctx)
 
+        # Paired memory-image pass for disk+memory bundles (set by
+        # TriageAgent._classify_directory when the input directory
+        # holds both .E01 segments and a vol3-compatible memory image —
+        # the SANS LoneWolf shape). The primary investigator (Disk)
+        # already ran against the .E01; now temporarily repoint
+        # ctx.input_path at the memory image, detect the OS family via
+        # vol3 banners, and run MemoryForensicator so the downstream
+        # mem_os-gated agents (UserActivity, RDPBruteForce) also fire.
+        # input_path is restored before MalwareTriage so the .E01 hash
+        # provenance stays intact for the remainder of the run.
+        # Paired memory-image pass for disk+memory bundles (set by
+        # TriageAgent._classify_directory when the input directory
+        # holds both .E01 segments and a vol3-compatible memory image —
+        # the SANS LoneWolf shape). The primary investigator (Disk)
+        # already ran against the .E01; now temporarily repoint
+        # ctx.input_path at the memory image, detect the OS family via
+        # vol3 banners, and run MemoryForensicator. ctx.input_path is
+        # left pointing at the memory image through MalwareTriage +
+        # the mem_os-gated agents (UserActivity uses it as the vol3
+        # source), then restored to the disk image before the chained
+        # disk-artifact agents run.
+        paired_mem = ctx.shared.get("paired_memory_image")
+        saved_disk_input: Path | None = None
+        if paired_mem:
+            from el.skills import vol3 as _vol3
+            mem_path = Path(paired_mem)
+            saved_disk_input = ctx.input_path
+            ctx.input_path = mem_path
+            try:
+                triage_analysis = ctx.case_dir / "analysis" / "triage"
+                triage_analysis.mkdir(parents=True, exist_ok=True)
+                family, _ = _vol3.detect_os(
+                    mem_path, triage_analysis / "vol3-banners-paired")
+                if family:
+                    ctx.shared["mem_os"] = family
+                    self.audit.info(
+                        "paired_memory_os_detected",
+                        memory_image=str(mem_path),
+                        os_family=family)
+            except _vol3.Vol3Error as e:
+                self.audit.error(
+                    "paired_memory_os_detection_failed",
+                    memory_image=str(mem_path), error=str(e))
+            if ctx.shared.get("mem_os"):
+                self._run_agent(MemoryForensicatorAgent(), ctx)
+
         # MalwareTriage covers two evidence pools: memory dumps (preferred)
         # and text-extractable analysis outputs (pcap summaries, EVTX CSVs,
         # fls bodyfiles). Always run — it'll emit insufficient if neither
@@ -472,6 +518,12 @@ class Coordinator:
             # RDP); this scores public-internet → host RDP attempts +
             # ESTABLISHED breaches.
             self._run_agent(RDPBruteForceAnalyst(), ctx)
+
+        # Memory-side passes are done — restore ctx.input_path to the
+        # disk image so the chained disk-artifact agents (linux/macos/
+        # windows artifact dirs, browser, mail) see the original input.
+        if saved_disk_input is not None:
+            ctx.input_path = saved_disk_input
 
         # If DiskForensicator extracted Linux artifacts (ext2/3/4), chain
         # LinuxForensicatorAgent for the triage-detector sweep.
