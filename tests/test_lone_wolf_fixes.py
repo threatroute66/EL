@@ -170,6 +170,63 @@ def test_benign_firearm_enthusiast_does_not_fire():
     assert papl.scan_text(text) is None
 
 
+def test_office_text_extractor_pulls_docx_text(tmp_path):
+    """OOXML (.docx) text extraction via stdlib zipfile+ElementTree —
+    must return the visible body text so the lexicon can scan it.
+    Without this path, the lexicon sees binary zip bytes and never
+    fires on Cloudy's Manifesto.docx / Planning.docx on a real
+    Lone Wolf E01."""
+    import zipfile
+    docx = tmp_path / "manifesto.docx"
+    document_xml = ('<?xml version="1.0"?>'
+                    '<w:document xmlns:w="http://schemas.openxmlformats.org/'
+                    'wordprocessingml/2006/main">'
+                    '<w:body><w:p><w:r><w:t>I will be the Lone Wolf. '
+                    'Kel-Tec Sub 2000 9mm $400. Latex gloves. No '
+                    'Extradition countries. Bali Indonesia.</w:t></w:r>'
+                    '</w:p></w:body></w:document>')
+    with zipfile.ZipFile(docx, "w") as zf:
+        zf.writestr("word/document.xml", document_xml)
+        zf.writestr("[Content_Types].xml", '<?xml version="1.0"?><Types/>')
+    text = papl._extract_office_text(docx, max_bytes=1_000_000)
+    assert "lone wolf" in text.lower()
+    assert "kel-tec sub 2000" in text.lower()
+    # End-to-end: walk_files must surface the docx via the extractor
+    hits = papl.walk_files(tmp_path)
+    assert len(hits) == 1
+    assert hits[0].signal_strength == "high"
+
+
+def test_office_text_extractor_handles_corrupt_zip(tmp_path):
+    """A `.docx` that's not actually a valid zip must NOT raise —
+    return empty string, walker continues."""
+    bad = tmp_path / "broken.docx"
+    bad.write_bytes(b"PK\x03\x04 broken zip data")
+    text = papl._extract_office_text(bad, max_bytes=1_000_000)
+    assert text == ""
+
+
+def test_walker_resilient_to_oserror(tmp_path, monkeypatch):
+    """A single OSError on read_bytes must NOT abort the walk —
+    the next file gets scanned. Real-world trigger: NTFS-FUSE
+    EIO on Chrome cache files."""
+    good = tmp_path / "good.txt"
+    good.write_text(
+        "Kel-Tec Sub 2000 9mm $400. Latex gloves. No extradition "
+        "countries. Bali Indonesia. I will be the Lone Wolf.")
+    bad = tmp_path / "bad.txt"
+    bad.write_text("dummy")
+    orig_read = Path.read_bytes
+    def flaky(self):
+        if self.name == "bad.txt":
+            raise OSError(5, "Input/output error", str(self))
+        return orig_read(self)
+    monkeypatch.setattr(Path, "read_bytes", flaky)
+    hits = papl.walk_files(tmp_path)
+    assert len(hits) == 1
+    assert hits[0].path.name == "good.txt"
+
+
 def test_chrome_autofill_synthetic_fires():
     """Composite of Chrome Autofill (Indonesia, Bali, fn p90, 9mm sbr,
     cloudy-thoughts, fnp90, fn 5.7) + Chrome Searches firearms terms.

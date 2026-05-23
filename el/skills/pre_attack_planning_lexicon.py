@@ -213,12 +213,59 @@ _TEXT_EXTS = frozenset({
     ".json", ".yaml", ".yml", ".ini", ".conf",
     ".html", ".htm", ".xml",
     ".odt", ".eml",   # structured but contain plaintext blobs
-    # Office formats — caller is expected to have already converted
-    # these to text (via office_deobf or a dedicated extractor) and
-    # passed the result back here. The extension is whitelisted so
-    # callers can feed converted-text-with-original-suffix paths.
-    ".docx", ".doc", ".pptx", ".ppt", ".xlsx", ".xls", ".pdf",
 })
+
+# Office-format extensions — text extracted by `_extract_office_text`
+# below (stdlib-only zipfile+XML parse). On a real Lone Wolf E01 the
+# Cloudy Manifesto / Planning / Operation 2nd Hand Smoke documents
+# are .docx/.pptx, so without this path the lexicon never fires on
+# the actual evidence the corpus is built around.
+_OFFICE_EXTS = frozenset({
+    ".docx", ".pptx", ".xlsx", ".docm", ".pptm", ".xlsm",
+})
+
+
+def _extract_office_text(path: Path, max_bytes: int) -> str:
+    """Extract visible text from an OOXML (docx/pptx/xlsx) file using
+    stdlib only — zipfile + xml.etree. Returns empty string on any
+    parse error (don't propagate — caller treats empty as no-hit)."""
+    import zipfile
+    import xml.etree.ElementTree as ET
+    parts: list[str] = []
+    bytes_pulled = 0
+    try:
+        with zipfile.ZipFile(path) as zf:
+            # docx → word/document.xml + word/header*.xml + word/footer*.xml
+            # pptx → ppt/slides/slide*.xml + ppt/notesSlides/notesSlide*.xml
+            # xlsx → xl/sharedStrings.xml (the main text repository)
+            candidates = [n for n in zf.namelist() if (
+                n.startswith("word/") and n.endswith(".xml")
+                or n.startswith("ppt/slides/") and n.endswith(".xml")
+                or n.startswith("ppt/notesSlides/") and n.endswith(".xml")
+                or n == "xl/sharedStrings.xml"
+            )]
+            for name in candidates:
+                if bytes_pulled >= max_bytes:
+                    break
+                try:
+                    data = zf.read(name)
+                except (KeyError, zipfile.BadZipFile, OSError):
+                    continue
+                bytes_pulled += len(data)
+                try:
+                    root = ET.fromstring(data)
+                except ET.ParseError:
+                    continue
+                # The actual text is in <w:t>, <a:t>, <t> elements
+                # depending on namespace. Strip namespaces and grab
+                # everything that ends in '}t' (and bare 't').
+                for elem in root.iter():
+                    tag = elem.tag.rsplit("}", 1)[-1]
+                    if tag == "t" and elem.text:
+                        parts.append(elem.text)
+    except (zipfile.BadZipFile, OSError, ET.ParseError):
+        return ""
+    return " ".join(parts)
 
 
 def walk_files(root: Path, max_bytes_per_file: int = 1_000_000,
@@ -228,22 +275,50 @@ def walk_files(root: Path, max_bytes_per_file: int = 1_000_000,
     Files larger than *max_bytes_per_file* are read in a single slice of
     that size (planning markers cluster near the top of notes / manifesto
     / planning files, never at the tail — same posture as narcotic_lexicon).
+
+    Resilient to per-file OSError — the iterator itself can fail on
+    NTFS/FUSE mounts when stat/readdir hits an unreadable inode (Chrome
+    cache directories with broken symlinks, mount-time SIGBUS on a sector,
+    EIO from a FUSE driver shimming over ewfmount). One bad inode must NOT
+    abort the whole walk — there are typically thousands of legitimate
+    text files in the same tree.
     """
     hits: list[PreAttackMatch] = []
     scanned = 0
-    for p in root.rglob("*"):
-        if not p.is_file():
+    try:
+        iterator = root.rglob("*")
+    except OSError:
+        return hits
+    while True:
+        try:
+            p = next(iterator)
+        except StopIteration:
+            break
+        except OSError:
+            # rglob hit an unreadable directory — skip it and continue
+            # walking the rest of the tree.
             continue
-        if p.suffix.lower() not in _TEXT_EXTS:
+        try:
+            if not p.is_file():
+                continue
+        except OSError:
+            continue
+        suffix = p.suffix.lower()
+        if suffix not in _TEXT_EXTS and suffix not in _OFFICE_EXTS:
             continue
         scanned += 1
         if scanned > max_files:
             break
-        try:
-            data = p.read_bytes()[:max_bytes_per_file]
-            text = data.decode("utf-8", errors="replace")
-        except OSError:
-            continue
+        if suffix in _OFFICE_EXTS:
+            text = _extract_office_text(p, max_bytes_per_file)
+            if not text:
+                continue
+        else:
+            try:
+                data = p.read_bytes()[:max_bytes_per_file]
+                text = data.decode("utf-8", errors="replace")
+            except OSError:
+                continue
         m = scan_text(text, source=p)
         if m is not None:
             hits.append(m)

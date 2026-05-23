@@ -195,8 +195,24 @@ def scan(user_profile: Path, *, min_providers: int = DEFAULT_MIN_PROVIDERS,
 
     for provider, root in result.cloud_roots.items():
         scanned = 0
-        for p in root.rglob("*"):
-            if not p.is_file():
+        # Resilient walk — `rglob` on NTFS/FUSE mounts can raise
+        # OSError on unreadable inodes (broken Chrome cache symlinks,
+        # FUSE EIO). One bad directory must NOT abort the walk.
+        try:
+            iterator = root.rglob("*")
+        except OSError:
+            continue
+        while True:
+            try:
+                p = next(iterator)
+            except StopIteration:
+                break
+            except OSError:
+                continue
+            try:
+                if not p.is_file():
+                    continue
+            except OSError:
                 continue
             scanned += 1
             if scanned > max_files_per_root:
