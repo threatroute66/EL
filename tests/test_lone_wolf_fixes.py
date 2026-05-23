@@ -130,14 +130,29 @@ def test_planning_docx_fires_at_high_signal():
                or "latex gloves" in o for o in m.opsec_hits)
 
 
-def test_manifesto_alone_does_not_fire_single_category():
-    """Cloudy Manifesto text alone fires ONLY the intent category — even
-    with 4+ intent hits, the ≥2-category rule means it correctly
-    returns no-match in isolation. Manifesto + Planning together is
-    what crosses the threshold (covered by `test_planning_docx_*`)."""
+def test_manifesto_alone_fires_at_medium_single_category():
+    """Cloudy Manifesto text alone fires ONLY the intent category but
+    with 5+ intent markers (`lone wolf`, `i will be the change`,
+    `i will be the revolutionary`, `blood has been shed`, etc.). The
+    single-category-with-≥4-hits rule means it correctly surfaces at
+    `medium` — the document IS evidence of pre-attack rhetorical
+    preparation even without weapons/destinations content in the same
+    file. Live LonWolf.E01 validated this on `The Cloudy Manifesto.docx`
+    (8 intent hits, no other categories)."""
     m = papl.scan_text(MANIFESTO_QUOTE)
-    # Either no match or weak signal (filtered) — single category
-    # alone shouldn't escalate even with multiple intent markers.
+    assert m is not None
+    assert m.signal_strength == "medium"
+    assert m.categories_fired == 1
+    assert len(m.intent_hits) >= 4
+
+
+def test_single_category_single_hit_still_suppressed():
+    """The relaxed single-category rule kicks in at ≥4 hits. A doc
+    with just ONE intent marker (`lone wolf` and nothing else) must
+    still be suppressed — otherwise every commentary post containing
+    the phrase fires the detector."""
+    m = papl.scan_text("read a fascinating piece about the lone wolf "
+                        "attacker phenomenon last week.")
     assert m is None or m.signal_strength == "weak"
 
 

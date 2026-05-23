@@ -139,10 +139,15 @@ class PreAttackMatch:
     def signal_strength(self) -> str:
         """high if ≥3 categories co-occur (e.g. weapon + opsec + intent —
         the diagnostic combination); medium if ≥2 categories with total
-        ≥3 hits; otherwise weak (filtered)."""
+        ≥3 hits; medium-also if a SINGLE category fires at ≥4 hits
+        (manifesto-style intent-only docs are still evidence: Cloudy
+        Manifesto has 7+ intent markers but no other category). Below
+        either threshold → weak (filtered)."""
         if self.categories_fired >= 3:
             return "high"
         if self.categories_fired >= 2 and self.total_hits >= 3:
+            return "medium"
+        if self.categories_fired == 1 and self.total_hits >= 4:
             return "medium"
         return "weak"
 
@@ -201,8 +206,9 @@ def scan_text(text: str, source: Path | None = None) -> PreAttackMatch | None:
         intent_hits=_word_hits(_INTENT_WORDS, lower),
         destination_hits=_word_hits(_DESTINATION_WORDS, lower),
     )
-    if m.categories_fired < 2 or m.total_hits < 2:
-        return None
+    # Filter weak signals — the signal_strength rule encapsulates the
+    # full firing logic (≥3 categories OR ≥2 categories with ≥3 hits OR
+    # single category with ≥4 hits). Anything weak is rejected here.
     if m.signal_strength == "weak":
         return None
     return m
