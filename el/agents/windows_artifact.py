@@ -21,6 +21,7 @@ findings, not failures):
 """
 from __future__ import annotations
 
+import hashlib
 from pathlib import Path
 
 from el.agents.base import Agent, AgentContext
@@ -330,6 +331,21 @@ class WindowsArtifactAgent(Agent):
         # Inventory-style findings for the small artifact buckets:
         # WER crash queue, thumb caches, SmartScreen AppCache.
         out.extend(self._inventory_finds(ctx, root))
+        # Cross-cloud mirror detector — fires when the same SHA-256 file
+        # appears in ≥3 distinct cloud-sync directories under the same
+        # user profile. Lone Wolf 2018 corpus signature: 5 cloud services
+        # used to ensure planning material survived laptop disposal.
+        out.extend(self._cross_cloud_mirror(ctx, root))
+        # Pre-attack-planning lexicon — weapon-purchase + escape-route +
+        # manifesto co-occurrence in user text files. Same posture as the
+        # narcotic_lexicon scanner (≥2 categories required).
+        out.extend(self._pre_attack_planning(ctx, root))
+        # Cleartext AWS credentials exposed under the user profile —
+        # rootkey.csv, credentials, accessKeys.csv. High-signal IOC
+        # that also lifts H_PRE_ATTACK_PLANNING when present alongside
+        # the multi-cloud mirror pattern (Lone Wolf 2018 — Cloudy gave
+        # his brother AWS keys via Brother Chat after staging plans on S3).
+        out.extend(self._aws_credential_exposure(ctx, root))
 
         if all(f.confidence == "insufficient" for f in out):
             out.append(self.emit(ctx, Finding(
@@ -1329,4 +1345,154 @@ class WindowsArtifactAgent(Agent):
                 evidence=[ev],
                 hypotheses_supported=["H_DISK_ARTIFACTS"],
             )))
+        return out
+
+    def _cross_cloud_mirror(self, ctx: AgentContext,
+                              root: Path) -> list[Finding]:
+        """Detect files mirrored across ≥3 cloud-sync directories in the
+        same user profile — the Lone Wolf 2018 case signature."""
+        from el.skills import cross_cloud_mirror as ccm
+        out: list[Finding] = []
+        profiles = ccm.find_user_profiles(root)
+        if not profiles:
+            return out
+        for profile in profiles:
+            result = ccm.scan(profile)
+            if not result.mirrored:
+                continue
+            top = result.mirrored[0]
+            sample_names = ", ".join(m.name for m in result.mirrored[:3])
+            providers_top = ", ".join(sorted(top.providers.keys()))
+            out.append(self.emit(ctx, Finding(
+                case_id=ctx.case_id, agent=self.name, confidence="high",
+                claim=(f"Multi-cloud evidence mirror in user profile "
+                       f"{profile.name!r}: {len(result.mirrored)} file(s) "
+                       f"present in ≥3 cloud-sync directories on the same "
+                       f"host. Most-mirrored: {top.name!r} across "
+                       f"[{providers_top}]. Sample: [{sample_names}]. "
+                       f"Cloud roots present: "
+                       f"[{', '.join(sorted(result.cloud_roots.keys()))}]."),
+                evidence=[result.as_evidence()],
+                hypotheses_supported=["H_MULTI_CLOUD_MIRROR",
+                                        "H_PRE_ATTACK_PLANNING",
+                                        "H_INSIDER_DATA_EXFIL"],
+            )))
+        return out
+
+    def _aws_credential_exposure(self, ctx: AgentContext,
+                                    root: Path) -> list[Finding]:
+        """Surface cleartext AWS access-key files (rootkey.csv,
+        credentials, accessKeys.csv) under user profiles. Emits one
+        Finding per file with claim text that the H_PRE_ATTACK_PLANNING
+        scorer matches ("aws access key" / "rootkey.csv")."""
+        from el.skills import cross_cloud_mirror as ccm
+        from el.skills import ioc_extract as iex
+        candidate_names = frozenset({
+            "rootkey.csv", "credentials", "accesskeys.csv",
+            "aws_credentials", "aws_credentials.csv",
+            "rootkey.txt",
+        })
+        out: list[Finding] = []
+        for profile in ccm.find_user_profiles(root):
+            for p in profile.rglob("*"):
+                if not p.is_file():
+                    continue
+                if p.name.lower() not in candidate_names:
+                    continue
+                try:
+                    text = p.read_text(encoding="utf-8", errors="replace")
+                except OSError:
+                    continue
+                iocs = iex.extract(text)
+                if not iocs.get("aws_access_key"):
+                    continue
+                try:
+                    sha = hashlib.sha256(p.read_bytes()).hexdigest()
+                except OSError:
+                    sha = "0" * 64
+                access_keys = sorted(iocs["aws_access_key"])
+                secret_present = bool(iocs.get("aws_secret_key"))
+                ev = EvidenceItem(
+                    tool="el.ioc_extract", version="0.1.0",
+                    command=f"extract({p.name})",
+                    output_sha256=sha, output_path=str(p),
+                    extracted_facts={
+                        "file_name": p.name,
+                        "aws_access_key": access_keys,
+                        "aws_secret_key_present": secret_present,
+                        # NEVER persist the actual secret to the ledger —
+                        # only its sha256 + length, mirroring the dislocker
+                        # recovery-key handling pattern.
+                        "aws_secret_key_sha256": (
+                            hashlib.sha256(
+                                next(iter(iocs["aws_secret_key"])).encode()
+                            ).hexdigest()
+                            if secret_present else None),
+                    },
+                )
+                out.append(self.emit(ctx, Finding(
+                    case_id=ctx.case_id, agent=self.name, confidence="high",
+                    claim=(f"AWS access key cleartext in {p.name!r} under "
+                           f"profile {profile.name!r}: "
+                           f"key_id={access_keys[0] if access_keys else '?'}, "
+                           f"secret_key_present={secret_present}. Cleartext "
+                           f"credential exposure of a long-lived AWS root "
+                           f"identity. Treat as compromised."),
+                    evidence=[ev],
+                    hypotheses_supported=["H_PRE_ATTACK_PLANNING",
+                                            "H_CREDENTIAL_ACCESS"],
+                )))
+        return out
+
+    def _pre_attack_planning(self, ctx: AgentContext,
+                               root: Path) -> list[Finding]:
+        """Scan user text files for pre-attack planning lexicon —
+        weapons + ammunition counts + escape-route + manifesto language.
+        Requires ≥2 categories to co-occur to suppress single-keyword FPs.
+
+        Dedups by content SHA-256: identical Planning.docx mirrored
+        across N cloud-sync directories surfaces ONE lexicon finding,
+        not N. The cross-cloud-mirror finding already documents the
+        mirroring fact; the lexicon finding documents the content.
+        """
+        from el.skills import cross_cloud_mirror as ccm
+        from el.skills import pre_attack_planning_lexicon as papl
+        profiles = ccm.find_user_profiles(root)
+        if not profiles:
+            return []
+        out: list[Finding] = []
+        seen_content_hashes: set[str] = set()
+        for profile in profiles:
+            hits = papl.walk_files(profile)
+            for m in hits:
+                try:
+                    content_sha = hashlib.sha256(
+                        m.path.read_bytes()).hexdigest()
+                except OSError:
+                    content_sha = ""
+                if content_sha and content_sha in seen_content_hashes:
+                    continue
+                if content_sha:
+                    seen_content_hashes.add(content_sha)
+                conf = "high" if m.signal_strength == "high" else "medium"
+                cats = []
+                if m.weapon_hits:
+                    cats.append(f"weapons={m.weapon_hits[:2]}")
+                if m.ammo_hits:
+                    cats.append(f"ammo={m.ammo_hits[:2]}")
+                if m.opsec_hits:
+                    cats.append(f"opsec={m.opsec_hits[:2]}")
+                if m.intent_hits:
+                    cats.append(f"intent={m.intent_hits[:2]}")
+                if m.destination_hits:
+                    cats.append(f"destination={m.destination_hits[:2]}")
+                out.append(self.emit(ctx, Finding(
+                    case_id=ctx.case_id, agent=self.name, confidence=conf,
+                    claim=(f"Pre-attack planning lexicon match in "
+                           f"{m.path.name}: {m.categories_fired} categories "
+                           f"fired with {m.total_hits} total hit(s). "
+                           f"{'; '.join(cats)}."),
+                    evidence=[m.as_evidence()],
+                    hypotheses_supported=["H_PRE_ATTACK_PLANNING"],
+                )))
         return out

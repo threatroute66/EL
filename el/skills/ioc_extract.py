@@ -58,6 +58,25 @@ _WINPATH = re.compile(r"(?:[A-Z]:\\(?:[^\\<>:\"|?*\r\n]+\\)*[^\\<>:\"|?*\r\n]+)"
 # user notes and mbox attachments.
 _BTC_LEGACY = re.compile(r"(?<![A-Za-z0-9])[13][1-9A-HJ-NP-Za-km-z]{25,34}(?![A-Za-z0-9])")
 _BTC_BECH32 = re.compile(r"(?<![a-z0-9])bc1[ac-hj-np-z02-9]{25,60}(?![a-z0-9])")
+# AWS Access Key IDs — 20-char IDs with fixed 4-letter prefixes published in
+# AWS docs. AKIA = long-lived IAM user; ASIA = STS temporary; AIDA = IAM user
+# unique id; AROA = role; AIPA = EC2 instance profile; ANPA/ANVA = managed
+# policy; ABIA = context-specific keys; ACCA = context-specific. Seen on
+# Lone Wolf's `rootkey.csv` (AKIAJQCL74OG6U6JRXKQ) and inside the
+# Brother Chat Google Doc handoff.
+_AWS_ACCESS_KEY = re.compile(
+    r"(?<![A-Z0-9])(?:AKIA|ASIA|AIDA|AROA|AIPA|ANPA|ANVA|ABIA|ACCA)[A-Z0-9]{16}(?![A-Z0-9])"
+)
+# AWS Secret Access Key — 40 chars of base64-ish (+/= excluded; pure
+# [A-Za-z0-9/+=]). Without context the 40-char base64 regex is far too
+# noisy. Pin to two high-confidence contexts: (a) explicit literal
+# "AWSSecretKey=<value>" or "aws_secret_access_key = <value>" assignment,
+# and (b) presence in a known SDK credential filename (rootkey.csv,
+# credentials, accessKeys.csv) — caller picks the right path.
+_AWS_SECRET_ASSIGN = re.compile(
+    r"(?i)(?:aws[_-]?secret[_-]?(?:access[_-]?)?key|AWSSecretKey)"
+    r"\s*[=:]\s*['\"]?([A-Za-z0-9/+=]{40})(?![A-Za-z0-9/+=])"
+)
 
 _FILE_EXT_TLDS = {
     "pcap", "pcapng", "exe", "ex", "dll", "sys", "bin", "raw", "mem", "vmem", "lime",
@@ -350,7 +369,8 @@ def _has_repeat_run(s: str, n: int) -> bool:
 
 
 _EMPTY_IOCS = {k: set() for k in ("ipv4", "ipv6", "domain", "url", "md5", "sha1",
-                                   "sha256", "email", "regkey", "winpath", "btc")}
+                                   "sha256", "email", "regkey", "winpath", "btc",
+                                   "aws_access_key", "aws_secret_key")}
 
 
 # ----- Low-entropy filter ----------------------------------------------------
@@ -444,7 +464,8 @@ def extract(text: str, drop_noise: bool = True,
             sha256 = {h for h in sha256 if _has_sufficient_entropy(h, "sha256")}
         return {"ipv4": ipv4, "ipv6": ipv6, "domain": set(), "url": set(),
                 "md5": md5, "sha1": sha1, "sha256": sha256, "email": set(),
-                "regkey": regkey, "winpath": winpath, "btc": set()}
+                "regkey": regkey, "winpath": winpath, "btc": set(),
+                "aws_access_key": set(), "aws_secret_key": set()}
 
     ipv4 = set(_IPV4.findall(t))
     ipv6 = {m for m in _IPV6.findall(t) if ":" in m and len(m) > 4}
@@ -475,10 +496,13 @@ def extract(text: str, drop_noise: bool = True,
         btc_legacy = {a for a in btc_legacy if _has_sufficient_entropy(a, "btc")}
         btc_bech32 = {a for a in btc_bech32 if _has_sufficient_entropy(a, "btc")}
     btc = btc_legacy | btc_bech32
+    aws_access_key = set(_AWS_ACCESS_KEY.findall(t))
+    aws_secret_key = set(_AWS_SECRET_ASSIGN.findall(t))
 
     return {"ipv4": ipv4, "ipv6": ipv6, "domain": domain, "url": url,
             "md5": md5, "sha1": sha1, "sha256": sha256, "email": email,
-            "regkey": regkey, "winpath": winpath, "btc": btc}
+            "regkey": regkey, "winpath": winpath, "btc": btc,
+            "aws_access_key": aws_access_key, "aws_secret_key": aws_secret_key}
 
 
 def apply_umbrella_filter(iocs: dict[str, set[str] | list[str]],

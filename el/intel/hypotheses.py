@@ -99,7 +99,12 @@ def _h_benign(f: Finding) -> int:
                 "H_EID_5860", "H_EID_5861",
                 # Anti-forensics is deliberate — benign activity does
                 # not timestomp, zero-size, or sdelete system files.
-                "H_ANTI_FORENSICS"):
+                "H_ANTI_FORENSICS",
+                # Pre-attack planning (Lone Wolf 2018 corpus shape):
+                # multi-category planning lexicon hits + multi-cloud
+                # mirroring of the planning material are deliberate by
+                # construction; the null hypothesis cannot survive them.
+                "H_PRE_ATTACK_PLANNING", "H_MULTI_CLOUD_MIRROR"):
         if tag in f.hypotheses_supported:
             s -= 3
     if _claim_contains("createaccesskey", "putbucketpolicy", "failed console",
@@ -223,6 +228,42 @@ def _h_insider(f: Finding) -> int:
         s += 1
     if _claim_contains("4624", "logon", "4672")(f):
         s += 1
+    return s
+
+
+def _h_pre_attack_planning(f: Finding) -> int:
+    """Pre-attack / lone-offender planning: user-authored content,
+    multi-cloud evidence mirroring, and cleartext credential / escape
+    plan staging that survives device disposal.
+
+    Surfaces the Lone Wolf 2018 corpus pattern (Moore): Cloudy Manifesto +
+    Planning.docx + Operation 2nd Hand Smoke.pptx + Brother Chat AWS-key
+    handoff + Chrome Autofill of weapon-vendor / non-extradition queries.
+    Independent from H_INSIDER_DATA_EXFIL (which scopes to enterprise
+    data theft) because the EVIDENCE SHAPE is different — content is
+    user-authored intent + operational planning, not corporate data.
+    """
+    s = 0
+    # Tag from pre_attack_planning_lexicon scanner — load-bearing
+    if _has_tag("H_PRE_ATTACK_PLANNING")(f):
+        s += 3
+    # Cross-cloud-duplication detector tag (same SHA-256 file in ≥N
+    # cloud-sync directories). The "evidence preservation via mirroring"
+    # signature is THE distinctive feature of this case shape.
+    if _has_tag("H_MULTI_CLOUD_MIRROR")(f):
+        s += 3
+    # Cleartext AWS credential handoff (rootkey.csv → brother chat).
+    # Lone Wolf used this to grant his brother continuing access to the
+    # cloud-staged plans after his disposal.
+    if (_filename_safe(f) and
+            _claim_contains("aws access key", "awsaccesskey",
+                            "rootkey.csv", "aws secret key")(f)):
+        s += 2
+    # Manifesto / weapon-purchase / escape-route language in claim text
+    if _filename_safe(f) and _claim_contains(
+            "lone wolf", "manifesto", "escape route", "non-extradition",
+            "atrocity", "fresh start in bali")(f):
+        s += 2
     return s
 
 
@@ -512,6 +553,14 @@ HYPOTHESES: list[Hypothesis] = [
                "exfiltration to an external recipient. Distinct from the broader "
                "insider hypothesis because the evidence shape is email-specific.",
                _h_insider_email_exfil),
+    Hypothesis("H_PRE_ATTACK_PLANNING",
+               "Pre-attack / lone-offender planning",
+               "User-authored content evidencing preparation for a physical "
+               "attack — weapons + ammunition shopping, escape-route and "
+               "non-extradition research, manifesto language. Often paired "
+               "with deliberate multi-cloud mirroring of the planning material "
+               "to ensure it survives the user's device disposal.",
+               _h_pre_attack_planning),
     Hypothesis("H_SUPPLY_CHAIN",
                "Supply-chain / trusted-vendor compromise",
                "Compromised software update, signed binary, or vendor channel.",
