@@ -26,6 +26,14 @@ def isolated(tmp_path, monkeypatch):
     monkeypatch.setattr(intake_mod, "CASE_ROOT", tmp_path / "cases")
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     monkeypatch.delenv("EL_AI_BRIEF_DEFER", raising=False)
+    # The defer path now also auto-fires when EL is running inside a
+    # Claude Code session (CLAUDECODE / AI_AGENT env vars set by the
+    # Claude Code CLI). Clear them so the "no flag → no request file"
+    # contract holds when pytest itself is invoked from inside Claude
+    # Code. Tests that want to assert the Claude Code path opt back in.
+    monkeypatch.delenv("CLAUDECODE", raising=False)
+    monkeypatch.delenv("AI_AGENT", raising=False)
+    monkeypatch.delenv("CLAUDE_CODE_SESSION_ID", raising=False)
     yield tmp_path
 
 
@@ -76,6 +84,39 @@ def test_notification_silent_without_defer_flag(isolated):
     case_dir = isolated / "cases" / "no-defer-test"
     req = case_dir / "reports" / _REQUEST_FILENAME
     assert not req.exists()
+
+
+def test_claude_code_session_fires_notification_without_defer_flag(
+        isolated, monkeypatch):
+    """With CLAUDECODE=1 in the env (set by the Claude Code CLI) the
+    request file must be written automatically — the operator should
+    not have to remember --defer-ai-brief. The notification message
+    differs from the plain-defer case: it names the Claude Code
+    session as the trigger so the operator knows the brief will be
+    fulfilled by the surrounding assistant, not by a stranger."""
+    monkeypatch.setenv("CLAUDECODE", "1")
+    monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "cc-test-session-xyz")
+
+    runner = CliRunner()
+    src = isolated / "fake.bin"
+    src.write_bytes(b"x")
+    result = runner.invoke(
+        app,
+        ["investigate", str(src), "--case-id", "cc-session-test"],
+    )
+    assert result.exit_code == 0, result.output
+    # New message format — distinguishes Claude Code from plain defer
+    assert "Claude Code path" in result.output
+    assert "cc-test-session-xyz" in result.output
+    assert "/el-ai-brief" in result.output
+
+    case_dir = isolated / "cases" / "cc-session-test"
+    req = case_dir / "reports" / _REQUEST_FILENAME
+    assert req.is_file(), \
+        "Claude Code session detection must auto-write the request"
+    payload = json.loads(req.read_text())
+    assert payload["trigger"] == "claude_code_session"
+    assert payload["trigger_session_id"] == "cc-test-session-xyz"
 
 
 def test_notification_silent_when_api_key_present(isolated, monkeypatch):

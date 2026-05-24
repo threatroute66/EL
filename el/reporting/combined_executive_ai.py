@@ -264,10 +264,34 @@ def _defer_enabled() -> bool:
     return val in {"1", "true", "yes", "on"}
 
 
+def _running_inside_claude_code() -> bool:
+    """Mirror of executive_ai._running_inside_claude_code — kept in
+    sync because the combined path imports cleanly without the
+    per-case module. See the docstring there for detail."""
+    val = (os.environ.get("CLAUDECODE") or "").strip().lower()
+    if val in {"1", "true", "yes", "on"}:
+        return True
+    agent = (os.environ.get("AI_AGENT") or "").strip().lower()
+    return agent.startswith("claude-code")
+
+
+def _claude_code_path_enabled() -> bool:
+    return _defer_enabled() or _running_inside_claude_code()
+
+
 def _write_request_file(combined_dir: Path, cache_key: str,
                           context: dict, output_path: Path) -> Path:
     combined_dir.mkdir(parents=True, exist_ok=True)
     request_path = combined_dir / _REQUEST_FILENAME
+    if _running_inside_claude_code():
+        trigger = "claude_code_session"
+        trigger_session = os.environ.get("CLAUDE_CODE_SESSION_ID") or ""
+    elif _defer_enabled():
+        trigger = "explicit_defer_flag"
+        trigger_session = ""
+    else:
+        trigger = "unknown"
+        trigger_session = ""
     payload = {
         "request_version": 1,
         "cache_key": cache_key,
@@ -275,6 +299,8 @@ def _write_request_file(combined_dir: Path, cache_key: str,
         "brief_kind": "combined_executive",
         "output_path": str(output_path),
         "model_hint": _DEFAULT_MODEL,
+        "trigger": trigger,
+        "trigger_session_id": trigger_session,
         "system_prompt": _SYSTEM_PROMPT,
         "context": context,
         "instructions_for_responder": (
@@ -410,7 +436,7 @@ def synthesize_combined_executive_ai(
 
     api_key = os.environ.get("ANTHROPIC_API_KEY")
     if not api_key:
-        if _defer_enabled():
+        if _claude_code_path_enabled():
             _write_request_file(Path(combined_dir), desired_key,
                                  context, cache_path)
         return None

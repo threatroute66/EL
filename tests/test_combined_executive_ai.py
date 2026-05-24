@@ -40,6 +40,17 @@ from el.reporting.combined_executive_ai import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _isolate_claude_code_env(monkeypatch):
+    """Defer path now also fires on Claude Code detection — clear the
+    env vars so "defer off → no request file" tests stay deterministic
+    when pytest itself is invoked from inside a Claude Code session.
+    Mirror of the same fixture in test_executive_ai.py."""
+    monkeypatch.delenv("CLAUDECODE", raising=False)
+    monkeypatch.delenv("AI_AGENT", raising=False)
+    monkeypatch.delenv("CLAUDE_CODE_SESSION_ID", raising=False)
+
+
 @dataclass
 class _StubSlice:
     case_id: str
