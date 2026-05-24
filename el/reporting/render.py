@@ -85,9 +85,35 @@ def render_report(
         lines.append("- ⚠ **SYNTHESIZE blocked**: one or more findings remain in red_review=unresolved.")
     lines.append("")
 
+    # Provenance — surfaced when a Source.txt was found alongside
+    # the evidence at intake (Name / Url / Source fields). Skipped
+    # silently when the operator didn't drop one in. See
+    # el/evidence/intake.py for the Source.txt parser.
+    src_name = manifest.get("source_name")
+    src_url = manifest.get("source_url")
+    src_org = manifest.get("source_org")
+    src_path = manifest.get("source_path")
+    if src_name or src_url or src_org:
+        lines.append("## Evidence Source")
+        lines.append("")
+        if src_name:
+            lines.append(f"- **Name**: {src_name}")
+        if src_org:
+            lines.append(f"- **Source**: {src_org}")
+        if src_url:
+            lines.append(f"- **URL**: <{src_url}>")
+        if src_path:
+            lines.append(
+                f"- **Provenance file**: `{src_path}`")
+        lines.append("")
+
     lines.append("## Evidence Manifest")
     lines.append("")
     for k, v in manifest.items():
+        # Hide None-valued provenance fields when no Source.txt was
+        # found; they'd render as "- **source_name**: `None`" otherwise.
+        if v is None and k.startswith("source_"):
+            continue
         lines.append(f"- **{k}**: `{v}`")
     lines.append("")
 

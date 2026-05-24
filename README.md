@@ -629,6 +629,37 @@ Three hard rules (Pydantic-enforced):
 
 ---
 
+## Evidence provenance — the `Source.txt` convention
+
+Drop a `Source.txt` next to each evidence image (in the directory for
+directory inputs; in the parent dir for single-file inputs). EL parses
+it at intake time and persists the fields into `manifest.json` + the
+"Evidence Source" section of every generated report — so you never
+have to update the case table below by hand again.
+
+Recognised filenames (first match wins): `Source.txt`, `SOURCE.txt`,
+`SOURCE`, `PROVENANCE.txt`, `provenance.txt`. Format is `Key: Value`
+per line; recognised keys (case-insensitive) map to three canonical
+fields:
+
+| Field | Aliases accepted |
+|---|---|
+| `Name` | `Name`, `Title`, `Scenario` |
+| `Url` | `Url`, `URL`, `URI`, `Link` |
+| `Source` | `Source`, `Origin`, `Provider`, `Corpus` |
+
+Example (the one shipped with the LoneWolf USB):
+
+```
+Name: "2018 Lone Wolf Scenario"
+Url:  https://digitalcorpora.org/corpora/scenarios/2018-lone-wolf-scenario/
+Source: Digital Corpora
+```
+
+When present, the report header renders an `## Evidence Source` block
+above the Evidence Manifest with Name / Source / URL spelled out.
+Absent: nothing rendered, no error — the convention is opt-in.
+
 ## Validated on real evidence
 
 EL has been exercised end-to-end on the following real evidence types,
@@ -648,7 +679,7 @@ with each case surfacing bugs that became permanent regression tests:
 | BelkaCTF Android | Extracted filesystem tree | ~30 GB | `AndroidForensicator` detected Magisk root + com.topjohnwu.magisk sideloaded via packageinstaller + WhatsApp presence — 3 detector hits |
 | BelkaCTF iPhone SE (iOS 14.3) | Extracted filesystem tree | ~200 GB | `IOSForensicator` pulled 63 app Info.plists + 105 bundle metadata + SMS/AddressBook/CallHistory/KnowledgeC/Health DBs; 18 encrypted-messenger / privacy-tool apps detected (Signal, Telegram, Wickr Enterprise, ProtonMail, Tutanota, Onion Browser, KeepSafe, Burner, …) — end-to-end in 1m39s after the intake Merkle-hash perf fixes |
 | [NPS M57-Jean](https://digitalcorpora.org/corpora/scenarios/m57-jean/) | NTFS E01 multi-part (Windows XP) | 3 GB | **EL arrived at the canonical answer neither [Basilmellow](https://github.com/Basilmellow/Autopsy-M57-Linux-Forensics) nor [jynxora](https://github.com/jynxora/M57-Jean-Case-Analysis) reached**: BEC / pretexting exfil (H_BEC_ACCOUNT_TAKEOVER score **57, gap +44** post-gap-closure, up from 30 initial). Full story reconstructed: (1) attacker sent inbound email spoofing `alison@m57.biz` from `tuckgorge@gmail.com` (2 subjects: "Thanks!" + "Please send me the information now"), (2) Jean replied with `1_m57biz.xls (291840B)` attached, (3) bonus anti-forensic cleanup (15 zero-size + 15 zero-timestamp Windows system binaries — `auditusr.exe`, `pdh.dll`, `ciadmin.dll`), (4) 4778 IE5 cache records parsed including 24 `__utm` tracker-sync session-hijack artefacts. The per-finding `[finding_id]` citations + competing-hypothesis narrative render in `case.html` end-to-end |
-| [GMU CFRS 780 LoneWolf](https://github.com/ajgreggor/LoneWolf) | Paired NTFS E01 (9-part, 13 GB) + Windows memory (18 GB) + pagefile (3 GB) | ~34 GB total | Disk: H_APT_ESPIONAGE score 21 · Cobalt Strike family fingerprint in `domain.txt` (`__utm.gif` Malleable-C2) · multi-technique lateral-movement chain on 2018-04-04 (PS-remoting + WMI event-consumer + service install) · 64 execution-corroborated findings · 161 prefetch + 146 EVTX + Amcache + SRUM extracted · new anti-forensics detectors fired (zero-size + zero-timestamp Windows system binaries) · 233-node Kùzu graph (1 Host + 71 Process + 154 File + 7 Event). Memory: H_C2_BEACONING score 11 · 4 Netscan beacon patterns to Azure IPs port 443 (`13.89.184.76 ×52`, `52.176.102.108 ×17`) · process-tree anomaly on explorer.exe · 19 cross-case knowledge hits linking LoneWolf memory IOCs to 14 prior Qakbot / Valak / Ursnif / Icedid / Ta551 pcap campaigns in the Layer-3 knowledge DB |
+| [Digital Corpora — 2018 Lone Wolf Scenario](https://digitalcorpora.org/corpora/scenarios/2018-lone-wolf-scenario/) | Paired NTFS E01 (9-part, 13 GB) + Windows memory (18 GB) + pagefile (3 GB) | ~34 GB total | Disk: H_APT_ESPIONAGE score 21 · Cobalt Strike family fingerprint in `domain.txt` (`__utm.gif` Malleable-C2) · multi-technique lateral-movement chain on 2018-04-04 (PS-remoting + WMI event-consumer + service install) · 64 execution-corroborated findings · 161 prefetch + 146 EVTX + Amcache + SRUM extracted · new anti-forensics detectors fired (zero-size + zero-timestamp Windows system binaries) · 233-node Kùzu graph (1 Host + 71 Process + 154 File + 7 Event). Memory: H_C2_BEACONING score 11 · 4 Netscan beacon patterns to Azure IPs port 443 (`13.89.184.76 ×52`, `52.176.102.108 ×17`) · process-tree anomaly on explorer.exe · 19 cross-case knowledge hits linking LoneWolf memory IOCs to 14 prior Qakbot / Valak / Ursnif / Icedid / Ta551 pcap campaigns in the Layer-3 knowledge DB |
 
 Across these cases, EL surfaced 40+ bugs that are now locked in as
 regression tests — vol3 PATH inside venv subprocess, EVF vs EWF magic

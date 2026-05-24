@@ -25,6 +25,17 @@ class CaseManifest:
     input_md5: str
     input_magic: str
     case_dir: str
+    # Provenance from an optional Source.txt sitting alongside the
+    # evidence. Operator convention: drop a Source.txt into each
+    # evidence directory with `Name: …`, `Url: …`, `Source: …` lines.
+    # When present we parse it at intake time and persist the keys
+    # below so the report / executive brief can name where the
+    # evidence came from without manual README edits. None when no
+    # Source.txt is found.
+    source_name: str | None = None
+    source_url: str | None = None
+    source_org: str | None = None
+    source_path: str | None = None
 
 
 def _hash_file(path: Path) -> tuple[str, str, str]:
@@ -119,6 +130,86 @@ def _evidence_is_protected(path: Path) -> bool:
     )
 
 
+# Filenames recognised as evidence-provenance manifests, in
+# preference order. First match wins. Operator convention is
+# `Source.txt`; the alternatives cover existing corpora that ship
+# similar files under different names.
+_SOURCE_FILENAMES = ("Source.txt", "SOURCE.txt", "SOURCE",
+                       "PROVENANCE.txt", "provenance.txt")
+
+
+# Aliases for the three fields we standardise. Source.txt files in
+# the wild use variations (URL vs Url; "Origin" instead of "Source";
+# "Title" instead of "Name") — accept all common spellings, output
+# the canonical key.
+_SOURCE_KEY_ALIASES: dict[str, str] = {
+    "name": "source_name",
+    "title": "source_name",
+    "scenario": "source_name",
+    "url": "source_url",
+    "uri": "source_url",
+    "link": "source_url",
+    "source": "source_org",
+    "origin": "source_org",
+    "provider": "source_org",
+    "corpus": "source_org",
+}
+
+
+def _parse_source_file(text: str) -> dict[str, str]:
+    """Parse a Source.txt-style payload. Tolerant of mixed casing,
+    blank lines, comments (#), and quoted values. Returns a dict
+    keyed by canonical names (source_name / source_url / source_org)
+    — keys absent from the file are absent from the result."""
+    out: dict[str, str] = {}
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        if ":" not in line:
+            continue
+        key, _, value = line.partition(":")
+        canon = _SOURCE_KEY_ALIASES.get(key.strip().lower())
+        if not canon:
+            continue
+        v = value.strip().strip('"').strip("'")
+        if v:
+            out[canon] = v
+    return out
+
+
+def _read_source_metadata(input_path: Path) -> tuple[dict[str, str], Path | None]:
+    """Look for a Source.txt-style provenance file alongside the
+    evidence. Search order:
+      * For a directory input: top-level entries of the dir
+      * For a file input: the parent directory of the file
+
+    Returns ({}, None) when no recognised file is present or it
+    parses to empty. Never raises — provenance is best-effort
+    enrichment, not a chain-of-custody requirement.
+    """
+    if input_path.is_dir():
+        search_dir = input_path
+    else:
+        search_dir = input_path.parent
+    for name in _SOURCE_FILENAMES:
+        candidate = search_dir / name
+        if not candidate.is_file():
+            continue
+        try:
+            text = candidate.read_text(errors="replace")
+        except OSError:
+            continue
+        parsed = _parse_source_file(text)
+        if parsed:
+            return parsed, candidate
+        # File existed but had no recognised keys — return empty but
+        # still surface its location so the operator knows it was
+        # examined (and the schema convention can be corrected).
+        return {}, candidate
+    return {}, None
+
+
 def intake(input_path: str | Path, case_id: str | None = None,
             case_dir: str | Path | None = None) -> CaseManifest:
     """Hash the input + create a case workspace.
@@ -160,6 +251,8 @@ def intake(input_path: str | Path, case_id: str | None = None,
     else:
         raise ValueError(f"input is neither file nor directory: {src}")
 
+    source_fields, source_path = _read_source_metadata(src)
+
     manifest = CaseManifest(
         case_id=cid,
         intake_utc=datetime.now(timezone.utc).isoformat(),
@@ -170,6 +263,10 @@ def intake(input_path: str | Path, case_id: str | None = None,
         input_md5=md5,
         input_magic=magic,
         case_dir=str(cdir.resolve()),
+        source_name=source_fields.get("source_name"),
+        source_url=source_fields.get("source_url"),
+        source_org=source_fields.get("source_org"),
+        source_path=str(source_path.resolve()) if source_path else None,
     )
     (cdir / "manifest.json").write_text(json.dumps(asdict(manifest), indent=2))
     return manifest
