@@ -1279,53 +1279,39 @@ def _build_diamond_html(
             for tid in facts.get("attack_techniques_list") or []:
                 tech_counter[str(tid)] += 1
 
-    # Adversary email extraction — mirrors the markdown renderer in
-    # diamond.py. External (non-local-domain) emails in supporting
-    # findings' extracted_facts are the attacker's attribution
-    # surface. IPs / domains alone are NOT put into Adversary — they
-    # belong in Infrastructure; see diamond.py module docstring.
+    # Faithful to Caltagirone/Pendergast/Betz (2013) — see
+    # diamond.py module docstring for the paper-derived semantics.
+    # Each vertex carries sub-features; Social-Political + Direction
+    # come from the extended diamond §5 and meta-feature §4.5.4.
     from el.reporting.diamond import (
-        _EMAIL_RE, INSIDER_HYPOTHESES,
-        _collect_local_users, _infer_local_domains, _walk_fact_values,
+        INSIDER_HYPOTHESES, _MOTIVATION_MAP,
+        _collect_infrastructure_by_type,
+        _collect_local_users, _infer_directions, _infer_local_domains,
+        _walk_fact_values, _EMAIL_RE,
     )
     local_domains = _infer_local_domains(findings)
-    adversary_emails: set[str] = set()
-    for f in supporting:
-        for ev in f.evidence:
-            facts = ev.extracted_facts or {}
-            for s in _walk_fact_values(facts):
-                for em in _EMAIL_RE.finditer(s):
-                    addr = em.group(0).lower()
-                    dom = addr.split("@", 1)[1]
-                    if dom not in local_domains:
-                        adversary_emails.add(addr)
-    # Local users + insider routing — same logic as diamond.py.
     local_users = _collect_local_users(supporting)
     is_insider_case = leader.hyp_id in INSIDER_HYPOTHESES
 
-    # Victim — same logic as the markdown renderer in diamond.py.
-    # Shared helpers _infer_local_domains + _walk_fact_values + _EMAIL_RE
-    # live in diamond.py so the two renderers stay in lockstep
-    # (regression catch for M57-Jean: previously this block hard-
-    # coded the case_id as a victim host even though the case_id is
-    # just EL's internal handle, not a real victim).
-    # Note: local_domains was already computed for the Adversary
-    # email pass above — reuse it.
-    victim_hosts: set[str] = set()
-    victim_users: set[str] = set()
-    if manifest and manifest.get("hostname"):
-        victim_hosts.add(str(manifest["hostname"]))
-    # Local users surfaced via `user_profile` / `profile '<x>'` —
-    # added EXCEPT when this is an insider case, in which case they
-    # were promoted to Adversary below. Keeps the two vertices
-    # mutually exclusive on the same principal.
+    # Infrastructure (Type 1 / Type 2 / Service Provider) per §4.3.
+    inf_t1, inf_t2, inf_sp = _collect_infrastructure_by_type(
+        supporting, iocs, local_domains)
+
+    # Adversary (Operator + Customer) per §4.1
+    adversary_operator: list[str] = (
+        sorted(local_users) if is_insider_case else [])
+    adversary_customer: list[str] = []
+
+    # Victim (Persona + Asset) per §4.4
+    persona: set[str] = set()
     if not is_insider_case:
-        victim_users.update(local_users)
+        persona.update(local_users)
+    asset: set[str] = set()
+    if manifest and manifest.get("hostname"):
+        asset.add(str(manifest["hostname"]))
     for f in supporting:
         for ev in f.evidence:
             facts = ev.extracted_facts or {}
-            # (a) Legacy structured-principal lists (Kerberoasting +
-            #     lateral-movement use these).
             for key in ("top_principals", "top_targets", "top_sources"):
                 for item in facts.get(key) or []:
                     if isinstance(item, (list, tuple)) and item:
@@ -1334,18 +1320,27 @@ def _build_diamond_html(
                         if "@" in name:
                             dom = nlow.split("@", 1)[1]
                             if not local_domains or dom in local_domains:
-                                victim_users.add(nlow)
+                                persona.add(nlow)
                         elif "\\" in name or nlow.startswith("s-1-"):
-                            victim_users.add(nlow)
-            # (b) Free-text email regex over every scalar string value
-            #     (sender / display_name / actual_recipient / from_smtp /
-            #     etc.). Filtered to local domain.
+                            persona.add(nlow)
             for s in _walk_fact_values(facts):
                 for m in _EMAIL_RE.finditer(s):
                     addr = m.group(0).lower()
                     dom = addr.split("@", 1)[1]
                     if local_domains and dom in local_domains:
-                        victim_users.add(addr)
+                        persona.add(addr)
+            for key in ("aws_access_key_id", "access_key_id",
+                         "compromised_account", "credential_store"):
+                v = facts.get(key)
+                if isinstance(v, str) and v:
+                    asset.add(v)
+
+    # Social-Political + Direction (extended diamond §5 + §4.5.4)
+    motivation = _MOTIVATION_MAP.get(
+        leader.hyp_id,
+        f"Motivation not mapped for {leader.hyp_id}.",
+    )
+    direction_counts = _infer_directions(supporting)
 
     def _ul(items, cap=20):
         if not items:
@@ -1356,60 +1351,71 @@ def _build_diamond_html(
         return "<ul>" + "".join(f"<li>{html.escape(str(x))}</li>"
                                  for x in shown) + tail + "</ul>"
 
+    def _ul_or_note(items, empty_note):
+        return _ul(items) if items else (
+            f'<div class="empty">{html.escape(empty_note)}</div>')
+
     lead_label = (f'{html.escape(leader.name)} '
                    f'({html.escape(leader.hyp_id)}, score {leader.score})')
-    # Adversary contents diverge from Infrastructure by construction:
-    # IPs / domains stay in Infrastructure only. Adversary holds the
-    # attribution surface (emails) plus, under insider hypotheses,
-    # the local user whose activity is being attributed.
-    adversary_items = sorted(adversary_emails)
-    if is_insider_case:
-        adversary_items += sorted(local_users)
-    if is_insider_case:
-        adversary_sub = ("attribution surface — emails + insider user "
-                          "(local user promoted because the leading "
-                          "hypothesis is an insider theory)")
-        adversary_empty = ('<div class="empty">no attribution-grade '
-                            'signals (insider hypothesis: no local '
-                            'user surfaced)</div>')
-    else:
-        adversary_sub = ("attribution surface — emails / actor names "
-                          "(IPs and domains belong to Infrastructure)")
-        adversary_empty = ('<div class="empty">no attribution surface '
-                            '(emails / actor names) observed — IPs and '
-                            'domains alone are pivots, not attribution'
-                            '</div>')
-    if is_insider_case:
-        victim_sub = ("local hosts (insider case: local user promoted "
-                       "to Adversary)")
-    else:
-        victim_sub = "local hosts + local users surfaced in findings"
     disclaimer = (
-        "Vertices are mutually exclusive: Adversary is the "
-        "attribution surface (who); Infrastructure is the pivot "
-        "points (where). When EL has no attribution signal, "
-        "Adversary stays empty rather than echoing Infrastructure."
+        "Faithful to Caltagirone/Pendergast/Betz (2013). "
+        "Vertices are mutually exclusive: Adversary is the actor "
+        "(per §4.1, often empty at discovery time); Infrastructure "
+        "holds IPs / domains / emails (per §4.3 — including Type 2 "
+        "compromised accounts); Victim splits into Persona and "
+        "Asset (§4.4)."
     )
-    adversary_block = (_ul(adversary_items) if adversary_items
-                        else adversary_empty)
+    op_empty = ("no local user surfaced under insider hypothesis"
+                 if is_insider_case else
+                 "unknown — paper §4.1: Adversary is often empty at "
+                 "discovery (attribution requires non-host data)")
     return f"""
 <p style="color:#8b949e;margin-bottom:8px">Projection for leading hypothesis <b>{lead_label}</b> — {len(supporting)} supporting finding(s). {disclaimer}</p>
 <div class="diamond">
-  <div class="vertex adversary"><h3>Adversary</h3>
-    <div class="sub">{adversary_sub}</div>
-    {adversary_block}
+  <div class="vertex adversary"><h3>Adversary <span class="sub">(§4.1 — actor)</span></h3>
+    <div class="sub">Operator (who acted)</div>
+    {_ul_or_note(adversary_operator, op_empty)}
+    <div class="sub" style="margin-top:8px">Customer (who benefited)</div>
+    {_ul_or_note(adversary_customer, "unknown — no commissioning relationship inferable from host evidence")}
   </div>
-  <div class="vertex capability"><h3>Capability</h3>
-    <div class="sub">MITRE ATT&amp;CK techniques on supporting findings</div>
+  <div class="vertex capability"><h3>Capability <span class="sub">(§4.2 — how)</span></h3>
+    <div class="sub">Techniques (MITRE ATT&amp;CK)</div>
     {_ul([f"{t} (×{n})" for t, n in tech_counter.most_common(20)])}
+    <div class="sub" style="margin-top:8px">Capacity (vulns / exposures)</div>
+    <div class="empty">not catalogued — populate when capa / exploit-DB enrichment is wired in</div>
   </div>
-  <div class="vertex infrastructure"><h3>Infrastructure</h3>
-    <div class="sub">pivot points — IPs + domains (internal + external)</div>
-    {_ul(sorted(int_ips) + sorted(pub_ips) + sorted(domains))}
+  <div class="vertex infrastructure"><h3>Infrastructure <span class="sub">(§4.3 — where)</span></h3>
+    <div class="sub">Type 1 — adversary-owned</div>
+    {_ul_or_note(sorted(inf_t1), "none")}
+    <div class="sub" style="margin-top:8px">Type 2 — intermediary (compromised account / hop-through)</div>
+    {_ul_or_note(sorted(inf_t2), "none observed in supporting findings")}
+    <div class="sub" style="margin-top:8px">Service Providers (ISPs / registrars)</div>
+    <div class="empty">not enumerated — requires WHOIS / TI lookup</div>
   </div>
-  <div class="vertex victim"><h3>Victim</h3>
-    <div class="sub">{victim_sub}</div>
-    {_ul(sorted(victim_hosts) + sorted(victim_users))}
+  <div class="vertex victim"><h3>Victim <span class="sub">(§4.4 — who-against)</span></h3>
+    <div class="sub">Persona (people / orgs)</div>
+    {_ul_or_note(sorted(persona),
+                  "no local-domain principal surfaced"
+                   + (" (insider case: local user promoted to Adversary above)"
+                      if is_insider_case else ""))}
+    <div class="sub" style="margin-top:8px">Asset (systems / accounts targeted)</div>
+    {_ul_or_note(sorted(asset), "manifest carries no hostname and no compromised-account fact surfaced")}
+  </div>
+</div>
+<div class="diamond" style="grid-template-columns: 1fr; margin-top:12px">
+  <div class="vertex" style="border-left:3px solid #d2a8ff">
+    <h3>Social-Political <span class="sub">(§5.1 — motivation)</span></h3>
+    <div style="font-size:13px;color:#c9d1d9">{html.escape(motivation)}</div>
+  </div>
+  <div class="vertex" style="border-left:3px solid #ff7b72">
+    <h3>Direction <span class="sub">(§4.5.4 — observed flow)</span></h3>
+    <div style="font-size:13px;color:#c9d1d9">{
+      ", ".join(f"{html.escape(label)} (×{n})"
+                for label, n in sorted(direction_counts.items(),
+                                        key=lambda kv: -kv[1]))
+      if direction_counts else
+      '<span class="empty">no directional signal in supporting findings</span>'
+    }</div>
   </div>
 </div>"""
 

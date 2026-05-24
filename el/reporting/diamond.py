@@ -1,44 +1,73 @@
 """Render a Diamond Model view for the leading hypothesis.
 
-The Diamond Model of Intrusion Analysis (Caltagirone, Pendergast,
-Betz 2013) organises every intrusion event around four vertices:
+Faithful to Caltagirone, Pendergast & Betz, *The Diamond Model of
+Intrusion Analysis* (2013) — DTIC ADA586960. Vertex definitions and
+sub-features below follow the paper directly.
 
     Adversary ─ Capability
        │           │
        │           │
     Victim   ─ Infrastructure
 
-The four vertices are DISTINCT by definition:
+CORE VERTICES (§4.1–§4.4)
+-------------------------
 
-  * Adversary — the actor; who did this. Attribution-quality
-    artifacts only: emails the attacker controls, persona handles,
-    threat-actor names. For insider hypotheses
-    (H_PRE_ATTACK_PLANNING, H_INSIDER_*), the host's own local user
-    IS the adversary. An IP or domain alone is NOT an adversary —
-    it's a pivot point. When EL has no attribution signal, the
-    vertex says so honestly rather than reprinting Infrastructure.
+  * Adversary (§4.1) — the actor. Two roles per paper:
+      - Operator: the actual person(s) conducting the activity
+      - Customer: who benefits from the result (often = Operator)
+    "Adversary knowledge is generally elusive and this feature is
+    likely to be empty for most events" — empty Adversary is the
+    honest state, not a bug.
 
-  * Capability — the how: tools / techniques. MITRE ATT&CK IDs
-    from supporting findings.
+  * Capability (§4.2) — the how. Tools + techniques. Sub-features:
+      - Techniques (MITRE ATT&CK IDs from supporting findings)
+      - Capacity: the vulns / exposures this capability can exploit
+        (lsass, krbtgt, lateral SMB, …)
 
-  * Infrastructure — the where: IPs, domains, hostnames the
-    activity used to deliver or control. Internal + external both
-    qualify; the "internal" / "external" distinction is a property
-    of the IP, not a separate vertex.
+  * Infrastructure (§4.3) — physical / logical communication
+    structures the adversary uses to deliver capability, maintain
+    control, and effect results. Three role-types per paper:
+      - Type 1: adversary-owned/controlled
+      - Type 2: intermediary (compromised hosts, compromised email
+        accounts, hop-through points) — what the victim SEES as the
+        adversary
+      - Service Providers: ISPs, registrars, webmail
+    Paper §4.3 explicitly lists email addresses as Infrastructure;
+    BEC sender addresses are Type 2 (compromised accounts).
 
-  * Victim — the who-against: local hosts, local users, victim
-    organisations. EL pulls the local user from extracted_facts
-    (`user_profile`, `username`, `user`, `account`, `profile`) and
-    from claim-text patterns like `profile 'jcloudy'`. Excluded
-    from this list under insider hypotheses where the same user
-    has been promoted to Adversary.
+  * Victim (§4.4) — the target. Two sub-features:
+      - Persona: people / organisations (names, industries, roles)
+      - Asset: networks / systems / hosts / IPs / accounts
+
+EXTENDED DIAMOND (§5)
+---------------------
+
+  * Social-Political (§5.1) — adversary-victim relationship,
+    motivation, intent. The "why this victim." Derived per leading
+    hypothesis below (insider violence, espionage, fraud, …).
+
+  * Direction (§4.5.4) — directionality of activity. Seven values
+    in the paper: Victim-to-Infrastructure, Infrastructure-to-
+    Victim, Infrastructure-to-Infrastructure, Adversary-to-
+    Infrastructure, Infrastructure-to-Adversary, Bidirectional,
+    Unknown. Derived from supporting-finding claim text patterns.
+
+INSIDER CASES
+-------------
+
+Axiom 2 explicitly admits insiders. When the leading hypothesis is
+an insider hypothesis, the host's own local user is promoted to
+Adversary Operator; the same name is then suppressed from Victim
+Persona so the two vertices stay mutually exclusive on the same
+principal.
 
 Earlier versions of this renderer populated Adversary with the same
-public IPs + domains that landed in Infrastructure. That was a
-category error — it made the two vertices identical whenever there
-were no email IOCs and no internal IPs (the common single-host
-insider case). The current code keeps IPs/domains in Infrastructure
-only; Adversary stays restricted to attribution-grade signals.
+public IPs + domains that landed in Infrastructure (category error —
+the two rows rendered identically whenever there were no emails and
+no internal IPs). And earlier still, emails were placed in
+Adversary, which contradicts paper §4.3. Both bugs are fixed: IPs
+and domains live only in Infrastructure; emails live in Type 2
+Infrastructure (per §4.3).
 
 The view is deliberately a summary table, not a graph visualisation —
 the per-case Kùzu graph already holds the full substrate for
@@ -235,6 +264,259 @@ def _collect_local_users(supporting: list[Finding]) -> set[str]:
     return users
 
 
+# Social-Political mapping per paper §5.1 — each hypothesis carries
+# an intrinsic "why this victim" interpretation. Values are plain-
+# English motivation labels suitable for a non-technical reader.
+# When a hypothesis isn't listed the renderer falls back to a
+# neutral string; H_ANTI_FORENSICS is annotated specially because
+# anti-forensics is a HOW (cleanup), not a WHY — the operator
+# needs to look at the runner-up to find the motive.
+_MOTIVATION_MAP: dict[str, str] = {
+    "H_PRE_ATTACK_PLANNING":
+        "Personal preparation for a violent / kinetic real-world "
+        "attack — host is being used as the planning workspace.",
+    "H_INSIDER_DATA_EXFIL":
+        "Insider data theft — local user removing organisational "
+        "material via local channels (USB / personal cloud sync).",
+    "H_INSIDER_EMAIL_EXFIL":
+        "Insider data theft via email — local user forwarding "
+        "organisational material to personal / external addresses.",
+    "H_MULTI_CLOUD_MIRROR":
+        "Insider staging — local user duplicating files across "
+        "multiple personal cloud-sync folders for portability.",
+    "H_APT_ESPIONAGE":
+        "Targeted intelligence collection — external actor seeking "
+        "sustained access to specific organisational material.",
+    "H_RANSOMWARE":
+        "Financial extortion via encryption + ransom demand.",
+    "H_BEC_ACCOUNT_TAKEOVER":
+        "Financial fraud via business-email compromise — "
+        "attacker impersonates a trusted sender to redirect funds.",
+    "H_OPPORTUNISTIC_COMMODITY":
+        "Opportunistic infection — commodity malware / banker / "
+        "info-stealer monetised at scale, no specific target.",
+    "H_C2_BEACONING":
+        "Persistent remote access — adversary maintaining control; "
+        "downstream motive (espionage / theft / disruption) is the "
+        "secondary question.",
+    "H_SCAN_RECON":
+        "Reconnaissance — adversary surveying the attack surface; "
+        "follow-on motive depends on what they targeted next.",
+    "H_BRUTE_FORCE":
+        "Initial-access brute force — credential trial to gain a "
+        "foothold; downstream motive depends on what they do "
+        "after gaining one.",
+    "H_CREDENTIAL_ACCESS":
+        "Credential theft — adversary harvesting authentication "
+        "material to expand access or impersonate users.",
+    "H_LATERAL_MOVEMENT":
+        "Lateral expansion — adversary moving from foothold to "
+        "additional internal systems, typically toward a target.",
+    "H_CLOUD_PERSISTENCE":
+        "Cloud-resident persistence — adversary establishing "
+        "long-term access in the cloud control plane.",
+    "H_PERSISTENCE_SCHEDULED_TASK":
+        "Reboot-survival — adversary planting a scheduled task to "
+        "regain execution after every restart.",
+    "H_PERSISTENCE_SERVICE":
+        "Reboot-survival — adversary planting a Windows service "
+        "to regain execution after every restart.",
+    "H_SUPPLY_CHAIN":
+        "Supply-chain compromise — trusted dependency / vendor "
+        "leveraged to reach the downstream victim.",
+    "H_ANTI_FORENSICS":
+        "Evidence-destruction activity — note this is a HOW (the "
+        "operator covering tracks), not a WHY. The motive lies in "
+        "the runner-up hypothesis; this row tells you what was "
+        "being hidden, not why.",
+    "H_NTFS_ADS_PRESENT":
+        "Concealed payload / data hiding — alternate data stream "
+        "in use, typical of capability delivery or anti-forensics.",
+    "H_SHADOW_COPY_ARTIFACT_DELETED":
+        "Evidence destruction via Volume Shadow Copy tampering — "
+        "operator removing historical state.",
+    "H_DISK_ENCRYPTED":
+        "Encrypted-at-rest evidence — investigation requires key "
+        "recovery; motive is unrecoverable without decryption.",
+    "H_CONTAINER_ESCAPE":
+        "Container-host breakout — adversary escalating from "
+        "container into the host to access the broader environment.",
+    "H_K8S_PRIVILEGE_ESCALATION":
+        "Kubernetes privilege escalation — adversary widening "
+        "rights inside the orchestration plane.",
+    "H_MAC_LAUNCH_DAEMON_PERSISTENCE":
+        "Reboot-survival on macOS — LaunchDaemon plist planted "
+        "for execution at boot.",
+    "H_MAC_TCC_BYPASS":
+        "macOS privacy-controls bypass — adversary defeating TCC "
+        "to access protected resources (Camera / Microphone / Disk).",
+    "H_MAC_FILELESS_AMFI_BYPASS":
+        "macOS code-signing bypass — fileless execution evading "
+        "AppleMobileFileIntegrity checks.",
+    "H_MOBILE_SPYWARE_PERSISTENCE":
+        "Targeted mobile surveillance — spyware planted for "
+        "long-term collection from the device.",
+    "H_MOBILE_SIDELOADED_APP":
+        "Sideloaded application — non-store app installed, "
+        "bypassing platform vetting.",
+    "H_MOBILE_MDM_ABUSE":
+        "MDM profile abuse — attacker enrolling the device into "
+        "an unauthorised management profile for control.",
+    "H_BENIGN_NO_INCIDENT":
+        "No malicious motive identified — baseline state.",
+    "H_NOT_CLEAN_BASELINE":
+        "Paired-capture caveat — the baseline side wasn't actually "
+        "clean, so this is not a motive but a methodological flag.",
+    "H_PAIRED_CAPTURE_CANDIDATE":
+        "Methodological — paired pre/post captures detected; "
+        "this is a study design, not a motive.",
+}
+
+
+# Direction inference heuristics. Each pattern (case-insensitive
+# substring in a finding's claim) maps to one of the seven direction
+# values from paper §4.5.4. Multiple matches accumulate.
+_DIRECTION_PATTERNS: tuple[tuple[str, str], ...] = (
+    # Inbound from outside → Infrastructure-to-Victim
+    ("inbound rdp",          "Infrastructure-to-Victim"),
+    ("inbound tcp",          "Infrastructure-to-Victim"),
+    ("inbound connection",   "Infrastructure-to-Victim"),
+    ("from external ip",     "Infrastructure-to-Victim"),
+    ("brute-force",          "Infrastructure-to-Victim"),
+    ("phish",                "Infrastructure-to-Victim"),
+    ("spear-phish",          "Infrastructure-to-Victim"),
+    ("delivery",             "Infrastructure-to-Victim"),
+    # Outbound from host → Victim-to-Infrastructure (exfil / C2)
+    ("beacon",               "Victim-to-Infrastructure"),
+    ("c2 callback",          "Victim-to-Infrastructure"),
+    ("command-and-control",  "Victim-to-Infrastructure"),
+    ("outbound",             "Victim-to-Infrastructure"),
+    ("exfil",                "Victim-to-Infrastructure"),
+    ("data staging",         "Victim-to-Infrastructure"),
+    ("cloud-sync",           "Victim-to-Infrastructure"),
+    ("cloud sync",           "Victim-to-Infrastructure"),
+    ("multi-cloud",          "Victim-to-Infrastructure"),
+    # Internal-to-internal → Infrastructure-to-Infrastructure
+    ("lateral movement",     "Infrastructure-to-Infrastructure"),
+    ("rfc1918",              "Infrastructure-to-Infrastructure"),
+    ("smb lateral",          "Infrastructure-to-Infrastructure"),
+    ("rdp lateral",          "Infrastructure-to-Infrastructure"),
+    ("psexec",               "Infrastructure-to-Infrastructure"),
+)
+
+
+# Patterns indicating host-local activity with no network direction
+# (anti-forensics, persistence implant, credential dump, etc.). Paper
+# direction values don't cover host-local cleanly — we surface this
+# as a separate note rather than forcing it into one of the seven.
+_HOST_LOCAL_PATTERNS: tuple[str, ...] = (
+    "anti-forensic",
+    "vss diff",
+    "shadow copy",
+    "wipe",
+    "timestomp",
+    "log scrubb",
+    "scheduled task persistence",
+    "registry persistence",
+    "lsass dump",
+    "credential dump",
+    "ntfs alternate data stream",
+    "disk anomaly",
+    "ntfs ads",
+)
+
+
+def _infer_directions(supporting: list[Finding]) -> dict[str, int]:
+    """Return {direction_label: count} observed across supporting
+    findings. Host-local-only events get a synthetic "n/a (host-local
+    activity)" bucket so the row is never empty when the case has
+    real host evidence but no network flow."""
+    counts: Counter = Counter()
+    for f in supporting:
+        claim = (f.claim or "").lower()
+        matched_any = False
+        for needle, label in _DIRECTION_PATTERNS:
+            if needle in claim:
+                counts[label] += 1
+                matched_any = True
+        if not matched_any:
+            if any(p in claim for p in _HOST_LOCAL_PATTERNS):
+                counts["n/a (host-local activity)"] += 1
+    return dict(counts)
+
+
+# Heuristic: phrases in a finding's claim that suggest the IP /
+# domain / email it surfaces belongs to **Type 2 Infrastructure**
+# (intermediary — compromised account, staging host, hop-through).
+# When none of these appear we default to Type 1 (adversary-owned).
+# Service Providers cannot be inferred without TI / WHOIS lookup and
+# are left empty.
+_TYPE2_CLAIM_HINTS: tuple[str, ...] = (
+    "compromised account",
+    "compromised mailbox",
+    "compromised email",
+    "spoof",
+    "hop-through",
+    "intermediary",
+    "staging server",
+    "watering-hole",
+    "watering hole",
+    "bec",
+    "account takeover",
+)
+
+
+def _classify_infrastructure_type(claim: str) -> str:
+    """Return 'type2' when claim text suggests an intermediary,
+    else 'type1' (adversary-owned by default). Service Providers
+    require external WHOIS / TI and are returned as 'type1' here —
+    callers can promote them when they have that data."""
+    low = (claim or "").lower()
+    if any(h in low for h in _TYPE2_CLAIM_HINTS):
+        return "type2"
+    return "type1"
+
+
+def _collect_infrastructure_by_type(
+    supporting: list[Finding],
+    iocs: dict[str, list[str]] | None,
+    local_domains: set[str],
+) -> tuple[set[str], set[str], set[str]]:
+    """Return (type1, type2, service_providers) — three disjoint
+    sets of entities (IPs / domains / emails). The IOC catalog's
+    raw entries default to Type 1; entries surfaced by Type-2-
+    shaped findings get re-classified to Type 2. Emails from
+    supporting findings always land in Type 2 per paper §4.3
+    (Type 2 explicitly includes 'compromised email accounts')."""
+    pub_ips, int_ips, domains = _collect_ips_domains(iocs)
+    type1: set[str] = set(int_ips) | set(pub_ips) | set(domains)
+    type2: set[str] = set()
+    service_providers: set[str] = set()
+
+    # Per-finding pass: when the finding's claim hints at Type 2,
+    # any IP / domain / email it carries gets promoted out of Type 1.
+    for f in supporting:
+        kind = _classify_infrastructure_type(f.claim or "")
+        for ev in f.evidence:
+            facts = ev.extracted_facts or {}
+            for s in _walk_fact_values(facts):
+                # Emails — all into Type 2 per paper §4.3
+                for em in _EMAIL_RE.finditer(s):
+                    addr = em.group(0).lower()
+                    type2.add(addr)
+                    type1.discard(addr)
+                # Type-2-hinted IPs / domains
+                if kind == "type2":
+                    for token in s.split():
+                        tok = token.strip(",;)(\"'<>")
+                        if not tok:
+                            continue
+                        if tok in type1:
+                            type2.add(tok)
+                            type1.discard(tok)
+    return type1, type2, service_providers
+
+
 def _collect_techniques(findings: list[Finding],
                          supporting_hyp: str) -> list[str]:
     """Pull MITRE technique IDs from findings' extracted_facts for
@@ -273,92 +555,41 @@ def build_diamond_markdown(
     if not supporting:
         return []
 
-    pub_ips, int_ips, domains = _collect_ips_domains(iocs)
     techniques = _collect_techniques(findings, leader_hyp)
-
-    # Adversary email collection — mirrors the Victim email-regex
-    # path but with the FILTER INVERTED: external (non-local) email
-    # addresses found in supporting findings' extracted_facts are
-    # the attacker's attribution surface in BEC-shaped cases. Walks
-    # the same scalar string fact values (sender / actual_recipient /
-    # display_name / from_smtp / etc) and skips any address whose
-    # domain is in the inferred-local-domain set (those are victims,
-    # already handled below).
     local_domains = _infer_local_domains(findings)
-    adversary_emails: set[str] = set()
-    for f in supporting:
-        for ev in f.evidence:
-            facts = ev.extracted_facts or {}
-            for s in _walk_fact_values(facts):
-                for em in _EMAIL_RE.finditer(s):
-                    addr = em.group(0).lower()
-                    dom = addr.split("@", 1)[1]
-                    if dom not in local_domains:
-                        adversary_emails.add(addr)
-
-    # Local-user extraction — feeds Adversary (insider hypotheses)
-    # OR Victim (everything else). Computed once; routed below based
-    # on the leading hypothesis identity.
     local_users = _collect_local_users(supporting)
     is_insider_case = leader_hyp in INSIDER_HYPOTHESES
 
-    # Adversary = attribution-grade signals ONLY. Emails the
-    # attacker controls + (under insider hypotheses) the local user
-    # whose activity is being attributed. NEVER public IPs/domains —
-    # those are pivot points; they belong in Infrastructure. When
-    # there's no attribution signal at all the row says so honestly
-    # instead of duplicating Infrastructure.
-    adversary_lines = sorted(adversary_emails)
+    # Infrastructure (paper §4.3) — three role-types. Emails always
+    # land in Type 2 per paper text ("compromised email accounts").
+    inf_t1, inf_t2, inf_sp = _collect_infrastructure_by_type(
+        supporting, iocs, local_domains)
+
+    # Adversary (paper §4.1) — Operator + Customer. Operator is the
+    # actor doing the work; under insider hypotheses that's the
+    # host's own local user. Customer is who benefits (often the
+    # same; usually empty for EL since we don't model commissioning
+    # relationships). NEVER IPs / domains / emails — those are
+    # Infrastructure per §4.3.
+    adversary_operator: list[str] = []
     if is_insider_case:
-        adversary_lines += sorted(local_users)
-    # Infrastructure = all pivot points (internal + external IPs +
-    # domains). This is the right home for IPs/domains regardless of
-    # whether attribution succeeded.
-    infrastructure_lines = sorted(int_ips) + sorted(pub_ips) + sorted(domains)
-    # Capability = MITRE techniques
-    capability_lines = techniques
-    # Victim = real principals named in supporting findings. NOT the
-    # case_id (which is EL's internal handle, not a victim). NOT
-    # external recipients (those land in Adversary). Two collection
-    # paths run together:
-    #
-    # (a) top_principals / top_targets / top_sources lists — the
-    #     legacy agent-curated path; used by the credential analyst
-    #     (Kerberoasted SPNs as victim accounts) and lateral movement
-    #     (targeted hostnames). Items are (name, count) tuples.
-    #
-    # (b) Free-text email regex against every scalar string fact —
-    #     catches the email_forensicator path (sender / display_name /
-    #     actual_recipient / from_smtp / etc.) where the agent-emitted
-    #     structure doesn't fit top_X. Filtered by inferred-local-
-    #     domain so only victim-side addresses qualify; external
-    #     recipients are explicitly excluded so they don't double-
-    #     count under Adversary (where the inverse filter put them
-    #     above).
-    # local_domains was already computed above for the Adversary
-    # email pass — reuse the same set.
-    victim_hosts: set[str] = set()
-    victim_users: set[str] = set()
+        adversary_operator = sorted(local_users)
+    adversary_customer: list[str] = []  # left empty — see docstring
 
-    # Optional: if the manifest carries a real hostname (not the
-    # case_id), surface it. EL's CaseManifest doesn't currently
-    # populate this — left as a hook for when WindowsArtifactAgent
-    # extracts ComputerName from the SYSTEM hive.
-    if manifest and manifest.get("hostname"):
-        victim_hosts.add(str(manifest["hostname"]))
-
-    # (c) Local users surfaced via `user_profile` / `profile '<x>'`
-    #     idioms — added EXCEPT when this is an insider case, in
-    #     which case the same names have already been promoted to
-    #     Adversary above. The diamond model's two vertices stay
-    #     mutually exclusive on the same principal.
+    # Victim (paper §4.4) — Persona (people / orgs) + Asset
+    # (systems / IPs / accounts). Persona excludes the local user
+    # when they've been promoted to Adversary Operator above.
+    persona: set[str] = set()
     if not is_insider_case:
-        victim_users.update(local_users)
+        persona.update(local_users)
+    asset: set[str] = set()
+    if manifest and manifest.get("hostname"):
+        asset.add(str(manifest["hostname"]))
 
     for f in supporting:
         for ev in f.evidence:
             facts = ev.extracted_facts or {}
-            # (a) Legacy structured-principal lists
+            # Legacy structured-principal lists feed Persona
             for key in ("top_principals", "top_targets", "top_sources"):
                 for item in facts.get(key) or []:
                     if isinstance(item, (list, tuple)) and item:
@@ -366,51 +597,106 @@ def build_diamond_markdown(
                         if "@" in name:
                             dom = name.split("@", 1)[1]
                             if not local_domains or dom in local_domains:
-                                victim_users.add(name)
+                                persona.add(name)
                         elif "\\" in name or name.startswith("s-1-"):
-                            victim_users.add(name)
-            # (b) Free-text email regex over every scalar string value
-            #     (sender, display_name, actual_recipient, from_smtp, …).
+                            persona.add(name)
+            # Local-domain emails surfaced anywhere → Persona
             for s in _walk_fact_values(facts):
                 for m in _EMAIL_RE.finditer(s):
                     addr = m.group(0).lower()
                     dom = addr.split("@", 1)[1]
                     if local_domains and dom in local_domains:
-                        victim_users.add(addr)
-    victim_lines = sorted(victim_hosts) + sorted(victim_users)
+                        persona.add(addr)
+            # Concrete asset markers — file paths to credential
+            # stores, cleartext keys, exposed accounts surface here
+            # as Victim Assets (the thing the operator captured /
+            # exposed). Conservative — only pick fact keys that
+            # always name an asset.
+            for key in ("aws_access_key_id", "access_key_id",
+                         "compromised_account", "credential_store"):
+                v = facts.get(key)
+                if isinstance(v, str) and v:
+                    asset.add(v)
+
+    # Social-Political (paper §5.1) — adversary-victim motivation.
+    motivation = _MOTIVATION_MAP.get(
+        leader_hyp,
+        f"Motivation not mapped for {leader_hyp}; see runner-up "
+        f"hypothesis for context.",
+    )
+
+    # Direction (paper §4.5.4) — observed directionality
+    direction_counts = _infer_directions(supporting)
 
     lines: list[str] = []
     lines.append("## Diamond Model — Leading Hypothesis")
     lines.append("")
     lines.append(f"Projection across the four intrusion-analysis vertices "
                   f"for **{leader_name}** (`{leader_hyp}`, score "
-                  f"{leader.score}). This is a summary view; the full "
-                  f"Kùzu graph at `graph.kuzu/` holds the complete "
-                  f"entity substrate for pivoting.")
+                  f"{leader.score}). Sub-features and the extended "
+                  f"Social-Political / Direction rows follow the original "
+                  f"Caltagirone/Pendergast/Betz (2013) paper, §4.1–§5.1. "
+                  f"Full entity substrate for pivoting lives in the Kùzu "
+                  f"graph at `graph.kuzu/`.")
     lines.append("")
-    lines.append("| Vertex | Extracted entities |")
+    lines.append("| Vertex / Sub-feature | Entities |")
     lines.append("|---|---|")
-    adversary_sub = ("attribution surface — emails + insider user"
-                       if is_insider_case
-                       else "attribution surface — emails / actor names")
-    adversary_empty = (
-        "_no attribution-grade signals (insider hypothesis: no local "
-        "user surfaced)_"
-        if is_insider_case else
-        "_no attribution surface (emails / actor names) observed — "
-        "IPs / domains alone are pivots, not attribution_"
-    )
-    lines.append(f"| **Adversary** ({adversary_sub}) | "
-                  f"{_format_list(adversary_lines) or adversary_empty} |")
-    lines.append(f"| **Capability** (MITRE ATT&CK) | "
-                  f"{_format_list(capability_lines) or '_no technique IDs tagged_'} |")
-    lines.append(f"| **Infrastructure** (pivots — IPs + domains) | "
-                  f"{_format_list(infrastructure_lines) or '_none_'} |")
-    victim_sub = ("local hosts (insider case: user promoted to Adversary)"
-                   if is_insider_case
-                   else "local hosts + users")
-    lines.append(f"| **Victim** ({victim_sub}) | "
-                  f"{_format_list(victim_lines) or '_none_'} |")
+
+    # Adversary
+    if adversary_operator:
+        lines.append(f"| **Adversary** — Operator (who acted) | "
+                      f"{_format_list(adversary_operator)} |")
+    else:
+        empty_op = (
+            "_no local user surfaced under insider hypothesis_"
+            if is_insider_case else
+            "_unknown (paper §4.1: Adversary is often empty at "
+            "discovery time — attribution requires non-host data)_"
+        )
+        lines.append(f"| **Adversary** — Operator (who acted) | "
+                      f"{empty_op} |")
+    lines.append(f"| _Adversary — Customer (who benefited)_ | "
+                  f"{_format_list(adversary_customer) or '_unknown (no commissioning relationship inferable from host evidence)_'} |")
+
+    # Capability
+    lines.append(f"| **Capability** — Techniques (MITRE ATT&CK) | "
+                  f"{_format_list(techniques) or '_no technique IDs tagged on supporting findings_'} |")
+    lines.append(f"| _Capability — Capacity (vulns / exposures)_ | "
+                  f"_not catalogued — populate when capa / exploit-DB "
+                  f"enrichment is wired in_ |")
+
+    # Infrastructure (Type 1 / Type 2 / Service Provider)
+    lines.append(f"| **Infrastructure** — Type 1 (adversary-owned) | "
+                  f"{_format_list(sorted(inf_t1)) or '_none_'} |")
+    lines.append(f"| _Infrastructure — Type 2 (intermediary)_ | "
+                  f"{_format_list(sorted(inf_t2)) or '_none observed (no compromised account / hop-through pattern in supporting findings)_'} |")
+    lines.append(f"| _Infrastructure — Service Providers (ISPs / registrars)_ | "
+                  f"{_format_list(sorted(inf_sp)) or '_not enumerated (requires WHOIS / TI lookup)_'} |")
+
+    # Victim (Persona + Asset)
+    persona_sub = ("local people / orgs — insider case: local user "
+                    "promoted to Adversary Operator above"
+                    if is_insider_case
+                    else "local people / orgs")
+    lines.append(f"| **Victim** — Persona ({persona_sub}) | "
+                  f"{_format_list(sorted(persona)) or '_none_'} |")
+    lines.append(f"| _Victim — Asset (systems / accounts targeted)_ | "
+                  f"{_format_list(sorted(asset)) or '_none surfaced — manifest carried no hostname and no compromised account fact_'} |")
+
+    # Social-Political (extended diamond §5.1)
+    lines.append(f"| **Social-Political** — motivation | {motivation} |")
+
+    # Direction (meta-feature §4.5.4)
+    if direction_counts:
+        dir_str = ", ".join(
+            f"{label} (×{n})"
+            for label, n in sorted(direction_counts.items(),
+                                     key=lambda kv: -kv[1])
+        )
+    else:
+        dir_str = "_no directional signal in supporting findings_"
+    lines.append(f"| **Direction** — observed | {dir_str} |")
+
     lines.append("")
     return lines
 

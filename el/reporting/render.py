@@ -124,11 +124,15 @@ def render_report(
     # findings ledger + IOC catalog — no extra queries, no per-case
     # tuning required.
     from el.reporting.ach_matrix import build_ach_matrix_markdown
+    from el.reporting.activity_thread import build_activity_thread_markdown
     from el.reporting.diamond import build_diamond_markdown
     if ach_ranking:
         lines.extend(build_ach_matrix_markdown(findings, ach_ranking))
         lines.extend(build_diamond_markdown(findings, ach_ranking,
                                               iocs, manifest))
+    # Activity Thread — phase-ordered DAG of events. Runs even when
+    # ach_ranking is empty; it widens to the full case in that path.
+    lines.extend(build_activity_thread_markdown(findings, ach_ranking))
 
     # Key Assumptions Check — third structured-analytic projection
     # alongside ACH + Diamond. Surfaces baseline methodological
