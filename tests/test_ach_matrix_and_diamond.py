@@ -113,17 +113,32 @@ def test_diamond_emits_adversary_capability_infrastructure_victim():
     lines = build_diamond_markdown([f], ranking, iocs,
                                      manifest={"case_id": "wkstn-01"})
     text = "\n".join(lines)
-    assert "Adversary" in text and "203.0.113.10" in text
-    assert "evil.example.com" in text
-    assert "Capability" in text and "T1071.001" in text
-    assert "Infrastructure" in text and "10.0.0.5" in text
+    # All four headers present
+    for header in ("Adversary", "Capability", "Infrastructure",
+                    "Victim"):
+        assert header in text
+    # IPs + domain land in Infrastructure (both internal + external)
+    inf_idx = text.find("**Infrastructure**")
+    inf_cell = text[inf_idx:text.find("**Victim**")]
+    assert "203.0.113.10" in inf_cell
+    assert "10.0.0.5" in inf_cell
+    assert "evil.example.com" in inf_cell
+    # Techniques land in Capability
+    assert "T1071.001" in text
+    # IPs + domain MUST NOT appear in Adversary — that was the
+    # M57-Jean/LoneWolf duplication bug. The Adversary cell carries
+    # the empty-state message because this case has no email IOCs.
+    adv_idx = text.find("**Adversary**")
+    adv_cell = text[adv_idx:text.find("**Capability**")]
+    assert "203.0.113.10" not in adv_cell
+    assert "evil.example.com" not in adv_cell
+    assert "no attribution surface" in adv_cell
     # case_id MUST NOT appear in Victim — it's EL's internal handle,
     # not a real victim host. Regression for the M57-Jean bug where
     # the Victim quarter said "m57-jean-judges" instead of
     # "jean@m57.biz". When no real victim principals are extractable,
     # the row renders as "_none_".
     assert "wkstn-01" not in text
-    assert "Victim" in text
     assert "_none_" in text   # no email findings + no top_X → empty row
 
 
@@ -145,17 +160,157 @@ def test_diamond_uses_manifest_hostname_when_present():
 
 
 def test_diamond_handles_no_public_attribution_surface():
+    """When the supporting findings carry no email IOCs the Adversary
+    row must NOT echo Infrastructure — IPs/domains alone are pivot
+    points, not attribution. The empty-state text spells that out so
+    the analyst knows the cell is intentionally empty, not a bug."""
     ranking = [_rank("H_LATERAL_MOVEMENT", "Lateral", 10)]
     iocs = {"ipv4": ["10.0.0.5", "172.16.4.6"]}
     f = _finding("01X", supports=["H_LATERAL_MOVEMENT"],
                   evidence_facts={"attack_techniques": ["T1021.002"]})
     lines = build_diamond_markdown([f], ranking, iocs, manifest={})
     text = "\n".join(lines)
-    # Adversary row present but empty-annotated
-    assert "no public IPs/domains observed" in text
+    # Adversary row present but empty-annotated — the new wording
+    # explicitly says IPs / domains are not attribution.
+    assert "no attribution surface" in text
+    assert "IPs / domains alone are pivots" in text
     # Internal IPs still land in the Infrastructure row
     assert "10.0.0.5" in text
     assert "172.16.4.6" in text
+
+
+def test_diamond_adversary_excludes_public_ips_and_domains():
+    """Hard contract: even when IOCs carry public IPs and domains,
+    they MUST NOT appear in the Adversary row. They belong in
+    Infrastructure. This was the M57-Jean / LoneWolf bug — the two
+    vertices rendered identically whenever there were no email IOCs
+    and no internal IPs."""
+    ranking = [_rank("H_C2_BEACONING", "C2", 9)]
+    iocs = {
+        "ipv4": ["203.0.113.10", "198.51.100.42"],
+        "domain": ["evil.example.com", "bad.example.net"],
+    }
+    f = _finding("01X", supports=["H_C2_BEACONING"],
+                  evidence_facts={"attack_techniques": ["T1071.001"]})
+    lines = build_diamond_markdown([f], ranking, iocs, manifest={})
+    text = "\n".join(lines)
+    # Slice the Adversary cell out of the table — between the
+    # Adversary header and the Capability header.
+    adv_idx = text.find("**Adversary**")
+    cap_idx = text.find("**Capability**")
+    assert adv_idx > 0 and cap_idx > adv_idx
+    adv_cell = text[adv_idx:cap_idx]
+    for ip in iocs["ipv4"]:
+        assert ip not in adv_cell, \
+            f"Public IP {ip} leaked into Adversary cell"
+    for dom in iocs["domain"]:
+        assert dom not in adv_cell, \
+            f"Domain {dom} leaked into Adversary cell"
+    # …but they do appear in Infrastructure
+    inf_idx = text.find("**Infrastructure**")
+    assert inf_idx > 0
+    inf_cell = text[inf_idx:]
+    for ip in iocs["ipv4"]:
+        assert ip in inf_cell
+    for dom in iocs["domain"]:
+        assert dom in inf_cell
+
+
+def test_diamond_extracts_local_user_into_victim_from_user_profile_fact():
+    """LoneWolf shape: a single supporting finding carries
+    `user_profile=/.../Users/jcloudy` in extracted_facts. The
+    extractor must normalise the path to the bare username and put
+    it in Victim (non-insider hypothesis here)."""
+    ranking = [_rank("H_ANTI_FORENSICS", "Anti-forensics", 12)]
+    f = _finding(
+        "01X", supports=["H_ANTI_FORENSICS"],
+        evidence_facts={
+            "user_profile":
+                "/tmp/el-mounts/lonewolf/Users/jcloudy",
+            "attack_techniques": ["T1070"],
+        },
+    )
+    lines = build_diamond_markdown([f], ranking, {}, manifest={})
+    text = "\n".join(lines)
+    vic_idx = text.find("**Victim**")
+    adv_idx = text.find("**Adversary**")
+    assert vic_idx > 0
+    vic_cell = text[vic_idx:]
+    assert "jcloudy" in vic_cell
+    # Not in Adversary (non-insider hypothesis)
+    cap_idx = text.find("**Capability**")
+    assert "jcloudy" not in text[adv_idx:cap_idx]
+
+
+def test_diamond_extracts_local_user_from_claim_text():
+    """Several DiskForensicator claims surface the profile inline,
+    e.g. "AWS access key cleartext in 'rootkey.csv' under profile
+    'jcloudy' on slot003-...". The regex extractor must pick this
+    up even when no structured field carries it."""
+    ranking = [_rank("H_ANTI_FORENSICS", "Anti-forensics", 12)]
+    f = _finding(
+        "01X",
+        claim=("AWS access key cleartext in 'rootkey.csv' under "
+               "profile 'jcloudy' on slot003-off1259520"),
+        supports=["H_ANTI_FORENSICS"],
+        evidence_facts={"attack_techniques": ["T1552"]},
+    )
+    lines = build_diamond_markdown([f], ranking, {}, manifest={})
+    text = "\n".join(lines)
+    assert "jcloudy" in text[text.find("**Victim**"):]
+
+
+def test_diamond_insider_hypothesis_promotes_user_to_adversary():
+    """Under an insider hypothesis the local user IS the actor —
+    they must appear in Adversary, NOT Victim, and the two vertices
+    must stay mutually exclusive on the same principal (no
+    double-counting)."""
+    ranking = [_rank("H_PRE_ATTACK_PLANNING", "Lone-wolf planning",
+                       23)]
+    f = _finding(
+        "01X",
+        claim=("Pre-attack planning lexicon match in Planning.docx "
+               "under profile 'jcloudy'"),
+        supports=["H_PRE_ATTACK_PLANNING"],
+        evidence_facts={
+            "user_profile": "/tmp/el-mounts/lw/Users/jcloudy",
+            "attack_techniques": ["T1005"],
+        },
+    )
+    lines = build_diamond_markdown([f], ranking, {}, manifest={})
+    text = "\n".join(lines)
+    adv_idx = text.find("**Adversary**")
+    cap_idx = text.find("**Capability**")
+    vic_idx = text.find("**Victim**")
+    adv_cell = text[adv_idx:cap_idx]
+    vic_cell = text[vic_idx:]
+    assert "jcloudy" in adv_cell, \
+        "Insider hypothesis must promote local user to Adversary"
+    assert "jcloudy" not in vic_cell, \
+        "Same user must not appear in BOTH Adversary and Victim"
+    # The label text changes too — the analyst knows why
+    assert "insider" in adv_cell.lower()
+
+
+def test_diamond_normalises_user_path_segments():
+    """Path-shaped values (`.../Users/<name>/...`) must reduce to
+    the bare account name. Bare names pass through. Service-account
+    noise (SYSTEM, NT AUTHORITY, …) is dropped."""
+    from el.reporting.diamond import _normalise_user
+    assert _normalise_user(
+        "/tmp/el-mounts/lonewolf/Users/jcloudy") == "jcloudy"
+    assert _normalise_user(
+        "C:\\Users\\Alice\\AppData") == "alice"
+    assert _normalise_user("/home/bob/.ssh") == "bob"
+    assert _normalise_user("BareName") == "barename"
+    # Noise
+    assert _normalise_user("SYSTEM") is None
+    assert _normalise_user("NT AUTHORITY") is None
+    assert _normalise_user("") is None
+    # Email-shaped values are handled by a different code path; the
+    # user-profile normaliser rejects them so they don't
+    # double-count.
+    assert _normalise_user("alice@example.com") is None
 
 
 def test_diamond_skips_when_no_supporting_findings():
@@ -294,10 +449,11 @@ def test_diamond_external_email_lands_in_adversary_not_victim():
     assert "jean@m57.biz" in vic_row
 
 
-def test_diamond_adversary_emails_prepended_before_carved_domains():
-    """High-signal email IOCs must appear FIRST in the Adversary list
-    so they're not crowded out by carved-domain noise (M57-Jean had
-    47 carved garbage domains that filled the 20-item cap)."""
+def test_diamond_adversary_holds_emails_carved_domains_stay_in_infrastructure():
+    """Carved-domain noise no longer pollutes the Adversary row at
+    all — it lands in Infrastructure (where domains belong). The
+    M57-Jean cap-overflow concern is moot now that the two vertices
+    are vertically separated."""
     ranking = [_rank("H_BEC_ACCOUNT_TAKEOVER", "BEC", 51)]
     pst = _finding(
         "00P", claim="PST parsed: Inferred local domain(s): m57.biz",
@@ -306,20 +462,22 @@ def test_diamond_adversary_emails_prepended_before_carved_domains():
         "00E", supports=["H_BEC_ACCOUNT_TAKEOVER"],
         evidence_facts={"actual_recipient": "tuckgorge@gmail.com"},
     )
-    # Lots of carved domains in IOCs — would normally fill the row
     iocs = {"domain": [f"carved{i}.noise" for i in range(30)]}
     lines = build_diamond_markdown([pst, exfil], ranking, iocs,
                                     manifest={})
     text = "\n".join(lines)
     adv_idx = text.find("**Adversary**")
     cap_idx = text.find("**Capability**")
+    inf_idx = text.find("**Infrastructure**")
     adv_row = text[adv_idx:cap_idx]
-    # The email appears BEFORE any carved-domain string in the row
-    email_pos = adv_row.find("tuckgorge@gmail.com")
-    first_carved_pos = adv_row.find("carved0.noise")
-    assert email_pos > 0
-    assert first_carved_pos > 0
-    assert email_pos < first_carved_pos, \
+    inf_row = text[inf_idx:text.find("**Victim**")]
+    # The attacker email IS in Adversary
+    assert "tuckgorge@gmail.com" in adv_row
+    # Carved domains are NOT in Adversary
+    assert "carved0.noise" not in adv_row
+    assert "carved29.noise" not in adv_row
+    # …they live in Infrastructure
+    assert "carved0.noise" in inf_row, \
         "adversary email must be prepended before carved-domain noise"
 
 

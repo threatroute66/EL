@@ -8,14 +8,37 @@ Betz 2013) organises every intrusion event around four vertices:
        │           │
     Victim   ─ Infrastructure
 
-EL doesn't attempt attribution to a named actor — the Adversary
-vertex is populated from external entities (non-RFC1918 IPs / public
-domains) observed in findings that support the ACH-leading
-hypothesis; the Infrastructure vertex lists every IP + domain
-referenced by any supporting finding; Capability is MITRE ATT&CK
-techniques extracted from those findings' extracted_facts; Victim is
-derived from the local host + local users mentioned in the
-manifest + findings.
+The four vertices are DISTINCT by definition:
+
+  * Adversary — the actor; who did this. Attribution-quality
+    artifacts only: emails the attacker controls, persona handles,
+    threat-actor names. For insider hypotheses
+    (H_PRE_ATTACK_PLANNING, H_INSIDER_*), the host's own local user
+    IS the adversary. An IP or domain alone is NOT an adversary —
+    it's a pivot point. When EL has no attribution signal, the
+    vertex says so honestly rather than reprinting Infrastructure.
+
+  * Capability — the how: tools / techniques. MITRE ATT&CK IDs
+    from supporting findings.
+
+  * Infrastructure — the where: IPs, domains, hostnames the
+    activity used to deliver or control. Internal + external both
+    qualify; the "internal" / "external" distinction is a property
+    of the IP, not a separate vertex.
+
+  * Victim — the who-against: local hosts, local users, victim
+    organisations. EL pulls the local user from extracted_facts
+    (`user_profile`, `username`, `user`, `account`, `profile`) and
+    from claim-text patterns like `profile 'jcloudy'`. Excluded
+    from this list under insider hypotheses where the same user
+    has been promoted to Adversary.
+
+Earlier versions of this renderer populated Adversary with the same
+public IPs + domains that landed in Infrastructure. That was a
+category error — it made the two vertices identical whenever there
+were no email IOCs and no internal IPs (the common single-host
+insider case). The current code keeps IPs/domains in Infrastructure
+only; Adversary stays restricted to attribution-grade signals.
 
 The view is deliberately a summary table, not a graph visualisation —
 the per-case Kùzu graph already holds the full substrate for
@@ -111,6 +134,107 @@ def _collect_ips_domains(iocs: dict[str, list[str]] | None) -> tuple[set, set, s
     return public_ips, internal_ips, domains
 
 
+# Hypotheses where the host's OWN local user is the adversary, not a
+# victim. Lifted from el/intel/hypotheses.py — when the leading
+# hypothesis is one of these, the user-profile extractor below
+# promotes the user from Victim to Adversary so the model row
+# accurately names who the actor is.
+INSIDER_HYPOTHESES = frozenset({
+    "H_PRE_ATTACK_PLANNING",
+    "H_INSIDER_DATA_EXFIL",
+    "H_INSIDER_EMAIL_EXFIL",
+    "H_MULTI_CLOUD_MIRROR",
+})
+
+
+# Service / well-known account names that should never appear in the
+# Victim row even if they show up in extracted_facts. They're identity
+# noise, not real principals.
+_USER_NOISE = frozenset({
+    "system", "local service", "network service",
+    "anonymous logon", "nt authority", "trusted installer",
+    "default", "all users", "public", "default user", "administrator",
+    "guest",
+})
+
+
+# Keys that EL's agents use to surface the host's local user. The
+# values are either a bare username or a Windows path under
+# .../Users/<name>/ — both shapes resolve to the same principal.
+_USER_FACT_KEYS = (
+    "user_profile", "username", "user", "account", "profile",
+    "principal", "owner",
+)
+
+
+# Match `profile '<name>'` and `under profile '<name>'` idioms used
+# in many DiskForensicator / WindowsArtifact claims. Captures the
+# bare account name so a Windows path doesn't leak into Victim.
+_PROFILE_NAME_RE = re.compile(
+    r"\bprofile\s+'([A-Za-z0-9._\-]+)'")
+
+
+def _normalise_user(value: str) -> str | None:
+    """Reduce a user-profile value (bare name OR `.../Users/<name>`
+    path OR `<name>/...`) to a single lowercase account label.
+    Returns None for noise (service accounts, empty strings, …)."""
+    if not value:
+        return None
+    s = value.strip()
+    # `.../Users/<name>` or `.../home/<name>` → take the segment
+    # after the marker.
+    for marker in ("/Users/", "\\Users\\", "/home/", "\\home\\"):
+        idx = s.find(marker)
+        if idx >= 0:
+            tail = s[idx + len(marker):]
+            s = tail.split("/", 1)[0].split("\\", 1)[0]
+            break
+    # Stop at a trailing path component (jcloudy/AppData → jcloudy)
+    s = s.split("/", 1)[0].split("\\", 1)[0].strip()
+    low = s.lower()
+    if not low or low in _USER_NOISE:
+        return None
+    # Reject obvious non-username noise (numeric SIDs handled
+    # separately by the caller; uuid-style strings; very long).
+    if len(low) > 64 or "@" in low:
+        return None
+    return low
+
+
+def _collect_local_users(supporting: list[Finding]) -> set[str]:
+    """Extract local-user account names from supporting findings.
+    Two collection paths:
+      (a) Direct fact lookup under the keys agents actually use
+          (`user_profile`, `username`, `profile`, …).
+      (b) Claim-text regex over `profile '<name>'` idiom — many of
+          DiskForensicator's claims surface the profile in prose
+          without a structured field for it.
+    """
+    users: set[str] = set()
+    for f in supporting:
+        # (b) regex over claim text
+        for m in _PROFILE_NAME_RE.finditer(f.claim or ""):
+            u = _normalise_user(m.group(1))
+            if u:
+                users.add(u)
+        # (a) structured fact lookup
+        for ev in f.evidence:
+            facts = ev.extracted_facts or {}
+            for key in _USER_FACT_KEYS:
+                raw = facts.get(key)
+                if isinstance(raw, str):
+                    u = _normalise_user(raw)
+                    if u:
+                        users.add(u)
+                elif isinstance(raw, list):
+                    for item in raw:
+                        if isinstance(item, str):
+                            u = _normalise_user(item)
+                            if u:
+                                users.add(u)
+    return users
+
+
 def _collect_techniques(findings: list[Finding],
                          supporting_hyp: str) -> list[str]:
     """Pull MITRE technique IDs from findings' extracted_facts for
@@ -159,9 +283,7 @@ def build_diamond_markdown(
     # the same scalar string fact values (sender / actual_recipient /
     # display_name / from_smtp / etc) and skips any address whose
     # domain is in the inferred-local-domain set (those are victims,
-    # already handled below). Prepended to the Adversary list so
-    # high-signal email IOCs are never crowded out of the row by the
-    # 47 carved-noise domains the M57-Jean disk produces.
+    # already handled below).
     local_domains = _infer_local_domains(findings)
     adversary_emails: set[str] = set()
     for f in supporting:
@@ -174,10 +296,24 @@ def build_diamond_markdown(
                     if dom not in local_domains:
                         adversary_emails.add(addr)
 
-    # Adversary = email-derived attribution first (highest signal),
-    # then public IPs + public domains
-    adversary_lines = sorted(adversary_emails) + sorted(pub_ips | domains)
-    # Infrastructure = internal IPs + all pivot points (both internal + external)
+    # Local-user extraction — feeds Adversary (insider hypotheses)
+    # OR Victim (everything else). Computed once; routed below based
+    # on the leading hypothesis identity.
+    local_users = _collect_local_users(supporting)
+    is_insider_case = leader_hyp in INSIDER_HYPOTHESES
+
+    # Adversary = attribution-grade signals ONLY. Emails the
+    # attacker controls + (under insider hypotheses) the local user
+    # whose activity is being attributed. NEVER public IPs/domains —
+    # those are pivot points; they belong in Infrastructure. When
+    # there's no attribution signal at all the row says so honestly
+    # instead of duplicating Infrastructure.
+    adversary_lines = sorted(adversary_emails)
+    if is_insider_case:
+        adversary_lines += sorted(local_users)
+    # Infrastructure = all pivot points (internal + external IPs +
+    # domains). This is the right home for IPs/domains regardless of
+    # whether attribution succeeded.
     infrastructure_lines = sorted(int_ips) + sorted(pub_ips) + sorted(domains)
     # Capability = MITRE techniques
     capability_lines = techniques
@@ -210,6 +346,14 @@ def build_diamond_markdown(
     # extracts ComputerName from the SYSTEM hive.
     if manifest and manifest.get("hostname"):
         victim_hosts.add(str(manifest["hostname"]))
+
+    # (c) Local users surfaced via `user_profile` / `profile '<x>'`
+    #     idioms — added EXCEPT when this is an insider case, in
+    #     which case the same names have already been promoted to
+    #     Adversary above. The diamond model's two vertices stay
+    #     mutually exclusive on the same principal.
+    if not is_insider_case:
+        victim_users.update(local_users)
 
     for f in supporting:
         for ev in f.evidence:
@@ -246,13 +390,26 @@ def build_diamond_markdown(
     lines.append("")
     lines.append("| Vertex | Extracted entities |")
     lines.append("|---|---|")
-    lines.append(f"| **Adversary** (public attribution surface) | "
-                  f"{_format_list(adversary_lines) or '_no public IPs/domains observed_'} |")
+    adversary_sub = ("attribution surface — emails + insider user"
+                       if is_insider_case
+                       else "attribution surface — emails / actor names")
+    adversary_empty = (
+        "_no attribution-grade signals (insider hypothesis: no local "
+        "user surfaced)_"
+        if is_insider_case else
+        "_no attribution surface (emails / actor names) observed — "
+        "IPs / domains alone are pivots, not attribution_"
+    )
+    lines.append(f"| **Adversary** ({adversary_sub}) | "
+                  f"{_format_list(adversary_lines) or adversary_empty} |")
     lines.append(f"| **Capability** (MITRE ATT&CK) | "
                   f"{_format_list(capability_lines) or '_no technique IDs tagged_'} |")
-    lines.append(f"| **Infrastructure** (internal + external pivots) | "
+    lines.append(f"| **Infrastructure** (pivots — IPs + domains) | "
                   f"{_format_list(infrastructure_lines) or '_none_'} |")
-    lines.append(f"| **Victim** (local hosts + users) | "
+    victim_sub = ("local hosts (insider case: user promoted to Adversary)"
+                   if is_insider_case
+                   else "local hosts + users")
+    lines.append(f"| **Victim** ({victim_sub}) | "
                   f"{_format_list(victim_lines) or '_none_'} |")
     lines.append("")
     return lines

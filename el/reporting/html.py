@@ -1282,10 +1282,11 @@ def _build_diamond_html(
     # Adversary email extraction — mirrors the markdown renderer in
     # diamond.py. External (non-local-domain) emails in supporting
     # findings' extracted_facts are the attacker's attribution
-    # surface; prepended to the Adversary list so high-signal email
-    # IOCs aren't crowded out by carved-domain noise.
+    # surface. IPs / domains alone are NOT put into Adversary — they
+    # belong in Infrastructure; see diamond.py module docstring.
     from el.reporting.diamond import (
-        _EMAIL_RE, _infer_local_domains, _walk_fact_values,
+        _EMAIL_RE, INSIDER_HYPOTHESES,
+        _collect_local_users, _infer_local_domains, _walk_fact_values,
     )
     local_domains = _infer_local_domains(findings)
     adversary_emails: set[str] = set()
@@ -1298,6 +1299,9 @@ def _build_diamond_html(
                     dom = addr.split("@", 1)[1]
                     if dom not in local_domains:
                         adversary_emails.add(addr)
+    # Local users + insider routing — same logic as diamond.py.
+    local_users = _collect_local_users(supporting)
+    is_insider_case = leader.hyp_id in INSIDER_HYPOTHESES
 
     # Victim — same logic as the markdown renderer in diamond.py.
     # Shared helpers _infer_local_domains + _walk_fact_values + _EMAIL_RE
@@ -1311,6 +1315,12 @@ def _build_diamond_html(
     victim_users: set[str] = set()
     if manifest and manifest.get("hostname"):
         victim_hosts.add(str(manifest["hostname"]))
+    # Local users surfaced via `user_profile` / `profile '<x>'` —
+    # added EXCEPT when this is an insider case, in which case they
+    # were promoted to Adversary below. Keeps the two vertices
+    # mutually exclusive on the same principal.
+    if not is_insider_case:
+        victim_users.update(local_users)
     for f in supporting:
         for ev in f.evidence:
             facts = ev.extracted_facts or {}
@@ -1348,23 +1358,57 @@ def _build_diamond_html(
 
     lead_label = (f'{html.escape(leader.name)} '
                    f'({html.escape(leader.hyp_id)}, score {leader.score})')
+    # Adversary contents diverge from Infrastructure by construction:
+    # IPs / domains stay in Infrastructure only. Adversary holds the
+    # attribution surface (emails) plus, under insider hypotheses,
+    # the local user whose activity is being attributed.
+    adversary_items = sorted(adversary_emails)
+    if is_insider_case:
+        adversary_items += sorted(local_users)
+    if is_insider_case:
+        adversary_sub = ("attribution surface — emails + insider user "
+                          "(local user promoted because the leading "
+                          "hypothesis is an insider theory)")
+        adversary_empty = ('<div class="empty">no attribution-grade '
+                            'signals (insider hypothesis: no local '
+                            'user surfaced)</div>')
+    else:
+        adversary_sub = ("attribution surface — emails / actor names "
+                          "(IPs and domains belong to Infrastructure)")
+        adversary_empty = ('<div class="empty">no attribution surface '
+                            '(emails / actor names) observed — IPs and '
+                            'domains alone are pivots, not attribution'
+                            '</div>')
+    if is_insider_case:
+        victim_sub = ("local hosts (insider case: local user promoted "
+                       "to Adversary)")
+    else:
+        victim_sub = "local hosts + local users surfaced in findings"
+    disclaimer = (
+        "Vertices are mutually exclusive: Adversary is the "
+        "attribution surface (who); Infrastructure is the pivot "
+        "points (where). When EL has no attribution signal, "
+        "Adversary stays empty rather than echoing Infrastructure."
+    )
+    adversary_block = (_ul(adversary_items) if adversary_items
+                        else adversary_empty)
     return f"""
-<p style="color:#8b949e;margin-bottom:8px">Projection for leading hypothesis <b>{lead_label}</b> — {len(supporting)} supporting finding(s). Not attribution to a named actor; the Adversary vertex is the public attribution surface (public IPs + domains) observed in supporting findings.</p>
+<p style="color:#8b949e;margin-bottom:8px">Projection for leading hypothesis <b>{lead_label}</b> — {len(supporting)} supporting finding(s). {disclaimer}</p>
 <div class="diamond">
   <div class="vertex adversary"><h3>Adversary</h3>
-    <div class="sub">public attribution surface — external IPs + domains + emails</div>
-    {_ul(sorted(adversary_emails) + sorted(pub_ips | domains))}
+    <div class="sub">{adversary_sub}</div>
+    {adversary_block}
   </div>
   <div class="vertex capability"><h3>Capability</h3>
     <div class="sub">MITRE ATT&amp;CK techniques on supporting findings</div>
     {_ul([f"{t} (×{n})" for t, n in tech_counter.most_common(20)])}
   </div>
   <div class="vertex infrastructure"><h3>Infrastructure</h3>
-    <div class="sub">pivot points — internal + external IPs + domains</div>
+    <div class="sub">pivot points — IPs + domains (internal + external)</div>
     {_ul(sorted(int_ips) + sorted(pub_ips) + sorted(domains))}
   </div>
   <div class="vertex victim"><h3>Victim</h3>
-    <div class="sub">local hosts + principals named in findings</div>
+    <div class="sub">{victim_sub}</div>
     {_ul(sorted(victim_hosts) + sorted(victim_users))}
   </div>
 </div>"""
