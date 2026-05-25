@@ -822,10 +822,8 @@ shaped both the practice and the principles it leans on. Thanks to:
 - **Simson Garfinkel** and **Digital Corpora** — the M57-Jean, Lone Wolf,
   and adjacent scenario corpora that made EL's case-shape coverage
   defensible.
-- **Mark Stephens** — bulk_extractor and the carving discipline EL's
-  recovery agent depends on.
-- **Mike McPhee** — for the operator-centric DFIR perspective that informs
-  how EL surfaces findings to non-experts.
+- **Mark Stephens** and **Mike McPhee** — for their wisdom and continuous
+  support.
 - **Find Evil Hackathon Judges and Participants** — for the target EL was
   sharpened against, and for the feedback loop that turned 40+ surfaced bugs
   into permanent regression tests.
