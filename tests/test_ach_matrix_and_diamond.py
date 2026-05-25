@@ -562,6 +562,50 @@ def test_diamond_capacity_populated_from_observed_techniques():
     assert "not catalogued" not in cap_cell
 
 
+def test_diamond_capability_is_case_wide_not_leader_scoped():
+    """The reported bug: ATT&CK techniques are correctly identified
+    but don't appear in the Capability vertex. Root cause was that
+    Capability was scoped to the LEADING hypothesis's supporting
+    findings. When the leader is H_ANTI_FORENSICS (the common real-
+    case leader), its supporters (VSS diffs, zeroed binaries) carry
+    no techniques — while the technique-rich findings support OTHER
+    hypotheses and were filtered out. Capability must be collected
+    case-wide so the adversary's 'how' surfaces regardless of which
+    hypothesis the technique-bearing finding scores."""
+    ranking = [_rank("H_ANTI_FORENSICS", "Anti-forensics", 55)]
+    # Leader-supporting finding: anti-forensic, NO techniques
+    anti = _finding(
+        "01A", supports=["H_ANTI_FORENSICS"],
+        claim="VSS diff: Security.evtx scrubbed in live FS",
+        evidence_facts={})
+    # Off-leader finding: credential dumping WITH techniques. Does
+    # NOT support H_ANTI_FORENSICS.
+    cred = _finding(
+        "02B", supports=["H_CREDENTIAL_ACCESS", "H_APT_ESPIONAGE"],
+        claim="LSASS credential dump signature",
+        evidence_facts={"attack_techniques": ["T1003.001"]})
+    # Off-leader finding: lateral movement WITH techniques.
+    lat = _finding(
+        "03C", supports=["H_LATERAL_MOVEMENT"],
+        claim="PsExec service install on remote host",
+        evidence_facts={"attack_techniques": ["T1021.002",
+                                                "T1569.002"]})
+
+    lines = build_diamond_markdown(
+        [anti, cred, lat], ranking, {}, manifest={})
+    text = "\n".join(lines)
+    cap_idx = text.find("**Capability**")
+    cap_cell = text[cap_idx:text.find("**Infrastructure**")]
+    # All three off-leader techniques MUST appear despite the leader
+    # being H_ANTI_FORENSICS with no techniques of its own.
+    assert "T1003.001" in cap_cell, \
+        "case-wide capability must surface off-leader techniques"
+    assert "T1021.002" in cap_cell
+    assert "T1569.002" in cap_cell
+    # And their capacities resolve in the Capacity sub-row
+    assert "LSASS" in cap_cell or "credential" in cap_cell.lower()
+
+
 def test_diamond_capacity_empty_when_no_techniques_tagged():
     """When supporting findings carry no attack_techniques the
     Capacity row says so honestly — doesn't fabricate."""

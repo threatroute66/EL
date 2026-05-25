@@ -622,9 +622,26 @@ def _collect_infrastructure_by_type(
 
 
 def _collect_techniques(findings: list[Finding],
-                         supporting_hyp: str) -> list[str]:
-    """Pull MITRE technique IDs from findings' extracted_facts for
-    every finding whose hypotheses_supported includes the leader."""
+                         supporting_hyp: str | None = None) -> list[str]:
+    """Pull MITRE technique IDs from findings' extracted_facts.
+
+    When *supporting_hyp* is falsy (the default), collect from EVERY
+    finding — the Capability vertex describes the adversary's "how"
+    across the whole intrusion, not just the findings that happen to
+    score the top-ranked hypothesis. This matters because EL's most
+    common leading hypothesis on real cases is H_ANTI_FORENSICS,
+    whose supporting findings (VSS diffs, zeroed binaries, log
+    scrubbing) carry no attack_techniques — while the technique-rich
+    findings (credential dumping, lateral movement, execution)
+    support H_APT_ESPIONAGE / H_CREDENTIAL_ACCESS / etc. Leader-
+    scoping the techniques therefore blanked the Capability vertex on
+    exactly the cases where the adversary was most active. Capability
+    is now collected case-wide, matching how the Infrastructure
+    vertex already sources IPs/domains from the case-wide IOC catalog
+    and how the Activity Thread widens to all findings.
+
+    Pass an explicit hypothesis id to restrict to its supporters
+    (kept for callers that want a single-hypothesis slice)."""
     seen: Counter = Counter()
     for f in findings:
         if supporting_hyp and supporting_hyp not in f.hypotheses_supported:
@@ -659,7 +676,11 @@ def build_diamond_markdown(
     if not supporting:
         return []
 
-    techniques = _collect_techniques(findings, leader_hyp)
+    # Capability is collected CASE-WIDE (supporting_hyp=None), not
+    # scoped to the leader's supporters — see _collect_techniques
+    # docstring. The adversary's techniques are evidence of capability
+    # regardless of which hypothesis they happen to score.
+    techniques = _collect_techniques(findings)
     local_domains = _infer_local_domains(findings)
     local_users = _collect_local_users(supporting)
     is_insider_case = leader_hyp in INSIDER_HYPOTHESES
@@ -783,8 +804,9 @@ def build_diamond_markdown(
     # surfaces / control planes it can affect, independent of which
     # specific victim was hit). See el/intel/attack_capacities.py
     # for the technique→capacity mapping.
-    lines.append(f"| **Capability** — Techniques (MITRE ATT&CK) | "
-                  f"{_format_list(techniques) or '_no technique IDs tagged on supporting findings_'} |")
+    lines.append(f"| **Capability** — Techniques (MITRE ATT&CK, "
+                  f"case-wide) | "
+                  f"{_format_list(techniques) or '_no ATT&CK techniques tagged anywhere in the case_'} |")
     capacity_lines: list[str] = []
     seen_capacity: set[str] = set()
     for tid in techniques:

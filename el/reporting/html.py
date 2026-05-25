@@ -1269,9 +1269,15 @@ def _build_diamond_html(
             continue
     for d in (iocs or {}).get("domain", []):
         domains.add(d)
-    # Capability from technique IDs on supporting findings
+    # Capability — collected CASE-WIDE (all findings), not scoped to
+    # the leader's supporters. The adversary's techniques are evidence
+    # of capability regardless of which hypothesis they score; leader-
+    # scoping blanked this vertex on H_ANTI_FORENSICS-led cases whose
+    # supporting findings carry no attack_techniques. Mirrors the
+    # markdown renderer (diamond._collect_techniques case-wide default)
+    # and the case-wide IOC sourcing of the Infrastructure vertex.
     tech_counter: Counter = Counter()
-    for f in supporting:
+    for f in findings:
         for ev in f.evidence:
             facts = ev.extracted_facts or {}
             for tid in facts.get("attack_techniques") or []:
@@ -1388,7 +1394,7 @@ def _build_diamond_html(
     {_ul_or_note(adversary_customer, "unknown — no commissioning relationship inferable from host evidence")}
   </div>
   <div class="vertex capability"><h3>Capability <span class="sub">(§4.2 — how)</span></h3>
-    <div class="sub">Techniques (MITRE ATT&amp;CK)</div>
+    <div class="sub">Techniques (MITRE ATT&amp;CK, case-wide)</div>
     {_ul([f"{t} (×{n})" for t, n in tech_counter.most_common(20)])}
     <div class="sub" style="margin-top:8px">Capacity (what those techniques can reach)</div>
     {(_ul([capacity_for(t) for t, _ in tech_counter.most_common(20)
