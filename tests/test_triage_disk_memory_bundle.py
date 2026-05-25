@@ -143,6 +143,46 @@ def test_bundle_without_pagefile_still_detected(tmp_path):
     assert "paired_pagefile" not in ctx.shared
 
 
+def test_img_extension_recognised_as_memory_when_e01_siblings_present(tmp_path):
+    """SRL-2018 corpus shape: memory dumps are named `base-<host>-
+    memory.img` — `.img` is generic enough to also mean a raw disk
+    image, but a `.img` sitting next to E01 segments is almost
+    certainly the paired memory dump (you wouldn't ship two copies
+    of the same disk). The gate is the E01 neighbour requirement
+    that the bundle detector already enforces."""
+    bundle = _make_bundle(tmp_path, memdump_name="base-dc-memory.img",
+                            with_pagefile=False)
+    case_dir = tmp_path / "case"
+    ctx = _ctx(case_dir, bundle)
+
+    TriageAgent().run(ctx)
+
+    assert ctx.shared.get("evidence_kind") == "EWF (E01)"
+    assert ctx.shared.get(
+        "paired_memory_image", "").endswith("base-dc-memory.img")
+
+
+def test_substring_stem_matches_hostname_prefixed_memory(tmp_path):
+    """The SRL-2018 stems are always hostname-prefixed
+    (`base-dc-memory`, `wkstn05-memdump`, …). The original exact-
+    match rule (`stem in {memdump, memory, memcap, ram}`) missed
+    them all. Substring match keeps the same vocabulary but works
+    when the name carries a hostname prefix."""
+    for stem in ("base-dc-memory", "wkstn05-memdump",
+                  "host-RAM-capture", "srl-memcap-2018"):
+        slot = tmp_path / stem
+        slot.mkdir()
+        bundle = _make_bundle(slot, memdump_name=f"{stem}.bin",
+                                with_pagefile=False)
+        ctx = _ctx(slot / "case", bundle)
+
+        TriageAgent().run(ctx)
+
+        assert ctx.shared.get("evidence_kind") == "EWF (E01)", stem
+        assert ctx.shared.get(
+            "paired_memory_image", "").endswith(f"{stem}.bin"), stem
+
+
 def test_alternative_memory_extensions_recognised(tmp_path):
     """vol3 reads .mem, .vmem, .raw, .dmp, .bin, .lime — the detector
     must accept any of those as the memory image, not only memdump.mem."""

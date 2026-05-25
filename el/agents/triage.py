@@ -632,14 +632,25 @@ class TriageAgent(Agent):
             # vol3-compatible extension or canonical name. pagefile.sys
             # is NOT a memory image — it's the swap, picked up separately
             # as a vol3 swap layer when present.
-            mem_exts = (".mem", ".vmem", ".raw", ".dmp", ".bin", ".lime")
+            #
+            # `.img` is included because a `.img` sibling of E01 segments
+            # is almost certainly a paired memory dump, not a redundant
+            # disk image — the SRL-2018 corpus uses `base-<host>-memory.img`
+            # naming for every captured host. A bare `.img` without E01
+            # neighbours stays out (the bundle-shape gate requires E01s).
+            mem_exts = (".mem", ".vmem", ".raw", ".dmp", ".bin", ".lime",
+                         ".img")
+            # Stem substrings (not exact match) so `base-dc-memory`,
+            # `wkstn05-memdump`, `host-RAM-capture` all qualify. Exact
+            # match (the original rule) missed everything in SRL-2018
+            # where stems are always prefixed with the hostname.
             mem_names = ("memdump", "memory", "memcap", "ram")
             mem_candidates = [
                 p for p in sorted(d.iterdir())
                 if p.is_file()
                 and p.name.lower() != "pagefile.sys"
                 and (p.suffix.lower() in mem_exts
-                     or p.stem.lower() in mem_names)
+                     or any(n in p.stem.lower() for n in mem_names))
             ]
             if mem_candidates:
                 primary_e01 = e01_segments[0]
