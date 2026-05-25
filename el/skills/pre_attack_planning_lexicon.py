@@ -221,6 +221,69 @@ _TEXT_EXTS = frozenset({
     ".odt", ".eml",   # structured but contain plaintext blobs
 })
 
+
+# Reference-corpus filename patterns — files whose name strongly
+# suggests they contain general English text for some reason
+# unrelated to the user (Wikipedia dumps used for model training,
+# dictionaries, wordlists, OS man-page bundles, …). General English
+# text contains the lexicon vocabulary for unrelated reasons
+# ("manifesto", "suppressor", "23rd", "atrocity" are normal English
+# words), so scanning these produces false positives that drown out
+# the diagnostic value of a real hit.
+#
+# Discovered on the Rocba SANS Standard Forensic Case run: the
+# disk contained `english_wikipedia.txt` (a Wikipedia text dump,
+# likely from an ML / NLP test workspace) which fired weapons + ammo
+# + intent on common-vocabulary matches and lifted
+# H_PRE_ATTACK_PLANNING by 23 points off a clearly false positive.
+#
+# Patterns are case-insensitive substring matches on the filename
+# (NOT the full path — directory names are evidence about user
+# intent, not corpus identity). Tighten over time as new false-
+# positive shapes show up in real cases.
+_REFERENCE_CORPUS_PATTERNS: tuple[str, ...] = (
+    "wikipedia",
+    "wiktionary",
+    "wordnet",
+    "thesaurus",
+    "dictionary",
+    "wordlist",
+    "word_list",
+    "english_corpus",
+    "text_corpus",
+    "training_data",
+    "language_model",
+    "scowl",          # canonical Spell Checker Oriented Word List
+    "hunspell",
+    "aspell",
+    "shakespeare",    # corpus example often used in NLP samples
+    "gutenberg",      # Project Gutenberg dump
+    "common_crawl",
+    "commoncrawl",
+    "1grams",
+    "5grams",
+    "ngrams",
+    "frequency_list",
+    "manpage",
+    "man_pages",
+    "manuals_db",
+)
+
+
+def _is_reference_corpus(path: Path) -> bool:
+    """Return True when the filename is recognised as a reference
+    text corpus that shouldn't be scanned for planning vocabulary.
+
+    Operator escape hatch: an analyst who suspects the user hid
+    planning material in a renamed reference file can rename / copy
+    the file to a non-matching name and re-run; the filter operates
+    on filename only and never reads the bytes."""
+    name_low = path.name.lower()
+    for pat in _REFERENCE_CORPUS_PATTERNS:
+        if pat in name_low:
+            return True
+    return False
+
 # Office-format extensions — text extracted by `_extract_office_text`
 # below (stdlib-only zipfile+XML parse). On a real Lone Wolf E01 the
 # Cloudy Manifesto / Planning / Operation 2nd Hand Smoke documents
@@ -311,6 +374,14 @@ def walk_files(root: Path, max_bytes_per_file: int = 1_000_000,
             continue
         suffix = p.suffix.lower()
         if suffix not in _TEXT_EXTS and suffix not in _OFFICE_EXTS:
+            continue
+        # Skip reference text corpora — files whose name marks them
+        # as general-English reference material (Wikipedia dumps,
+        # dictionaries, wordlists, …). Their content matches the
+        # planning lexicon for unrelated reasons (common English
+        # vocabulary) and floods the signal. See
+        # _REFERENCE_CORPUS_PATTERNS for the list + rationale.
+        if _is_reference_corpus(p):
             continue
         scanned += 1
         if scanned > max_files:
