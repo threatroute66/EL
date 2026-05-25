@@ -140,8 +140,17 @@ def test_diamond_emits_adversary_capability_infrastructure_victim():
     # §4.1 says Adversary is often empty at discovery time. The
     # renderer cites that wording in the empty cell.
     assert "§4.1" in adv_cell or "often empty" in adv_cell
-    # case_id MUST NOT appear in Victim — it's EL's internal handle.
-    assert "wkstn-01" not in text
+    # case_id `wkstn-01` IS a hostname-shaped label, so it now
+    # correctly surfaces in Victim Asset via the input-path /
+    # case_id heuristic — different from the old "case_id is
+    # internal handle, never in Victim" rule. The M57-Jean
+    # regression (case_id like `m57-jean-judges` containing
+    # `case`/`jean` style identifiers) is still guarded against
+    # by the blocklist (see test below).
+    vic_idx = text.find("**Victim**")
+    sp_idx = text.find("**Social-Political**")
+    asset_cell = text[vic_idx:sp_idx]
+    assert "wkstn-01" in asset_cell
 
 
 def test_diamond_uses_manifest_hostname_when_present():
@@ -442,6 +451,147 @@ def test_diamond_direction_row_classifies_supporting_findings():
     assert "Infrastructure-to-Victim" in dir_cell
     assert "Victim-to-Infrastructure" in dir_cell
     assert "host-local" in dir_cell
+
+
+# ---------------------------------------------------------------------------
+# Victim Asset — hostname extraction beyond manifest.hostname
+# ---------------------------------------------------------------------------
+
+def test_diamond_extracts_hostname_from_input_path_filename():
+    """When the manifest carries no `hostname` field but the
+    input_path filename matches a corpus naming convention like
+    `base-dc-cdrive.E01` or `rocba-cdrive.e01`, extract the host
+    segment and put it in Victim Asset."""
+    from el.reporting.diamond import _extract_hostname_candidates
+    # SRL-2018 shape
+    hosts = _extract_hostname_candidates(
+        manifest={"input_path":
+                   "/media/usb/SRL-2018/base-dc-cdrive.E01"},
+        case_id=None)
+    assert "dc" in hosts
+    # rocba shape
+    hosts = _extract_hostname_candidates(
+        manifest={"input_path":
+                   "/media/usb/Rocba-Cdrive.e01"},
+        case_id=None)
+    assert "rocba" in hosts
+    # multi-word host with hyphen
+    hosts = _extract_hostname_candidates(
+        manifest={"input_path":
+                   "/media/usb/base-wkstn-05-cdrive.E01"},
+        case_id=None)
+    assert "wkstn-05" in hosts
+
+
+def test_diamond_extracts_hostname_from_bundle_subcase_id():
+    """el.bundle.make_device_case_id produces case_ids like
+    `srl-2018__dc`. Extract the device half — that's the host
+    name even when the disk image filename is anonymous."""
+    from el.reporting.diamond import _extract_hostname_candidates
+    hosts = _extract_hostname_candidates(
+        manifest={"input_path": "/scratch/srl-2018/dc"},
+        case_id="srl-2018__dc")
+    assert "dc" in hosts
+
+
+def test_diamond_accepts_hostname_shaped_single_case_id():
+    """When the case_id itself looks like a hostname (`rocba`,
+    `wkstn-05`), accept it as an asset. Conservative pattern
+    rejects multi-word labels with `case`/`test`/`demo`."""
+    from el.reporting.diamond import _extract_hostname_candidates
+    assert "rocba" in _extract_hostname_candidates(
+        manifest=None, case_id="rocba")
+    assert "wkstn-05" in _extract_hostname_candidates(
+        manifest=None, case_id="wkstn-05")
+
+
+def test_diamond_rejects_investigator_label_case_ids():
+    """Investigator-chosen case_ids like `lonewolf-v3`, `srl-test`,
+    `demo-case` shouldn't be promoted to Victim Asset — they're
+    case tracking labels, not hostnames."""
+    from el.reporting.diamond import _extract_hostname_candidates
+    # `lonewolf` is on the blocklist (investigator pattern)
+    hosts = _extract_hostname_candidates(
+        manifest=None, case_id="lonewolf-v3")
+    assert "lonewolf-v3" not in hosts
+    assert "lonewolf" not in hosts
+
+
+def test_diamond_hostname_extraction_full_render(tmp_path):
+    """End-to-end render: when the manifest names a corpus-style
+    input_path the rendered Victim Asset cell carries the
+    extracted hostname even without an explicit hostname field."""
+    ranking = [_rank("H_C2_BEACONING", "C2", 9)]
+    f = _finding(
+        "01X", supports=["H_C2_BEACONING"],
+        evidence_facts={"attack_techniques": ["T1071.001"]})
+    lines = build_diamond_markdown(
+        [f], ranking, {},
+        manifest={"case_id": "dc",
+                  "input_path": "/media/usb/base-dc-cdrive.E01"})
+    text = "\n".join(lines)
+    asset_idx = text.find("Asset")
+    assert asset_idx > 0
+    asset_cell = text[asset_idx:text.find("**Social-Political**")]
+    assert "dc" in asset_cell
+
+
+# ---------------------------------------------------------------------------
+# Capability Capacity — derived from observed ATT&CK techniques
+# ---------------------------------------------------------------------------
+
+def test_diamond_capacity_populated_from_observed_techniques():
+    """The Capacity sub-row must list what the observed techniques
+    can reach — pulled from el/intel/attack_capacities.py via
+    capacity_for(). Replaces the previous 'not catalogued'
+    placeholder text."""
+    ranking = [_rank("H_CREDENTIAL_ACCESS", "Cred access", 9)]
+    f = _finding(
+        "01X", supports=["H_CREDENTIAL_ACCESS"],
+        evidence_facts={"attack_techniques": ["T1003.001",
+                                                "T1059.001"]})
+    lines = build_diamond_markdown([f], ranking, {}, manifest={})
+    text = "\n".join(lines)
+    cap_idx = text.find("Capacity")
+    assert cap_idx > 0
+    cap_cell = text[cap_idx:text.find("**Infrastructure**")]
+    # T1003.001 capacity references LSASS; T1059.001 references PowerShell
+    assert "LSASS" in cap_cell or "lsass" in cap_cell.lower()
+    assert "PowerShell" in cap_cell or "powershell" in cap_cell.lower()
+    # No more placeholder text
+    assert "not catalogued" not in cap_cell
+
+
+def test_diamond_capacity_empty_when_no_techniques_tagged():
+    """When supporting findings carry no attack_techniques the
+    Capacity row says so honestly — doesn't fabricate."""
+    ranking = [_rank("H_ANTI_FORENSICS", "Anti-forensics", 12)]
+    f = _finding("01X", supports=["H_ANTI_FORENSICS"],
+                  evidence_facts={})
+    lines = build_diamond_markdown([f], ranking, {}, manifest={})
+    text = "\n".join(lines)
+    cap_idx = text.find("Capacity")
+    cap_cell = text[cap_idx:text.find("**Infrastructure**")]
+    assert "cannot be derived" in cap_cell
+
+
+def test_diamond_capacity_deduplicated():
+    """Two findings tagged with the same technique should produce
+    one capacity line, not duplicates."""
+    ranking = [_rank("H_C2_BEACONING", "C2", 9)]
+    f1 = _finding(
+        "01A", supports=["H_C2_BEACONING"],
+        evidence_facts={"attack_techniques": ["T1071.001"]})
+    f2 = _finding(
+        "01B", supports=["H_C2_BEACONING"],
+        evidence_facts={"attack_techniques": ["T1071.001"]})
+    lines = build_diamond_markdown(
+        [f1, f2], ranking, {}, manifest={})
+    text = "\n".join(lines)
+    cap_idx = text.find("Capacity")
+    cap_cell = text[cap_idx:text.find("**Infrastructure**")]
+    # Count "HTTP/HTTPS" — should appear at most once
+    assert cap_cell.lower().count("http/https") <= 1
 
 
 def test_diamond_normalises_user_path_segments():

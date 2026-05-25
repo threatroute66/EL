@@ -80,6 +80,7 @@ import re
 from collections import Counter
 from typing import Any
 
+from el.intel.attack_capacities import capacity_for
 from el.schemas.finding import Finding
 
 
@@ -228,6 +229,109 @@ def _normalise_user(value: str) -> str | None:
     if len(low) > 64 or "@" in low:
         return None
     return low
+
+
+# Hostname-shape regexes — used to extract a host identifier from
+# the manifest's input_path filename or from the case_id when no
+# explicit `hostname` field is set on the manifest.
+#
+# Pattern 1 — corpus naming convention: `base-<host>-cdrive.E01`,
+# `base-<host>-c-drive.E01`, `<host>-memory.img`, `<host>-cdrive.e01`.
+# The hostname segment is anchored by a recognised role suffix
+# (cdrive / c-drive / disk / drive / memory / mem / image / raw)
+# so generic filenames don't accidentally produce hostnames.
+_INPUT_HOST_RX = re.compile(
+    r"\b(?:base[-_])?"
+    r"(?P<host>[a-z0-9][a-z0-9\-]{0,30})"
+    r"[-_](?:cdrive|c-drive|disk|drive|memory|mem|raw|image)\b",
+    re.IGNORECASE,
+)
+
+
+# Pattern 2 — case_id shapes that look like hostnames vs. shapes
+# that look like generic case identifiers. A bundle-subcase shows
+# up as `<bundle>__<device>` (double-underscore separator from
+# el.bundle.make_device_case_id); the device half IS a real hostname.
+_BUNDLE_CASE_RX = re.compile(r"^[a-zA-Z0-9\-_]+__(?P<device>[a-zA-Z0-9\-]+)$")
+
+
+# Pattern 3 — single-host case_id that looks like a hostname.
+# Conservative: rejects anything with a version suffix or "case"
+# / "test" markers, since those are investigator-chosen labels
+# rather than host identifiers. Accepts simple alphanumeric +
+# hyphen labels (rocba, dc, wkstn-05).
+_HOSTNAME_CASE_RX = re.compile(r"^[a-z][a-z0-9]{0,15}(?:-[a-z0-9]{1,15})?$",
+                                re.IGNORECASE)
+
+
+_HOSTNAME_CASE_BLOCKLIST = frozenset({
+    # Reject anything obviously a case-tracking label, not a host.
+    # Checked against the full string AND against any hyphen-split
+    # part — so `lonewolf-v3` is rejected because `lonewolf` is on
+    # the list, and `abstract-handle` because `abstract` is here.
+    "case", "test", "demo", "sample", "tmp", "scratch",
+    "lonewolf",        # used as case prefix in lonewolf-v2/v3
+    "abstract", "handle",
+})
+
+
+def _extract_hostname_candidates(
+    manifest: dict | None,
+    case_id: str | None,
+    bundle_device: str | None = None,
+) -> list[str]:
+    """Return host identifiers EL can name from available metadata.
+    Order: bundle device (most authoritative), input-path filename
+    pattern, hostname-shaped case_id. Falls back to an empty list
+    when none of the three signal a hostname.
+
+    Single-host cases without manifest.hostname AND without a
+    hostname-shaped case_id will return []. That's the honest
+    state — without ComputerName extraction from the SYSTEM hive
+    EL doesn't actually know the host's real name.
+    """
+    out: list[str] = []
+    seen: set[str] = set()
+
+    def _add(h: str) -> None:
+        h = h.strip().lower()
+        if not h or h in seen or h in _HOSTNAME_CASE_BLOCKLIST:
+            return
+        # Reject when ANY hyphen-split part is blocklisted —
+        # `lonewolf-v3` rejected via `lonewolf`, `abstract-handle`
+        # via `abstract`. Stops investigator-chosen case-tracking
+        # labels with version suffixes from being promoted.
+        if any(part in _HOSTNAME_CASE_BLOCKLIST
+                for part in h.split("-")):
+            return
+        seen.add(h)
+        out.append(h)
+
+    # 1. Bundle device name — strongest signal
+    if bundle_device:
+        _add(bundle_device)
+
+    # 2. Input-path filename pattern
+    if manifest:
+        input_path = manifest.get("input_path") or ""
+        # Walk every basename in the path (multi-file evidence dirs
+        # often have the hostname encoded in each file name, e.g.
+        # base-dc-cdrive.E01 + base-dc-memory.img both yield "dc")
+        basenames = (input_path.rstrip("/").split("/")[-1],)
+        for name in basenames:
+            for m in _INPUT_HOST_RX.finditer(name):
+                _add(m.group("host"))
+
+    # 3. case_id hostname-shape — try bundle-subcase pattern first,
+    # then bare hostname-shape, never echoing the bundle prefix
+    if case_id:
+        bm = _BUNDLE_CASE_RX.match(case_id)
+        if bm:
+            _add(bm.group("device"))
+        elif _HOSTNAME_CASE_RX.match(case_id):
+            _add(case_id)
+
+    return out
 
 
 def _collect_local_users(supporting: list[Finding]) -> set[str]:
@@ -583,8 +687,23 @@ def build_diamond_markdown(
     if not is_insider_case:
         persona.update(local_users)
     asset: set[str] = set()
+    # manifest.hostname is the authoritative source when set —
+    # operator override or future ComputerName extraction. When
+    # present, skip the heuristic extractor to avoid layering an
+    # investigator-chosen case-id on top of the real host name.
     if manifest and manifest.get("hostname"):
         asset.add(str(manifest["hostname"]))
+    else:
+        # Beyond the (usually empty) manifest.hostname field,
+        # extract hostnames from:
+        #   * input_path filename pattern (base-dc-cdrive.E01 → dc)
+        #   * case_id when bundle-subcase shape (<bundle>__<device>)
+        #     or bare hostname shape (rocba, wkstn-05)
+        # Each adds an "Asset (host)" entry — the operator can
+        # rename later if a real ComputerName extraction is wired in.
+        case_id = manifest.get("case_id") if manifest else None
+        for host in _extract_hostname_candidates(manifest, case_id):
+            asset.add(host)
 
     for f in supporting:
         for ev in f.evidence:
@@ -658,12 +777,34 @@ def build_diamond_markdown(
     lines.append(f"| _Adversary — Customer (who benefited)_ | "
                   f"{_format_list(adversary_customer) or '_unknown (no commissioning relationship inferable from host evidence)_'} |")
 
-    # Capability
+    # Capability — Techniques row unchanged, Capacity now derived
+    # from each observed technique's reach per paper §4.2 (a
+    # technique implies a set of victim assets / authentication
+    # surfaces / control planes it can affect, independent of which
+    # specific victim was hit). See el/intel/attack_capacities.py
+    # for the technique→capacity mapping.
     lines.append(f"| **Capability** — Techniques (MITRE ATT&CK) | "
                   f"{_format_list(techniques) or '_no technique IDs tagged on supporting findings_'} |")
-    lines.append(f"| _Capability — Capacity (vulns / exposures)_ | "
-                  f"_not catalogued — populate when capa / exploit-DB "
-                  f"enrichment is wired in_ |")
+    capacity_lines: list[str] = []
+    seen_capacity: set[str] = set()
+    for tid in techniques:
+        cap = capacity_for(tid)
+        if cap and cap not in seen_capacity:
+            seen_capacity.add(cap)
+            capacity_lines.append(cap)
+    if capacity_lines:
+        # Limit to 12 capacities so the table cell stays scannable;
+        # full set lives in the Findings + ATT&CK rendering blocks.
+        shown = capacity_lines[:12]
+        rest = len(capacity_lines) - len(shown)
+        capacity_render = " · ".join(shown)
+        if rest > 0:
+            capacity_render += f" · _+{rest} more_"
+    else:
+        capacity_render = ("_no techniques tagged — capacity cannot "
+                            "be derived without observed techniques_")
+    lines.append(f"| _Capability — Capacity (what the techniques "
+                  f"can reach)_ | {capacity_render} |")
 
     # Infrastructure (Type 1 / Type 2 / Service Provider)
     lines.append(f"| **Infrastructure** — Type 1 (adversary-owned) | "

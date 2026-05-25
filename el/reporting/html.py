@@ -1283,10 +1283,12 @@ def _build_diamond_html(
     # diamond.py module docstring for the paper-derived semantics.
     # Each vertex carries sub-features; Social-Political + Direction
     # come from the extended diamond §5 and meta-feature §4.5.4.
+    from el.intel.attack_capacities import capacity_for
     from el.reporting.diamond import (
         INSIDER_HYPOTHESES, _MOTIVATION_MAP,
         _collect_infrastructure_by_type,
-        _collect_local_users, _infer_directions, _infer_local_domains,
+        _collect_local_users, _extract_hostname_candidates,
+        _infer_directions, _infer_local_domains,
         _walk_fact_values, _EMAIL_RE,
     )
     local_domains = _infer_local_domains(findings)
@@ -1309,6 +1311,13 @@ def _build_diamond_html(
     asset: set[str] = set()
     if manifest and manifest.get("hostname"):
         asset.add(str(manifest["hostname"]))
+    # Hostname extraction beyond manifest.hostname — see diamond.py
+    # `_extract_hostname_candidates` for the input-path / case_id
+    # heuristic. Captures `dc`, `wkstn-05`, `rocba`, etc. that the
+    # operator never had to type into a manifest field.
+    _case_id = manifest.get("case_id") if manifest else None
+    for host in _extract_hostname_candidates(manifest, _case_id):
+        asset.add(host)
     for f in supporting:
         for ev in f.evidence:
             facts = ev.extracted_facts or {}
@@ -1381,8 +1390,11 @@ def _build_diamond_html(
   <div class="vertex capability"><h3>Capability <span class="sub">(§4.2 — how)</span></h3>
     <div class="sub">Techniques (MITRE ATT&amp;CK)</div>
     {_ul([f"{t} (×{n})" for t, n in tech_counter.most_common(20)])}
-    <div class="sub" style="margin-top:8px">Capacity (vulns / exposures)</div>
-    <div class="empty">not catalogued — populate when capa / exploit-DB enrichment is wired in</div>
+    <div class="sub" style="margin-top:8px">Capacity (what those techniques can reach)</div>
+    {(_ul([capacity_for(t) for t, _ in tech_counter.most_common(20)
+            if capacity_for(t)])
+       if tech_counter else
+       '<div class="empty">no techniques tagged — capacity cannot be derived without observed techniques</div>')}
   </div>
   <div class="vertex infrastructure"><h3>Infrastructure <span class="sub">(§4.3 — where)</span></h3>
     <div class="sub">Type 1 — adversary-owned</div>
