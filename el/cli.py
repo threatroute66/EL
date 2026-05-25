@@ -22,6 +22,85 @@ app = typer.Typer(add_completion=False, no_args_is_help=True, help="EL — Edmon
 console = Console()
 
 
+def _maybe_detach(detach: bool, label: str) -> None:
+    """Re-launch the current el invocation as a `systemd --user`
+    transient service so it survives login-session teardown.
+
+    Returns immediately (run in-process, foreground) when:
+      * --detach was not requested, OR
+      * we're ALREADY inside the detached unit (EL_DETACHED=1 guard
+        prevents infinite re-exec), OR
+      * systemd-run is unavailable (degrade to foreground + warn).
+
+    Otherwise spawns the transient unit and raises typer.Exit(0).
+
+    WHY this exists: a long EL bundle launched with `nohup … &` was
+    killed when the operator's GUI session crashed and restarted —
+    `nohup` only blocks SIGHUP, but systemd SIGKILLs every PID in a
+    login-session cgroup when the session ends, regardless of signal
+    disposition. A `systemd --user` service lives in its own unit
+    OUTSIDE the session scope and, with lingering enabled, survives
+    session restarts — the same mechanism that keeps el-serve.service
+    alive across logouts. --detach gives long investigations that
+    same durability without the operator hand-rolling systemd-run.
+    """
+    import os as _os
+    if not detach or _os.environ.get("EL_DETACHED") == "1":
+        return
+    import shutil as _shutil
+    import subprocess as _subprocess
+    import sys as _sys
+
+    systemd_run = _shutil.which("systemd-run")
+    if not systemd_run:
+        console.print(
+            "[yellow]--detach requested but systemd-run is not "
+            "available; running in the foreground instead. The run "
+            "will NOT survive a session restart.[/yellow]")
+        return
+
+    ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    unit = f"el-{label}-{ts}"
+    el_bin = _sys.argv[0]
+    cmd = [
+        systemd_run, "--user", "--collect",
+        f"--unit={unit}",
+        "--setenv=EL_DETACHED=1",
+        "-p", f"WorkingDirectory={_os.getcwd()}",
+        # Inherit the API-key / defer env so the detached unit
+        # behaves identically to a foreground run.
+        "--", el_bin, *_sys.argv[1:],
+    ]
+    # Forward a small allowlist of env vars the detached unit needs
+    # (systemd --user services don't inherit the caller's shell env).
+    for _k in ("ANTHROPIC_API_KEY", "EL_AI_BRIEF_DEFER",
+                "EL_AI_SUMMARY_MODEL", "EL_RED_MODEL",
+                "EL_KNOWLEDGE_DB",
+                "EL_MALWARE_TRIAGE_MAX_DUMPS",
+                "EL_MALWARE_TRIAGE_MAX_DUMP_SIZE_MB",
+                "EL_MALWARE_TRIAGE_BUDGET_SECONDS"):
+        _v = _os.environ.get(_k)
+        if _v:
+            cmd.insert(cmd.index("--"), f"--setenv={_k}={_v}")
+    try:
+        _subprocess.run(cmd, check=True)
+    except (_subprocess.CalledProcessError, OSError) as e:
+        console.print(
+            f"[red]--detach failed to launch transient unit ({e}); "
+            f"falling back to foreground.[/red]")
+        return
+    console.print(
+        f"[bold]detached[/bold]: launched as systemd --user unit "
+        f"[cyan]{unit}[/cyan] — survives session restart / logout.")
+    console.print(f"  follow:  journalctl --user -u {unit} -f")
+    console.print(f"  status:  systemctl --user status {unit}")
+    console.print(f"  stop:    systemctl --user stop {unit}")
+    console.print(
+        "  (the per-case analysis/forensic_audit.log is the canonical "
+        "progress signal regardless of transport)")
+    raise typer.Exit(0)
+
+
 @app.command()
 def doctor() -> None:
     """Survey SIFT tooling and verify EL primitives are wired correctly."""
@@ -1045,8 +1124,16 @@ def investigate(
              "the Claude Code `el-ai-brief` skill fulfil it out-of-band. "
              "On completion the CLI prints how to invoke the skill. "
              "Equivalent to exporting EL_AI_BRIEF_DEFER=1 for this run."),
+    detach: bool = typer.Option(
+        False, "--detach",
+        help="Re-launch as a systemd --user transient service so the "
+             "run survives a login-session crash / logout / terminal "
+             "close (nohup does NOT — systemd kills the session "
+             "cgroup). Prints the unit name + how to follow it, then "
+             "returns the prompt. Requires systemd-run + user lingering."),
 ) -> None:
     """Run the EL coordinator end-to-end on an evidence file."""
+    _maybe_detach(detach, f"investigate-{case_id or 'case'}")
     if defer_ai_brief:
         import os as _os
         from el.reporting.executive_ai import DEFER_ENV as _DEFER_ENV
@@ -1181,6 +1268,14 @@ def investigate_bundle_cmd(
     objective: str = typer.Option(None, "--objective"),
     case_number: str = typer.Option(None, "--case-number"),
     incident_date: str = typer.Option(None, "--incident-date"),
+    detach: bool = typer.Option(
+        False, "--detach",
+        help="Re-launch as a systemd --user transient service so the "
+             "multi-hour bundle survives a login-session crash / "
+             "logout / terminal close. nohup does NOT survive session "
+             "teardown (systemd kills the session cgroup); a --user "
+             "service does. Strongly recommended for bundles. Requires "
+             "systemd-run + user lingering."),
 ) -> None:
     """Investigate a multi-device case as a single bundle.
 
@@ -1191,6 +1286,7 @@ def investigate_bundle_cmd(
     (so cross-device evidence sums into the same hypothesis), and
     writes bundle.json.
     """
+    _maybe_detach(detach, f"bundle-{bundle_id}")
     from el.bundle import (
         BundleManifest, DeviceEntry, create_bundle_layout,
         create_device_layout, make_device_case_id, save as save_bundle,
