@@ -779,6 +779,57 @@ Rolled out in four tiers per
 
 Created by **Murat Cakir**, [GSE #185](https://www.giac.org/certified-professional/Murat-Cakir/154250) — [LinkedIn](https://tr.linkedin.com/in/cakirm).
 
+## Acknowledgements
+
+EL would not exist without the people, institutions, and bodies of work that
+shaped both the practice and the principles it leans on. Thanks to:
+
+- **Rob T. Lee** and **SANS Institute** — for the rigorous DFIR pedagogy EL
+  was built to satisfy, and for the corpora that exercised it end-to-end.
+- **Current GSE holders** and **everyone pursuing that track** — the
+  community keeping the standard honest.
+- **Edmond Locard** — the principle EL is named after: every contact leaves
+  a trace.
+- **Sergio Caltagirone** — the Diamond Model of Intrusion Analysis, EL's
+  load-bearing structural-analytic frame.
+- **Clifford Paul Stoll** — *The Cuckoo's Egg* and the case for patient,
+  ground-truth-driven hunting.
+- **Stephen Northcutt** — *Intrusion Signatures and Analysis*, foundational
+  for treating IDS output as a story rather than a stream.
+- **Richard Bejtlich** — the network-security-monitoring discipline EL's
+  network agents are written against.
+- **John R. Boyd** — the OODA loop framing that underpins EL's
+  observe-orient-decide-act state machine.
+- **Leonhard Euler** — graph theory: the substrate for EL's per-case Kùzu
+  graph and the cross-finding pivot model.
+- **Anthropic's Claude** — the Red Reviewer LLM challenger and executive AI
+  brief that make EL's anti-sycophancy posture practical.
+- **SIFT Workstation** — the host environment EL runs in, and the curated
+  tool inventory that lets EL be a thin orchestrator over court-vetted CLIs
+  rather than a re-implementation.
+- **Eric Zimmerman** — the EZ Tools (MFTECmd, EvtxECmd, RECmd, AmcacheParser,
+  RegistryExplorer, …) that EL's Windows-artifact path is built on.
+- **Hal Pomeranz** — the Linux/Unix forensics tradecraft EL's
+  LinuxForensicator and timeline-side detectors lean on.
+- **Joshua Hickman** — the mobile-forensics test images and methodology that
+  exercised EL's iOS / Android paths.
+- **Ali Hadi** — DFIR teaching, challenge sets, and the "show your work"
+  discipline EL's per-finding evidence pattern mirrors.
+- **The Evidence Locker** — the breadth of public test images that turned
+  EL's regressions into a comprehensive corpus sweep.
+- **Magnet Forensics** — the BelkaCTF / public images EL trained against on
+  iOS / Android / macOS / QNAP / Linux paths.
+- **Simson Garfinkel** and **Digital Corpora** — the M57-Jean, Lone Wolf,
+  and adjacent scenario corpora that made EL's case-shape coverage
+  defensible.
+- **Mark Stephens** — bulk_extractor and the carving discipline EL's
+  recovery agent depends on.
+- **Mike McPhee** — for the operator-centric DFIR perspective that informs
+  how EL surfaces findings to non-experts.
+- **Find Evil Hackathon Judges and Participants** — for the target EL was
+  sharpened against, and for the feedback loop that turned 40+ surfaced bugs
+  into permanent regression tests.
+
 ## License
 
 EL is licensed under the **Apache License, Version 2.0**. See
