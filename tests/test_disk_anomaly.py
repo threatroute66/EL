@@ -117,10 +117,11 @@ def test_multiple_ads_grouped_into_one_hit():
 
 
 def test_h_ntfs_ads_lifts_hypothesis_in_ach():
-    """The H_NTFS_ADS_PRESENT tag must score the new hypothesis at +2
-    in the ranking — modest standalone weight, corroborates other
-    defense-evasion signal."""
-    from el.intel.ach import score_findings
+    """The H_NTFS_ADS_PRESENT tag scores +2 — but as a contextual
+    anti-forensic MODIFIER (concealment technique, not a competing
+    motive), so it's read from the modifier breakdown and is absent
+    from the ranked leader list."""
+    from el.intel.ach import anti_forensic_context, score_findings
     from el.schemas.finding import EvidenceItem, Finding
     ev = EvidenceItem(tool="el.disk_anomaly", version="0", command="x",
                       output_sha256="0"*64, output_path="/x")
@@ -129,6 +130,11 @@ def test_h_ntfs_ads_lifts_hypothesis_in_ach():
                 evidence=[ev],
                 hypotheses_supported=["H_NTFS_ADS_PRESENT",
                                        "H_DEFENSE_EVASION"])
+    ctx = anti_forensic_context([f])
+    assert ctx is not None
+    ads = next(i for i in ctx["indicators"]
+               if i["hyp_id"] == "H_NTFS_ADS_PRESENT")
+    assert ads["score"] == 2
+    # …and NOT in the competing ranked list
     ranked, _ = score_findings([f])
-    ads = next(r for r in ranked if r.hyp_id == "H_NTFS_ADS_PRESENT")
-    assert ads.score == 2
+    assert all(r.hyp_id != "H_NTFS_ADS_PRESENT" for r in ranked)

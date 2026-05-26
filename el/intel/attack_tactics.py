@@ -170,6 +170,45 @@ TECHNIQUE_TACTIC: dict[str, str] = {
     "T1496":      "Impact",
     "T1531":      "Impact",
     "T1537":      "Impact",
+    # ---- Techniques introduced by el/intel/attack_capacities.py ----
+    # The Diamond Capacity map references these technique IDs; every
+    # technique in EL's vocabulary must also carry a primary tactic so
+    # the Activity Thread can phase-bucket it. Primary tactic = the one
+    # MITRE lists first / an analyst would pick first when bucketing.
+    "T1005":      "Collection",            # Data from Local System
+    "T1018":      "Discovery",             # Remote System Discovery
+    "T1033":      "Discovery",             # System Owner/User Discovery
+    "T1036":      "Defense Evasion",       # Masquerading
+    "T1048":      "Exfiltration",          # Exfil Over Alternative Protocol
+    "T1052":      "Exfiltration",          # Exfil Over Physical Medium
+    "T1052.001":  "Exfiltration",          # …over USB
+    "T1056":      "Collection",            # Input Capture (also Cred Access)
+    "T1056.001":  "Collection",            # Keylogging
+    "T1057":      "Discovery",             # Process Discovery
+    "T1069":      "Discovery",             # Permission Groups Discovery
+    "T1074":      "Collection",            # Data Staged
+    "T1082":      "Discovery",             # System Information Discovery
+    "T1083":      "Discovery",             # File and Directory Discovery
+    "T1087":      "Discovery",             # Account Discovery
+    "T1090":      "Command and Control",   # Proxy
+    "T1090.003":  "Command and Control",   # Multi-hop Proxy (Tor)
+    "T1102":      "Command and Control",   # Web Service
+    "T1113":      "Collection",            # Screen Capture
+    "T1119":      "Collection",            # Automated Collection
+    "T1135":      "Discovery",             # Network Share Discovery
+    "T1140":      "Defense Evasion",       # Deobfuscate/Decode
+    "T1213":      "Collection",            # Data from Information Repositories
+    "T1497":      "Defense Evasion",       # Virtualization/Sandbox Evasion
+    "T1530":      "Collection",            # Data from Cloud Storage
+    "T1550":      "Lateral Movement",      # Use Alternate Auth Material
+    "T1550.002":  "Lateral Movement",      # Pass the Hash
+    "T1550.003":  "Lateral Movement",      # Pass the Ticket
+    "T1552":      "Credential Access",     # Unsecured Credentials
+    "T1558":      "Credential Access",     # Steal/Forge Kerberos Tickets
+    "T1562":      "Defense Evasion",       # Impair Defenses
+    "T1573":      "Command and Control",   # Encrypted Channel
+    "T1574":      "Persistence",           # Hijack Execution Flow
+    "T1574.001":  "Persistence",           # DLL Search-Order Hijacking
 }
 
 

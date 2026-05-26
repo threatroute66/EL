@@ -131,6 +131,38 @@ def render_report(
                      "disconfirmers and lets the analyst close._")
         lines.append("")
 
+        # Anti-forensic context — a cross-cutting MODIFIER, not a
+        # competing hypothesis. Read from the ach_matrix.json the
+        # engine wrote. Surfaces the tampering signal + the benign
+        # discount that was applied, so the reader knows the leading
+        # motive sits atop a scrubbed host.
+        try:
+            import json as _json
+            _m = _json.loads((Path(case_dir) / "ach_matrix.json").read_text())
+            af = _m.get("anti_forensic_context")
+        except Exception:
+            af = None
+        if af and af.get("index", 0) > 0:
+            lines.append("### Anti-forensic context (modifier, not a ranked motive)")
+            lines.append("")
+            lines.append(
+                f"Anti-forensic / evidence-tampering activity is present "
+                f"(modifier index **{af['index']}** across "
+                f"{len(af['indicators'])} indicator type(s)). This is a "
+                f"_how_, not a _why_ — it does not compete for the leading "
+                f"hypothesis. Its effect: the benign / null hypothesis was "
+                f"**discounted by {af['benign_discount']}** point(s), "
+                f"because the absence of standard artifacts on a scrubbed "
+                f"host is uninformative rather than exculpatory. Weigh the "
+                f"leading motive above in that light.")
+            lines.append("")
+            lines.append("| Anti-forensic indicator | Modifier score | Findings |")
+            lines.append("|---|---:|---:|")
+            for ind in af["indicators"]:
+                lines.append(f"| {ind['name']} | {ind['score']} "
+                             f"| {ind['support_count']} |")
+            lines.append("")
+
     if diagnostic:
         lines.append("## Most Diagnostic Findings")
         lines.append("")

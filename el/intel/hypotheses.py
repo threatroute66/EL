@@ -27,6 +27,37 @@ class Hypothesis:
     name: str
     description: str
     score: Callable[[Finding], int]
+    # When True, this is NOT a competing case-level explanation (a
+    # "why") — it's a cross-cutting contextual MODIFIER (a "how" /
+    # an evidence-state signal). Modifiers are scored exactly like
+    # competing hypotheses but the ACH engine keeps them OUT of the
+    # ranked leader list and instead uses their accumulated score as
+    # a contextual variable (see el.intel.ach). Rationale: anti-
+    # forensic indicators kept *winning* the ranking on real cases
+    # (LoneWolf, rocba, the whole SRL-2018 enterprise) because the
+    # operator's clean-up generates dozens of high-confidence
+    # findings — but "the operator scrubbed evidence" is a HOW, not a
+    # WHY. Per the investigative principle that anti-forensic
+    # indicators are a contextual variable in the likelihood
+    # calculation (helping weigh how much to trust the ABSENCE of
+    # standard artifacts), these are demoted to modifiers: they
+    # discount the benign/null hypothesis (absence of artifacts is
+    # explained by destruction, not innocence) and surface as a
+    # contextual flag, letting the real motive lead.
+    is_modifier: bool = False
+
+
+# Hypothesis ids that are anti-forensic / evidence-tampering
+# MODIFIERS rather than competing motives. Kept as a module constant
+# so ach.py + reporting can reference one source of truth.
+MODIFIER_IDS: frozenset[str] = frozenset({
+    "H_ANTI_FORENSICS",
+    "H_SHADOW_COPY_ARTIFACT_DELETED",
+    "H_NTFS_ADS_PRESENT",
+})
+
+# The benign / null hypothesis the anti-forensic modifier discounts.
+BENIGN_ID = "H_BENIGN_NO_INCIDENT"
 
 
 def _has_tag(tag: str) -> Callable[[Finding], bool]:
@@ -625,29 +656,31 @@ HYPOTHESES: list[Hypothesis] = [
     Hypothesis("H_ANTI_FORENSICS",
                "Anti-forensics / evidence tampering",
                "Deliberate tampering with evidence trails — timestomping, "
-               "log clearing, sdelete / system-binary wipe. Stands alone "
-               "when the attacker's other signals are absent but the "
-               "tampering itself is visible (Rathbun VHDX shape).",
-               _h_anti_forensics),
+               "log clearing, sdelete / system-binary wipe. CONTEXTUAL "
+               "MODIFIER, not a competing motive: its accumulated weight "
+               "discounts the benign/null hypothesis (absent artifacts are "
+               "explained by destruction, not innocence) and surfaces as a "
+               "report flag, while the real motive leads the ranking.",
+               _h_anti_forensics, is_modifier=True),
     Hypothesis("H_NTFS_ADS_PRESENT",
                "NTFS Alternate Data Stream attached to executable/document",
                "A `:streamname` ADS attached to an executable, script, or "
                "Office-document file (excluding the benign Mark-of-the-Web "
                "Zone.Identifier stream). Classic malware hiding place — the "
                "visible filename looks normal but the payload lives in the "
-               "ADS where casual file-listing tools don't show it. Modest "
-               "standalone weight; corroborates other defense-evasion / "
-               "process-injection signal in the ranking.",
-               _h_ntfs_ads_present),
+               "ADS where casual file-listing tools don't show it. CONTEXTUAL "
+               "MODIFIER (concealment technique, not a motive) — corroborates "
+               "defense-evasion signal without competing as a leader.",
+               _h_ntfs_ads_present, is_modifier=True),
     Hypothesis("H_SHADOW_COPY_ARTIFACT_DELETED",
                "Forensic artefact deleted from live FS but present in shadow",
                "An execution-evidence / event-log / scheduled-task artefact "
                "exists in a Volume Shadow Copy but is missing or truncated on "
                "the live filesystem. Classic anti-forensic erasure shape: "
                "attacker scrubbed the live copy but did not clean shadows. "
-               "Stands alone as a deliberate-tampering signal even when the "
-               "live ledger is otherwise quiet.",
-               _h_shadow_copy_artifact_deleted),
+               "CONTEXTUAL MODIFIER (evidence tampering is a HOW, not a WHY) — "
+               "feeds the anti-forensic context flag and the benign discount.",
+               _h_shadow_copy_artifact_deleted, is_modifier=True),
     Hypothesis("H_DISK_ENCRYPTED",
                "Encrypted disk volume detected",
                "A BitLocker / FileVault / LUKS volume was identified at "

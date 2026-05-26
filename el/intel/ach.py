@@ -19,8 +19,30 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from el.evidence.ledger import insert as ledger_insert
-from el.intel.hypotheses import HYPOTHESES, by_id
+from el.intel.hypotheses import (
+    BENIGN_ID, HYPOTHESES, MODIFIER_IDS, by_id,
+)
 from el.schemas.finding import EvidenceItem, Finding
+
+
+# How hard the anti-forensic modifier discounts the benign/null
+# hypothesis. The discount is capped so a single tampering finding
+# can't nuke the null, while a strong cross-host cleanup signal
+# meaningfully suppresses "nothing happened here". Per the
+# investigative principle that anti-forensic indicators tell you how
+# much to trust the ABSENCE of standard artifacts — present tampering
+# means absence is uninformative, so the null loses weight.
+_BENIGN_DISCOUNT_CAP = 8
+
+
+def _benign_discount(af_index: int) -> int:
+    """Map the accumulated anti-forensic modifier score to a benign-
+    hypothesis discount. Half the AF index, capped — gentle enough
+    that one timestomp doesn't bury the null, firm enough that an
+    estate-wide scrub does."""
+    if af_index <= 0:
+        return 0
+    return min(af_index // 2, _BENIGN_DISCOUNT_CAP)
 
 
 @dataclass
@@ -69,8 +91,81 @@ def score_findings(findings: list[Finding]) -> tuple[list[HypothesisRow], list[F
                 row.refuting_findings.append(f.finding_id)
         f.ach_score_delta = {k: v for k, v in deltas.items() if v != 0}
 
-    ranked = sorted(rows.values(), key=lambda r: (-r.score, r.hyp_id))
+    # Anti-forensic modifier: its accumulated score is a CONTEXTUAL
+    # variable, not a competing motive. Discount the benign/null
+    # hypothesis by a capped function of the modifier index — present
+    # tampering means the absence of standard artifacts is uninformative,
+    # so "nothing happened here" loses weight. The modifier rows
+    # themselves are then excluded from the ranked leader list below so
+    # "the operator scrubbed evidence" (a HOW) can't outrank the actual
+    # motive (a WHY). See el.intel.hypotheses MODIFIER_IDS + the
+    # is_modifier rationale.
+    af_index = sum(rows[mid].score for mid in MODIFIER_IDS if mid in rows)
+    if af_index > 0 and BENIGN_ID in rows:
+        rows[BENIGN_ID].score -= _benign_discount(af_index)
+
+    # Ranked = competing hypotheses only. Modifiers are surfaced
+    # separately via anti_forensic_context(); keeping them out of the
+    # ranking is the whole point of the demotion.
+    ranked = sorted(
+        (r for r in rows.values() if r.hyp_id not in MODIFIER_IDS),
+        key=lambda r: (-r.score, r.hyp_id),
+    )
     return ranked, findings
+
+
+def anti_forensic_context(findings: list[Finding]) -> dict | None:
+    """Compute the anti-forensic contextual modifier for a finding set.
+
+    Returns None when no anti-forensic / evidence-tampering signal is
+    present. Otherwise a dict the reporting layer surfaces as a
+    contextual flag:
+
+      {
+        "index": int,              # accumulated modifier score
+        "benign_discount": int,    # points subtracted from the null
+        "indicators": [            # one row per contributing modifier
+            {"hyp_id", "name", "score", "support_count"}, ...
+        ],
+        "contributing_finding_ids": [...],
+      }
+
+    This is a pure projection (re-scores the modifier hypotheses); it
+    does not mutate findings. Callers: render.py, diamond.py, the
+    leading-hypothesis emitter — anywhere the 'how much to trust the
+    absence of artifacts' caveat belongs.
+    """
+    indicators: list[dict] = []
+    contributing: set[str] = set()
+    index = 0
+    for h in HYPOTHESES:
+        if h.hyp_id not in MODIFIER_IDS:
+            continue
+        score = 0
+        supporters: list[str] = []
+        for f in findings:
+            if f.confidence == "insufficient" or f.agent == "knowledge_lookup":
+                continue
+            d = h.score(f)
+            if d > 0:
+                score += d
+                supporters.append(f.finding_id)
+        if score > 0:
+            index += score
+            contributing.update(supporters)
+            indicators.append({
+                "hyp_id": h.hyp_id, "name": h.name,
+                "score": score, "support_count": len(supporters),
+            })
+    if index <= 0:
+        return None
+    indicators.sort(key=lambda r: -r["score"])
+    return {
+        "index": index,
+        "benign_discount": _benign_discount(index),
+        "indicators": indicators,
+        "contributing_finding_ids": sorted(contributing),
+    }
 
 
 def diagnostic_findings(findings: list[Finding], top_n: int = 5) -> list[Finding]:
@@ -92,6 +187,10 @@ def write_matrix(case_dir: Path, ranked: list[HypothesisRow], findings: list[Fin
              "refute_count": len(r.refuting_findings)}
             for r in ranked
         ],
+        # Anti-forensic modifier context (None when no tampering
+        # signal) — surfaced so reports can show the contextual flag
+        # and the benign discount that was applied to the ranking.
+        "anti_forensic_context": anti_forensic_context(findings),
         "matrix": [
             {"finding_id": f.finding_id, "claim": f.claim,
              "ach_score_delta": f.ach_score_delta}
@@ -139,11 +238,29 @@ def emit_leading_hypothesis_finding(
                  "Score gap is narrow — multiple hypotheses remain plausible.")
 
     sha = "0" * 64
+    af_ctx = None
     try:
         import hashlib
-        sha = hashlib.sha256(matrix_path.read_bytes()).hexdigest()
+        raw = matrix_path.read_bytes()
+        sha = hashlib.sha256(raw).hexdigest()
+        af_ctx = json.loads(raw).get("anti_forensic_context")
     except Exception:
         pass
+
+    # Anti-forensic context is appended to the leading-hypothesis claim
+    # as a contextual caveat — the modifier no longer competes for the
+    # lead, but the analyst must still know the absence of standard
+    # artifacts is being weighed against active tampering.
+    if af_ctx and confidence != "insufficient":
+        names = ", ".join(i["name"] for i in af_ctx["indicators"][:3])
+        claim += (
+            f" ⚑ Anti-forensic context: {len(af_ctx['indicators'])} "
+            f"tampering signal(s) present (index={af_ctx['index']}; "
+            f"{names}). The benign/null hypothesis was discounted by "
+            f"{af_ctx['benign_discount']} — the absence of standard "
+            f"artifacts on this host should be weighed against active "
+            f"evidence destruction, not read as innocence."
+        )
 
     ev = EvidenceItem(
         tool="el.ach_engine", version="0.1.0",
@@ -154,6 +271,8 @@ def emit_leading_hypothesis_finding(
             "runner_up": runner_up.hyp_id if runner_up else None,
             "runner_up_score": runner_up.score if runner_up else None,
             "gap": gap,
+            "anti_forensic_index": (af_ctx or {}).get("index", 0),
+            "anti_forensic_benign_discount": (af_ctx or {}).get("benign_discount", 0),
         },
     )
     f = Finding(

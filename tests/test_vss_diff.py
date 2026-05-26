@@ -13,8 +13,22 @@ from pathlib import Path
 
 import pytest
 
-from el.intel.ach import score_findings
+from el.intel.ach import anti_forensic_context, score_findings
 from el.schemas.finding import EvidenceItem, Finding
+
+
+def _modifier_score(findings, hyp_id):
+    """H_SHADOW_COPY_ARTIFACT_DELETED is now an anti-forensic MODIFIER,
+    not a competing hypothesis — it no longer appears in the ranked
+    leader list. Its accumulated score is read from the contextual
+    modifier breakdown. Returns 0 when the indicator didn't fire."""
+    ctx = anti_forensic_context(findings)
+    if not ctx:
+        return 0
+    for ind in ctx["indicators"]:
+        if ind["hyp_id"] == hyp_id:
+            return ind["score"]
+    return 0
 from el.skills.vss_diff import (
     ArtifactDiff,
     ArtifactState,
@@ -254,33 +268,28 @@ def _vss_finding(severity: str | None) -> Finding:
 def test_deleted_in_live_lifts_hypothesis_at_plus_5():
     """Strongest diagnostic — file gone from live FS but present in
     shadow. No Windows-normal explanation. Score +5 reflects the
-    unambiguous-deletion confidence."""
-    ranked, _ = score_findings([_vss_finding("deleted_in_live")])
-    sc = next(r for r in ranked
-              if r.hyp_id == "H_SHADOW_COPY_ARTIFACT_DELETED")
-    assert sc.score == 5
+    unambiguous-deletion confidence. (Now read from the anti-forensic
+    modifier breakdown rather than the ranked leader list.)"""
+    assert _modifier_score([_vss_finding("deleted_in_live")],
+                            "H_SHADOW_COPY_ARTIFACT_DELETED") == 5
 
 
 def test_shrunk_in_live_lifts_hypothesis_at_plus_3():
     """Byte-quantified truncation — the canonical log-cleared shape.
     Score +3 keeps it strongly corroborative but below the unambiguous
     deletion case."""
-    ranked, _ = score_findings([_vss_finding("shrunk_in_live")])
-    sc = next(r for r in ranked
-              if r.hyp_id == "H_SHADOW_COPY_ARTIFACT_DELETED")
-    assert sc.score == 3
+    assert _modifier_score([_vss_finding("shrunk_in_live")],
+                            "H_SHADOW_COPY_ARTIFACT_DELETED") == 3
 
 
 def test_changed_lifts_hypothesis_at_plus_1_only():
     """Same-size-different-content — sometimes operator-driven, often
     Windows-normal in-place updates of in-use files at shadow-capture
-    time. Score +1 keeps the finding visible in ACH but stops it from
-    dominating the ranking when (as in SRL-2015 r3) the case produces
-    98 of them while the high-confidence shrunk subset is only 13."""
-    ranked, _ = score_findings([_vss_finding("changed")])
-    sc = next(r for r in ranked
-              if r.hyp_id == "H_SHADOW_COPY_ARTIFACT_DELETED")
-    assert sc.score == 1
+    time. Score +1 keeps the finding visible in the modifier breakdown
+    but stops it from dominating when (as in SRL-2015 r3) the case
+    produces 98 of them while the high-confidence shrunk subset is 13."""
+    assert _modifier_score([_vss_finding("changed")],
+                            "H_SHADOW_COPY_ARTIFACT_DELETED") == 1
 
 
 def test_missing_severity_facet_falls_back_to_plus_3():
@@ -288,59 +297,51 @@ def test_missing_severity_facet_falls_back_to_plus_3():
     the severity facet existed still score +3 (the pre-tightening
     default). Prevents older sealed cases from changing scoring shape
     when re-rendered."""
-    ranked, _ = score_findings([_vss_finding(severity=None)])
-    sc = next(r for r in ranked
-              if r.hyp_id == "H_SHADOW_COPY_ARTIFACT_DELETED")
-    assert sc.score == 3
+    assert _modifier_score([_vss_finding(severity=None)],
+                            "H_SHADOW_COPY_ARTIFACT_DELETED") == 3
 
 
 def test_severity_dominates_ach_ordering():
     """Diagnostic ordering must hold: a single deleted_in_live finding
     outscores a single shrunk_in_live which outscores a single changed.
     Pins the ordering against future scorer tweaks."""
-    out_del, _ = score_findings([_vss_finding("deleted_in_live")])
-    out_shr, _ = score_findings([_vss_finding("shrunk_in_live")])
-    out_chg, _ = score_findings([_vss_finding("changed")])
-    s_del = next(r.score for r in out_del
-                 if r.hyp_id == "H_SHADOW_COPY_ARTIFACT_DELETED")
-    s_shr = next(r.score for r in out_shr
-                 if r.hyp_id == "H_SHADOW_COPY_ARTIFACT_DELETED")
-    s_chg = next(r.score for r in out_chg
-                 if r.hyp_id == "H_SHADOW_COPY_ARTIFACT_DELETED")
+    s_del = _modifier_score([_vss_finding("deleted_in_live")],
+                             "H_SHADOW_COPY_ARTIFACT_DELETED")
+    s_shr = _modifier_score([_vss_finding("shrunk_in_live")],
+                             "H_SHADOW_COPY_ARTIFACT_DELETED")
+    s_chg = _modifier_score([_vss_finding("changed")],
+                             "H_SHADOW_COPY_ARTIFACT_DELETED")
     assert s_del > s_shr > s_chg
 
 
 def test_changed_aggregate_does_not_overwhelm_shrunk(tmp_path):
-    """The SRL-2015 r3 regression motivating this commit: 98 'changed'
-    findings PLUS 13 'shrunk_in_live' findings on the same case must
-    NOT total higher than the 13 shrunk alone times the deleted-ratio.
-    Under the old +3-flat scorer, 98×3=294 dominated 13×3=39. Under
-    severity-weighted scoring, 98×1=98 vs 13×3=39 — shrunk still
-    weighs less in absolute terms (because there are fewer of them)
-    but the ratio improved from 1:7.5 down to 1:2.5, which is the
-    correction this commit aims for. Test pins the ratio.
-    """
+    """The SRL-2015 r3 regression motivating the severity weighting:
+    98 'changed' + 13 'shrunk_in_live' must total 98×1 + 13×3 = 137,
+    not the old (98+13)×3 = 333 flat scoring. The modifier index
+    breakdown preserves this severity weighting."""
     changed_findings = [_vss_finding("changed") for _ in range(98)]
     shrunk_findings = [_vss_finding("shrunk_in_live") for _ in range(13)]
-    ranked, _ = score_findings(changed_findings + shrunk_findings)
-    sc = next(r for r in ranked
-              if r.hyp_id == "H_SHADOW_COPY_ARTIFACT_DELETED")
-    # 98×1 + 13×3 = 137. Under the old +3-flat scorer this would
-    # have been (98+13)×3 = 333.
-    assert sc.score == 137
+    assert _modifier_score(changed_findings + shrunk_findings,
+                            "H_SHADOW_COPY_ARTIFACT_DELETED") == 137
 
 
 def test_unrelated_finding_does_not_lift_shadow_copy_hypothesis():
-    """Only the explicit tag lifts the hypothesis. A generic
-    'no non-baseline items observed' or random anti-forensics finding
-    must NOT score H_SHADOW_COPY_ARTIFACT_DELETED."""
+    """Only the explicit tag lifts the hypothesis. A random
+    anti-forensics finding (H_ANTI_FORENSICS tag only) must NOT
+    contribute to the H_SHADOW_COPY_ARTIFACT_DELETED modifier."""
     ev = EvidenceItem(tool="x", version="0", command="x",
                       output_sha256="0"*64, output_path="/x")
     f = Finding(case_id="c", agent="x", confidence="high",
                 claim="random anti-forensic claim",
                 evidence=[ev],
                 hypotheses_supported=["H_ANTI_FORENSICS"])
-    ranked, _ = score_findings([f])
-    sc = next(r for r in ranked
-              if r.hyp_id == "H_SHADOW_COPY_ARTIFACT_DELETED")
-    assert sc.score == 0
+    assert _modifier_score([f], "H_SHADOW_COPY_ARTIFACT_DELETED") == 0
+
+
+def test_shadow_copy_not_in_ranked_leaders():
+    """H_SHADOW_COPY_ARTIFACT_DELETED is a modifier — it must NOT
+    appear in the competing ranked list at all (that's the whole
+    point of the demotion: evidence tampering is a HOW, not a WHY)."""
+    ranked, _ = score_findings([_vss_finding("deleted_in_live")])
+    assert all(r.hyp_id != "H_SHADOW_COPY_ARTIFACT_DELETED"
+               for r in ranked)
