@@ -1344,6 +1344,10 @@ def _build_diamond_html(
                     dom = addr.split("@", 1)[1]
                     if local_domains and dom in local_domains:
                         persona.add(addr)
+            # Authoritative ComputerName from the SYSTEM hive
+            cn = facts.get("computer_name")
+            if isinstance(cn, str) and cn.strip():
+                asset.add(cn.strip())
             for key in ("aws_access_key_id", "access_key_id",
                          "compromised_account", "credential_store"):
                 v = facts.get(key)

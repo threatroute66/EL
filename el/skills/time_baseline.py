@@ -56,6 +56,13 @@ class TimeBaseline:
     w32time_ntp_server: str = ""       # e.g. "time.windows.com,0x1"
     w32time_config_last_write_utc: str = ""    # ISO-8601, or ""
 
+    # Host identity — read from the same SYSTEM hive while it's open.
+    # SYSTEM\<ControlSet>\Control\ComputerName\ComputerName\ComputerName
+    # is the persistent NetBIOS name; populates manifest.hostname so
+    # the Diamond Victim-Asset vertex names the real host instead of
+    # the case-id/filename heuristic. Empty when the key is absent.
+    computer_name: str = ""
+
     # Diagnostics
     control_set: str = ""              # e.g. "ControlSet001"
     notes: list[str] = field(default_factory=list)
@@ -241,6 +248,20 @@ def parse_system_hive(system_hive: Path) -> TimeBaseline:
         lm = config.get("__last_modified_filetime")
         if isinstance(lm, int):
             out.w32time_config_last_write_utc = _filetime_to_iso(lm)
+
+    # ComputerName — persistent NetBIOS name. Prefer the configured
+    # value; fall back to ActiveComputerName (runtime) if absent.
+    for sub in ("ComputerName\\ComputerName",
+                 "ComputerName\\ActiveComputerName"):
+        cn = _read_values(
+            hive, f"\\{out.control_set}\\Control\\{sub}")
+        if cn:
+            name = _decode_utf16_buffer(cn.get("ComputerName")) or \
+                str(cn.get("ComputerName") or "").strip()
+            name = name.strip().strip("\x00").strip()
+            if name:
+                out.computer_name = name
+                break
 
     return out
 

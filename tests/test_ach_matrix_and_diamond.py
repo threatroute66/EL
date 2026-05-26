@@ -483,6 +483,23 @@ def test_diamond_extracts_hostname_from_input_path_filename():
     assert "wkstn-05" in hosts
 
 
+def test_diamond_victim_asset_from_computer_name_fact():
+    """The authoritative path: a finding carrying a `computer_name`
+    fact (extracted from the SYSTEM hive by time_baseline) surfaces
+    the real NetBIOS name in Victim Asset — strictly better than the
+    case-id/filename heuristic."""
+    ranking = [_rank("H_APT_ESPIONAGE", "APT", 20)]
+    f = _finding(
+        "01X", supports=["H_APT_ESPIONAGE"],
+        claim="Time-baseline: SYSTEM hive parsed",
+        evidence_facts={"computer_name": "BASE-DC",
+                         "attack_techniques": ["T1003"]})
+    lines = build_diamond_markdown([f], ranking, {}, manifest={})
+    text = "\n".join(lines)
+    asset_cell = text[text.find("Asset"):text.find("**Social-Political**")]
+    assert "BASE-DC" in asset_cell
+
+
 def test_diamond_extracts_hostname_from_bundle_subcase_id():
     """el.bundle.make_device_case_id produces case_ids like
     `srl-2018__dc`. Extract the device half — that's the host

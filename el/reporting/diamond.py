@@ -747,6 +747,13 @@ def build_diamond_markdown(
                     dom = addr.split("@", 1)[1]
                     if local_domains and dom in local_domains:
                         persona.add(addr)
+            # Authoritative host identity: the ComputerName extracted
+            # from the SYSTEM hive (time_baseline). When present this is
+            # the real NetBIOS name — strictly better than the
+            # case-id/filename heuristic, so add it to the asset set.
+            cn = facts.get("computer_name")
+            if isinstance(cn, str) and cn.strip():
+                asset.add(cn.strip())
             # Concrete asset markers — file paths to credential
             # stores, cleartext keys, exposed accounts surface here
             # as Victim Assets (the thing the operator captured /

@@ -278,3 +278,39 @@ def test_parse_garbage_file_returns_empty(tmp_path):
     tb = parse_system_hive(p)
     assert not tb.have_anything
     assert tb.notes  # carries a diagnostic
+
+
+# ---------------------------------------------------------------------------
+# ComputerName extraction (host identity for the Diamond Victim-Asset)
+# ---------------------------------------------------------------------------
+
+def test_timebaseline_computer_name_field_defaults_empty():
+    """The new field defaults to '' so cases without a readable
+    SYSTEM hive (or pre-existing sealed cases re-rendered) don't
+    crash or fabricate a host name."""
+    tb = TimeBaseline()
+    assert tb.computer_name == ""
+
+
+def test_parse_system_hive_reads_computer_name_real_hive():
+    """Integration: against a real extracted SYSTEM hive, the
+    persistent NetBIOS ComputerName must round-trip. Uses an SRL /
+    rocba extracted hive when present; skips when no real hive is
+    available on this host (CI without case data)."""
+    from pathlib import Path
+    candidates = [
+        "/opt/EL/cases/srl-2018/devices/dc/exports/windows-artifacts/registry/SYSTEM",
+    ]
+    # Also accept any extracted SYSTEM hive under cases/
+    import glob
+    candidates += glob.glob(
+        "/opt/EL/cases/**/windows-artifacts/registry/SYSTEM",
+        recursive=True)
+    hive = next((Path(c) for c in candidates if Path(c).is_file()), None)
+    if hive is None:
+        pytest.skip("no extracted SYSTEM hive available")
+    tb = parse_system_hive(hive)
+    # ComputerName must be a non-empty alnum/hyphen NetBIOS-shaped name
+    assert tb.computer_name, "ComputerName should parse from a real hive"
+    assert all(c.isalnum() or c in "-_" for c in tb.computer_name), \
+        f"unexpected ComputerName shape: {tb.computer_name!r}"

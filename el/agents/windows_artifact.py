@@ -691,6 +691,11 @@ class WindowsArtifactAgent(Agent):
                 "w32time_config_last_write_utc":
                     tb.w32time_config_last_write_utc,
                 "sync_state": tb.sync_state_label,
+                # Persistent NetBIOS ComputerName from the same SYSTEM
+                # hive — authoritative host identity for the Diamond
+                # Victim-Asset vertex (beats the case-id/filename
+                # heuristic). Empty string when the key was absent.
+                "computer_name": tb.computer_name,
                 "phase": "time_baseline",
             },
         )
