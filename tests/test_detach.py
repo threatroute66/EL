@@ -125,6 +125,33 @@ def test_forwards_allowlisted_env(monkeypatch):
             assert cmd.index(c) < sep
 
 
+def test_forwards_claude_code_env_so_detached_run_emits_brief(monkeypatch):
+    """The detached unit must inherit CLAUDECODE / session id so it
+    still recognises Claude-Code orchestration and emits the deferred
+    AI-brief request. Regression: an SRL-2015 --detach bundle produced
+    no _ai_brief_request.json because these vars weren't forwarded."""
+    monkeypatch.delenv("EL_DETACHED", raising=False)
+    monkeypatch.setenv("CLAUDECODE", "1")
+    monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "sess-xyz")
+    monkeypatch.setenv("AI_AGENT", "claude-code_2-1-139_agent")
+    import shutil
+    monkeypatch.setattr(shutil, "which",
+                         lambda name: "/usr/bin/systemd-run"
+                         if name == "systemd-run" else None)
+    captured = {}
+    monkeypatch.setattr(subprocess, "run",
+                         lambda cmd, *a, **k: captured.__setitem__("cmd", cmd)
+                         or type("R", (), {"returncode": 0})())
+    monkeypatch.setattr("sys.argv",
+                         ["/opt/EL/.venv/bin/el", "investigate-bundle", "b"])
+    with pytest.raises(typer.Exit):
+        cli._maybe_detach(True, "bundle-b")
+    cmd = captured["cmd"]
+    assert "--setenv=CLAUDECODE=1" in cmd
+    assert "--setenv=CLAUDE_CODE_SESSION_ID=sess-xyz" in cmd
+    assert "--setenv=AI_AGENT=claude-code_2-1-139_agent" in cmd
+
+
 def test_foreground_fallback_when_spawn_fails(monkeypatch):
     """If systemd-run itself errors, degrade to foreground (return,
     don't raise) so the investigation still runs."""

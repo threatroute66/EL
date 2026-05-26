@@ -73,12 +73,19 @@ def _maybe_detach(detach: bool, label: str) -> None:
     ]
     # Forward a small allowlist of env vars the detached unit needs
     # (systemd --user services don't inherit the caller's shell env).
+    # CLAUDECODE + CLAUDE_CODE_SESSION_ID + AI_AGENT must ride along
+    # so the detached run still recognises it's Claude-Code-orchestrated
+    # and emits the deferred AI-brief request file — without them the
+    # transient unit looks like a bare shell and silently skips the
+    # brief (caught when an SRL-2015 --detach bundle produced no
+    # _ai_brief_request.json).
     for _k in ("ANTHROPIC_API_KEY", "EL_AI_BRIEF_DEFER",
                 "EL_AI_SUMMARY_MODEL", "EL_RED_MODEL",
                 "EL_KNOWLEDGE_DB",
                 "EL_MALWARE_TRIAGE_MAX_DUMPS",
                 "EL_MALWARE_TRIAGE_MAX_DUMP_SIZE_MB",
-                "EL_MALWARE_TRIAGE_BUDGET_SECONDS"):
+                "EL_MALWARE_TRIAGE_BUDGET_SECONDS",
+                "CLAUDECODE", "CLAUDE_CODE_SESSION_ID", "AI_AGENT"):
         _v = _os.environ.get(_k)
         if _v:
             cmd.insert(cmd.index("--"), f"--setenv={_k}={_v}")
