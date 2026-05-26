@@ -49,6 +49,14 @@ rules/sigma/*
 # the dir (so an operator clone doesn't collide with EL's doc).
 rules/capa/
 
+# --- MITRE CAR analytics ---
+# Cloned from https://github.com/mitre-attack/car by install.sh (~100
+# analytic YAMLs). Consumed by el.skills.car_import / mitre_car /
+# SigmaAnalystAgent. Externally-sourced + upstream-maintained — same
+# out-of-tree rationale as SIGMA + capa above (avoid duplicating /
+# drifting from upstream; keep licensing separation clean).
+rules/car/
+
 # --- EL ad-hoc analysis area ---
 analysis/*
 !analysis/.keep
