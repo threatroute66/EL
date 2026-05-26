@@ -1301,9 +1301,12 @@ def _build_diamond_html(
     local_users = _collect_local_users(supporting)
     is_insider_case = leader.hyp_id in INSIDER_HYPOTHESES
 
-    # Infrastructure (Type 1 / Type 2 / Service Provider) per §4.3.
+    # Infrastructure (Type 1 / Type 2 / Service Provider) per §4.3 —
+    # case-wide (all findings) to match the markdown renderer: emails
+    # + lateral-movement pivot IPs are infrastructure regardless of
+    # which hypothesis their finding scores.
     inf_t1, inf_t2, inf_sp = _collect_infrastructure_by_type(
-        supporting, iocs, local_domains)
+        findings, iocs, local_domains)
 
     # Adversary (Operator + Customer) per §4.1
     adversary_operator: list[str] = (

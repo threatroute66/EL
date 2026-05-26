@@ -350,6 +350,29 @@ def test_diamond_infrastructure_type2_when_finding_claims_compromised_account():
     assert "tuckgorge@gmail.com" in t2_cell
 
 
+def test_diamond_lateral_movement_source_ips_become_type2_infrastructure():
+    """Lateral-movement source IPs (internal hosts doing PsExec/WinRM/
+    RDP into the victim) are compromised intermediary pivots — Type 2
+    Infrastructure per paper §4.3. They're RFC1918 and dropped by the
+    IOC catalog's private-IP filter, so this harvest is the only way
+    they reach the Diamond. Case-wide: surfaces even when lateral
+    movement isn't the leading hypothesis."""
+    ranking = [_rank("H_ANTI_FORENSICS", "Anti-forensics", 30)]
+    lm = _finding(
+        "01X", supports=["H_LATERAL_MOVEMENT"],
+        claim="Lateral movement [psexec/service_install]",
+        evidence_facts={"source_ips": ["10.3.58.4", "10.3.58.6"]})
+    # Leader is anti-forensics (a modifier-heavy case), no support for LM
+    af = _finding("02Y", supports=["H_ANTI_FORENSICS"],
+                   claim="VSS diff: Security.evtx deleted_in_live")
+    lines = build_diamond_markdown([lm, af], ranking, {}, manifest={})
+    text = "\n".join(lines)
+    inf_block = text[text.find("**Infrastructure**"):text.find("**Victim**")]
+    t2_cell = inf_block[inf_block.find("Type 2"):inf_block.find("Service Providers")]
+    assert "10.3.58.4" in t2_cell
+    assert "10.3.58.6" in t2_cell
+
+
 def test_diamond_emails_always_in_infrastructure_per_paper_section_4_3():
     """Even with no 'compromised account' hint, emails surfaced in
     supporting findings go to Type 2 Infrastructure per paper §4.3

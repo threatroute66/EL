@@ -603,6 +603,17 @@ def _collect_infrastructure_by_type(
         kind = _classify_infrastructure_type(f.claim or "")
         for ev in f.evidence:
             facts = ev.extracted_facts or {}
+            # Lateral-movement source IPs are compromised internal
+            # pivots — a host doing PsExec / WinRM / RDP *into* the
+            # victim is, by paper §4.3 definition, Type 2 Infrastructure
+            # (an intermediary the victim sees as the adversary). These
+            # RFC1918 addresses are dropped by the IOC catalog's
+            # private-IP filter, so without this harvest the pivot hosts
+            # never appear in the Diamond at all.
+            for ip in (facts.get("source_ips") or []):
+                if isinstance(ip, str) and ip.strip():
+                    type2.add(ip.strip())
+                    type1.discard(ip.strip())
             for s in _walk_fact_values(facts):
                 # Emails — all into Type 2 per paper §4.3
                 for em in _EMAIL_RE.finditer(s):
@@ -685,10 +696,13 @@ def build_diamond_markdown(
     local_users = _collect_local_users(supporting)
     is_insider_case = leader_hyp in INSIDER_HYPOTHESES
 
-    # Infrastructure (paper §4.3) — three role-types. Emails always
-    # land in Type 2 per paper text ("compromised email accounts").
+    # Infrastructure (paper §4.3) — three role-types. Collected
+    # CASE-WIDE (all findings, not leader-scoped) to match the
+    # case-wide Capability + IOC-catalog base: emails are
+    # infrastructure and lateral-movement pivot IPs are Type 2
+    # regardless of which hypothesis their finding scores.
     inf_t1, inf_t2, inf_sp = _collect_infrastructure_by_type(
-        supporting, iocs, local_domains)
+        findings, iocs, local_domains)
 
     # Adversary (paper §4.1) — Operator + Customer. Operator is the
     # actor doing the work; under insider hypotheses that's the
