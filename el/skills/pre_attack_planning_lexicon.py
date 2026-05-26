@@ -50,13 +50,24 @@ _WEAPON_WORDS = (
 # Ammunition + price-per-round patterns — operationally distinctive
 # because they imply *bulk acquisition*, not enthusiast collecting.
 # Threshold-bearing: "1000 for $360", "$400 rifle"
+#
+# Whitespace is HORIZONTAL-ONLY ([ \t]) between the number and the
+# unit word — never `\s`, which includes newlines. The original `\s*`
+# spanned line boundaries: on the rocba SANS case a CSV-shaped
+# vendor config (appsglobals.txt) had `7178\r\nshell` across two
+# rows, and `\d{2,5}\s*shells?` matched it as "7178 shells", falsely
+# adding the ammo category and pushing a benign config file over the
+# ≥2-category planning threshold. A real ammunition reference
+# ("1000 rounds", "9mm ammo") always has the count and the unit on
+# the same line; horizontal-only whitespace preserves every true
+# match while killing the cross-line false positive.
 _AMMO_RX = re.compile(
     r"\b(?:"
-    r"\d{2,5}\s*(?:rounds?|rds?|rd|bullets?|shells?|cartridges?)"
+    r"\d{2,5}[ \t]{0,4}(?:rounds?|rds?|rd|bullets?|shells?|cartridges?)"
     r"|"
-    r"(?:9\s?mm|5\.7|5\.56|7\.62|\.223|\.308|\.45|\.40)\s*(?:ammo|ammunition|rounds?)"
+    r"(?:9[ \t]?mm|5\.7|5\.56|7\.62|\.223|\.308|\.45|\.40)[ \t]{0,4}(?:ammo|ammunition|rounds?)"
     r"|"
-    r"\d{3,4}\s*for\s*\$\d{2,4}"  # "1000 for $360"
+    r"\d{3,4}[ \t]{0,4}for[ \t]{0,4}\$\d{2,4}"  # "1000 for $360"
     r")\b",
     re.IGNORECASE,
 )

@@ -198,3 +198,56 @@ def test_scan_text_still_fires_on_payload_with_reference_path():
                    source=Path("english_wikipedia.txt"))
     assert m is not None
     assert m.signal_strength in ("high", "medium")
+
+
+# ---------------------------------------------------------------------------
+# Ammo regex — horizontal-whitespace only (cross-line FP regression)
+# ---------------------------------------------------------------------------
+
+from el.skills.pre_attack_planning_lexicon import _AMMO_RX
+
+
+def test_ammo_regex_does_not_span_newlines():
+    """The rocba appsglobals.txt false positive: a CSV-shaped config
+    had `7178\\r\\nshell` across two rows, and the old `\\d{2,5}\\s*shells?`
+    matched it as '7178 shells' because \\s includes newlines. The
+    fixed regex uses horizontal-only whitespace, so the cross-line
+    text must NOT match."""
+    assert _AMMO_RX.search("7178\r\nshell") is None
+    assert _AMMO_RX.search("7178\nshells") is None
+    assert _AMMO_RX.search("500\n\nrounds") is None
+    # The "1000 for $360" pattern must also not span a newline
+    assert _AMMO_RX.search("1000\nfor $360") is None
+
+
+def test_ammo_regex_still_matches_same_line_true_positives():
+    """Real ammunition references — count + unit on the same line —
+    must still fire. Guards against over-tightening the fix."""
+    assert _AMMO_RX.search("1000 rounds") is not None
+    assert _AMMO_RX.search("500 bullets") is not None
+    assert _AMMO_RX.search("2000 shells") is not None
+    assert _AMMO_RX.search("9mm ammo") is not None
+    assert _AMMO_RX.search("9 mm ammunition") is not None
+    assert _AMMO_RX.search("1000 for $360") is not None
+    # No-space variant still tolerated (within the line)
+    assert _AMMO_RX.search("1000rounds") is not None
+
+
+def test_appsglobals_style_config_does_not_fire_planning():
+    """End-to-end: a vendor/browser config with a CSV-row number
+    adjacent to 'shell' on the next line, plus the common opsec
+    words 'tor browser'/'vpn', must NOT produce a planning hit. With
+    the ammo regex no longer matching cross-line, only the opsec
+    category fires (1 category) — below the ≥2-category threshold."""
+    appsglobals = (
+        "key,value\r\n"
+        "MaxConnections,7178\r\n"
+        "shell,/bin/false\r\n"
+        "ProxyType,tor browser\r\n"
+        "NetworkVPN,vpn\r\n"
+    )
+    m = scan_text(appsglobals, source=Path("appsglobals.txt"))
+    assert m is None, (
+        f"benign vendor config must not fire planning lexicon; "
+        f"got categories={getattr(m, 'categories_fired', 0)}, "
+        f"ammo={getattr(m, 'ammo_hits', [])}")
