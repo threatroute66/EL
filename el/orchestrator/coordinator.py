@@ -75,6 +75,12 @@ KIND_TO_AGENT: dict[str, type[Agent]] = {
     # eve-ingest branch — parser + per-cluster findings.
     "suricata-eve": NetworkAnalystAgent,
     "EWF (E01)": DiskForensicatorAgent,
+    # Raw dd disk images (GPT / MBR partition structure, no container
+    # magic). DiskForensicator.run() falls through to the raw-disk
+    # walk (mmls + per-partition fls) for any non-EWF/VM/bitlocker
+    # kind, so both labels land on the same agent.
+    "raw-disk (GPT)": DiskForensicatorAgent,
+    "raw-disk (MBR)": DiskForensicatorAgent,
     # VM disk wrappers — DiskForensicator converts to raw via qemu-img
     # then runs the normal mmls + fls pipeline.
     "vhdx": DiskForensicatorAgent,

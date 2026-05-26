@@ -86,6 +86,64 @@ def _detect_vhd_footer(path: Path) -> str | None:
     return None
 
 
+def _detect_raw_disk(path: Path) -> str | None:
+    """Recognise a raw (dd) disk image by its partition structure.
+
+    Raw disk images carry no container magic at byte 0 (unlike E01 /
+    VHDX / VMDK), so the byte-0 MAGIC_HINTS loop misses them and the
+    image falls through to "opaque memory candidate" — misrouting the
+    single most common forensic disk format to MemoryForensicator.
+
+    Two signatures, cheap to check (reads the first ~520 bytes):
+
+      * GPT: the protective-MBR is at LBA 0 and the GPT header
+        ("EFI PART") sits at LBA 1 — offset 512. Unambiguous.
+      * MBR: 0x55AA boot signature at offset 510 PLUS at least one
+        plausible partition-table entry (a non-zero partition type
+        with a non-zero LBA start) in the 446..510 table. The
+        partition-entry guard is essential — 0x55AA alone is a weak
+        signal (countless unrelated files end in those two bytes),
+        so we require real partition geometry before claiming a disk.
+
+    Returns "raw-disk (GPT)" / "raw-disk (MBR)" or None. Both route to
+    DiskForensicator via KIND_TO_AGENT["raw-disk …"]; the agent's
+    run() falls through to the raw-disk walk (mmls + per-partition
+    fls) for any non-EWF/VM/bitlocker kind.
+    """
+    try:
+        size = path.stat().st_size
+    except OSError:
+        return None
+    # A real disk image is large; guard against tiny files that
+    # happen to end in 0x55AA.
+    if size < 1024 * 1024:        # < 1 MiB is not a disk image
+        return None
+    try:
+        with path.open("rb") as f:
+            head = f.read(520)
+    except OSError:
+        return None
+    if len(head) < 512:
+        return None
+    # GPT — "EFI PART" at offset 512 (LBA 1). Strongest signal.
+    if head[512:520] == b"EFI PART":
+        return "raw-disk (GPT)"
+    # MBR — 0x55AA at 510 + a plausible partition entry. The 4 entries
+    # are 16 bytes each starting at 446 (0x1BE): byte 4 = type,
+    # bytes 8-11 = LBA start (LE u32).
+    if head[510:512] == b"\x55\xaa":
+        import struct
+        for i in range(4):
+            entry = head[446 + i * 16: 446 + i * 16 + 16]
+            if len(entry) < 16:
+                break
+            ptype = entry[4]
+            lba_start = struct.unpack("<I", entry[8:12])[0]
+            if ptype != 0 and lba_start != 0:
+                return "raw-disk (MBR)"
+    return None
+
+
 class TriageAgent(Agent):
     name = "triage"
 
@@ -270,6 +328,15 @@ class TriageAgent(Agent):
             bl_kind = _detect_bitlocker(ctx.input_path)
             if bl_kind:
                 magic_hint = bl_kind
+        if not magic_hint:
+            # Raw dd disk — no container magic at byte 0; recognised
+            # by its GPT / MBR partition structure. Must run AFTER the
+            # bitlocker check (an encrypted volume isn't a partitioned
+            # raw disk) and BEFORE the memory fallback (a partitioned
+            # disk is never a memory image).
+            rd_kind = _detect_raw_disk(ctx.input_path)
+            if rd_kind:
+                magic_hint = rd_kind
 
         evidence = [EvidenceItem(
             tool="el.triage", version="0.1.0",
@@ -293,7 +360,7 @@ class TriageAgent(Agent):
             )))
 
         non_memory = ("pcap", "pcapng", "EWF", "EVTX", "Registry",
-                      "vhdx", "vhd", "vmdk", "bitlocker")
+                      "vhdx", "vhd", "vmdk", "bitlocker", "raw-disk")
         if magic_hint and any(n in magic_hint for n in non_memory):
             return out
         if head[:1] in (b"{", b"[") or head[:5] in (b"<?xml", b"<html"):
@@ -625,48 +692,71 @@ class TriageAgent(Agent):
         # MemoryForensicator pass after disk extraction. Without this
         # detector the directory falls through to "directory-unclassified"
         # and neither agent ever sees the right input.
+        # The disk half of the bundle is either E01 segments OR a raw
+        # dd image recognised by its GPT/MBR partition structure (the
+        # 2019 Narcos corpus ships split-raw GPT disks, reassembled to
+        # a single .raw via affuse before staging). Find whichever is
+        # present.
         e01_segments = sorted(
             list(d.glob("*.E01")) + list(d.glob("*.e01")))
-        if e01_segments:
+        raw_disk_file: Path | None = None
+        raw_disk_kind: str | None = None
+        if not e01_segments:
+            for p in sorted(d.iterdir()):
+                if not p.is_file() or p.name.lower() == "pagefile.sys":
+                    continue
+                rk = _detect_raw_disk(p)
+                if rk:
+                    raw_disk_file = p
+                    raw_disk_kind = rk
+                    break
+        if e01_segments or raw_disk_file:
             # Candidate memory image: top-level file matching a known
             # vol3-compatible extension or canonical name. pagefile.sys
             # is NOT a memory image — it's the swap, picked up separately
-            # as a vol3 swap layer when present.
+            # as a vol3 swap layer when present. The raw DISK file (when
+            # the disk is raw) must be EXCLUDED — it shares the .raw
+            # extension with a raw memory dump, so we filter it out by
+            # identity here.
             #
             # `.img` is included because a `.img` sibling of E01 segments
             # is almost certainly a paired memory dump, not a redundant
             # disk image — the SRL-2018 corpus uses `base-<host>-memory.img`
-            # naming for every captured host. A bare `.img` without E01
-            # neighbours stays out (the bundle-shape gate requires E01s).
+            # naming for every captured host.
             mem_exts = (".mem", ".vmem", ".raw", ".dmp", ".bin", ".lime",
                          ".img")
             # Stem substrings (not exact match) so `base-dc-memory`,
-            # `wkstn05-memdump`, `host-RAM-capture` all qualify. Exact
-            # match (the original rule) missed everything in SRL-2018
-            # where stems are always prefixed with the hostname.
+            # `wkstn05-memdump`, `host-RAM-capture` all qualify.
             mem_names = ("memdump", "memory", "memcap", "ram")
             mem_candidates = [
                 p for p in sorted(d.iterdir())
                 if p.is_file()
                 and p.name.lower() != "pagefile.sys"
+                and p != raw_disk_file
                 and (p.suffix.lower() in mem_exts
                      or any(n in p.stem.lower() for n in mem_names))
             ]
             if mem_candidates:
-                primary_e01 = e01_segments[0]
+                if e01_segments:
+                    disk_input = e01_segments[0]
+                    disk_kind = "EWF (E01)"
+                    disk_desc = f"{len(e01_segments)} .E01 segment(s)"
+                else:
+                    disk_input = raw_disk_file
+                    disk_kind = raw_disk_kind  # "raw-disk (GPT|MBR)"
+                    disk_desc = f"{raw_disk_kind} '{disk_input.name}'"
                 mem_image = mem_candidates[0]
                 pagefile = (d / "pagefile.sys"
                             if (d / "pagefile.sys").is_file() else None)
-                ctx.shared["evidence_kind"] = "EWF (E01)"
+                ctx.shared["evidence_kind"] = disk_kind
                 ctx.shared["paired_memory_image"] = str(mem_image)
                 if pagefile is not None:
                     ctx.shared["paired_pagefile"] = str(pagefile)
-                # Rewrite input_path so DiskForensicator (which expects a
-                # single .E01) sees the primary segment. EWF tooling
-                # walks the .E0N siblings automatically.
-                ctx.input_path = primary_e01
+                # Rewrite input_path to the disk (E01 first segment, or
+                # the raw disk file). DiskForensicator handles both.
+                ctx.input_path = disk_input
                 facts_blob = ":".join(
-                    [str(primary_e01), str(mem_image),
+                    [str(disk_input), str(mem_image),
                      str(pagefile or "")]).encode()
                 sha = hashlib.sha256(facts_blob).hexdigest()
                 ev = EvidenceItem(
@@ -674,8 +764,9 @@ class TriageAgent(Agent):
                     command=f"disk-and-memory-bundle probe {d.name}",
                     output_sha256=sha, output_path=str(d),
                     extracted_facts={
+                        "disk_kind": disk_kind,
+                        "disk_input": disk_input.name,
                         "e01_segment_count": len(e01_segments),
-                        "primary_e01": primary_e01.name,
                         "memory_image": mem_image.name,
                         "memory_image_size_bytes": mem_image.stat().st_size,
                         "pagefile_present": pagefile is not None,
@@ -684,8 +775,8 @@ class TriageAgent(Agent):
                 out.append(self.emit(ctx, Finding(
                     case_id=ctx.case_id, agent=self.name, confidence="high",
                     claim=(f"Input directory looks like a disk+memory "
-                           f"evidence bundle ({len(e01_segments)} .E01 "
-                           f"segment(s) + memory image '{mem_image.name}'"
+                           f"evidence bundle ({disk_desc} + memory image "
+                           f"'{mem_image.name}'"
                            + (f" + pagefile.sys" if pagefile else "")
                            + f"). Disk routes to DiskForensicator; "
                            f"coordinator chains MemoryForensicator on "
