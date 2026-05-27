@@ -379,6 +379,11 @@ _MOTIVATION_MAP: dict[str, str] = {
     "H_PRE_ATTACK_PLANNING":
         "Personal preparation for a violent / kinetic real-world "
         "attack — host is being used as the planning workspace.",
+    "H_ILLICIT_ENTERPRISE":
+        "Subject-operated device running a criminal business — drug "
+        "trafficking, contraband marketplace, crypto-laundering or "
+        "fraud. The device is the offender's own, not an intrusion "
+        "victim; the operator is the user.",
     "H_INSIDER_DATA_EXFIL":
         "Insider data theft — local user removing organisational "
         "material via local channels (USB / personal cloud sync).",

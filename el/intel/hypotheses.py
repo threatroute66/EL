@@ -135,7 +135,12 @@ def _h_benign(f: Finding) -> int:
                 # multi-category planning lexicon hits + multi-cloud
                 # mirroring of the planning material are deliberate by
                 # construction; the null hypothesis cannot survive them.
-                "H_PRE_ATTACK_PLANNING", "H_MULTI_CLOUD_MIRROR"):
+                "H_PRE_ATTACK_PLANNING", "H_MULTI_CLOUD_MIRROR",
+                # Illicit enterprise (drug trade / contraband marketplace
+                # / crypto-laundering) — purpose-built narcotic-lexicon /
+                # darknet signal means the device is running a criminal
+                # business; "no incident here" cannot stand.
+                "H_ILLICIT_ENTERPRISE"):
         if tag in f.hypotheses_supported:
             s -= 3
     if _claim_contains("createaccesskey", "putbucketpolicy", "failed console",
@@ -296,6 +301,48 @@ def _h_pre_attack_planning(f: Finding) -> int:
             "atrocity", "fresh start in bali")(f):
         s += 2
     return s
+
+
+def _h_illicit_enterprise(f: Finding) -> int:
+    """Illicit enterprise — a SUBJECT-OPERATED device used to run a
+    criminal business: drug trafficking, contraband marketplace,
+    crypto-laundering, fraud. The device belongs to the offender, not
+    to an intrusion victim, so EL's intrusion hypotheses (espionage,
+    lateral movement, commodity malware) are a category mismatch — on
+    the 2019 Narcos corpus they win weakly and by accident, while the
+    purpose-built drug-trade detector goes unrepresented. This is the
+    motive that fits. Sibling to H_PRE_ATTACK_PLANNING (lone-offender
+    violence): both are subject-device motives, kept separate because
+    trafficking commerce and violence planning are different cases.
+
+    Lifted ONLY by purpose-built illicit-commerce signal, never by
+    generic intrusion artifacts:
+      * narcotic-lexicon hit (strain/unit/price/emoji co-occurrence —
+        the skill already requires ≥2 categories before emitting)  → +3
+      * cryptocurrency-in-user-data (BTC addresses in browser history /
+        mbox) — corroborating, not load-bearing alone               → +1
+      * other H_ILLICIT_ENTERPRISE-tagged evidence                  → +2
+      * darknet-market / money-laundering language in claim text
+        (guarded; fires even on untagged findings)                  → +2
+    """
+    if not _has_tag("H_ILLICIT_ENTERPRISE")(f):
+        # Untagged path: explicit darknet-marketplace / laundering
+        # language is diagnostic on its own. Keep the set tight so a
+        # passing news-article mention doesn't lift it.
+        if _filename_safe(f) and _claim_contains(
+                "darknet market", "dark web market", "silk road",
+                "alphabay", "dream market", ".onion market",
+                "money laundering", "cash smuggling")(f):
+            return 2
+        return 0
+    # Tagged → grade by what produced the finding.
+    tools = {e.tool for e in f.evidence}
+    cats = {(e.extracted_facts or {}).get("category") for e in f.evidence}
+    if "el.narcotic_lexicon" in tools or "narcotic_lexicon" in cats:
+        return 3   # purpose-built drug-trade detector (≥2-cat threshold)
+    if "btc_wallet" in cats:
+        return 1   # crypto-in-user-data corroborator
+    return 2       # other illicit-enterprise-tagged evidence
 
 
 def _h_supply_chain(f: Finding) -> int:
@@ -592,6 +639,17 @@ HYPOTHESES: list[Hypothesis] = [
                "with deliberate multi-cloud mirroring of the planning material "
                "to ensure it survives the user's device disposal.",
                _h_pre_attack_planning),
+    Hypothesis("H_ILLICIT_ENTERPRISE",
+               "Illicit enterprise / subject-operated device",
+               "The device belongs to a subject running a criminal business "
+               "(drug trafficking, contraband marketplace, crypto-laundering, "
+               "fraud) — NOT an intrusion victim. Lifted by purpose-built "
+               "illicit-commerce signal (narcotic-trade lexicon, "
+               "cryptocurrency in user data, darknet-marketplace access), "
+               "never by generic intrusion artifacts. The motive that fits "
+               "subject-device corpora like 2019 Narcos, where the "
+               "intrusion hypotheses only win weakly and by accident.",
+               _h_illicit_enterprise),
     Hypothesis("H_SUPPLY_CHAIN",
                "Supply-chain / trusted-vendor compromise",
                "Compromised software update, signed binary, or vendor channel.",

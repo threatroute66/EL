@@ -678,8 +678,9 @@ class LinuxForensicatorAgent(Agent):
                        f"Strains: [{sample_strains}]. "
                        f"Units: [{sample_units}]."),
                 evidence=[m.as_evidence()],
-                hypotheses_supported=["H_INSIDER_DATA_EXFIL",
-                                       "H_OPPORTUNISTIC_COMMODITY"],
+                # Narcotic-trade evidence on a user's own files is
+                # illicit-enterprise, not insider-exfil / commodity.
+                hypotheses_supported=["H_ILLICIT_ENTERPRISE"],
             )))
         return out
 
@@ -736,9 +737,12 @@ class LinuxForensicatorAgent(Agent):
                         "match_subject": m.subject[:200],
                         "match_message_id": m.message_id,
                         "attachment_count": len(m.attachments),
+                        "category": ("narcotic_lexicon" if nmatch is not None
+                                      else "btc_wallet"),
                     })],
-                    hypotheses_supported=["H_INSIDER_DATA_EXFIL",
-                                           "H_OPPORTUNISTIC_COMMODITY"],
+                    # Narcotic / BTC traffic in mail is illicit-enterprise
+                    # evidence; category fact grades the ACH weight.
+                    hypotheses_supported=["H_ILLICIT_ENTERPRISE"],
                 )))
         return out
 

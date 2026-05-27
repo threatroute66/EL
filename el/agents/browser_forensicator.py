@@ -290,8 +290,12 @@ class BrowserForensicatorAgent(Agent):
                        f"URL(s) with strain/unit/price markers. Pivot "
                        f"against firefox downloads + mbox for corroboration."),
                 evidence=[ev],
-                hypotheses_supported=["H_INSIDER_DATA_EXFIL",
-                                       "H_OPPORTUNISTIC_COMMODITY"],
+                # Drug-trade browsing is illicit-enterprise evidence,
+                # not insider-exfil or commodity-malware — H_ILLICIT_
+                # ENTERPRISE is the motive that fits a subject-operated
+                # device. (Was mis-tagged H_INSIDER_DATA_EXFIL +
+                # H_OPPORTUNISTIC_COMMODITY before that hypothesis existed.)
+                hypotheses_supported=["H_ILLICIT_ENTERPRISE"],
             )))
         if btc_visits:
             btc_set = {b for _, bs in btc_visits for b in bs}
@@ -306,6 +310,9 @@ class BrowserForensicatorAgent(Agent):
                        f"carry {len(btc_set)} distinct wallet(s). "
                        f"Sample: {sorted(btc_set)[:3]}."),
                 evidence=[ev],
-                hypotheses_supported=["H_INSIDER_DATA_EXFIL"],
+                # Cryptocurrency in user browsing corroborates an
+                # illicit-enterprise motive (graded +1 — weaker than a
+                # narcotic-lexicon hit, since crypto alone is dual-use).
+                hypotheses_supported=["H_ILLICIT_ENTERPRISE"],
             )))
         return out
