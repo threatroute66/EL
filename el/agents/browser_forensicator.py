@@ -270,25 +270,31 @@ class BrowserForensicatorAgent(Agent):
         from el.skills import narcotic_lexicon as nl
         from el.skills import ioc_extract as iex
         narco_visits: list[browser.Visit] = []
+        narco_subs: set[str] = set()
         btc_visits: list[tuple[browser.Visit, set[str]]] = []
         for v in run.visits:
             text = f"{v.url} {v.title or ''}"
             m = nl.scan_text(text)
             if m is not None:
                 narco_visits.append(v)
+                narco_subs.update(m.substance_hits)
             btcs = iex.extract(text).get("btc", set())
             if btcs:
                 btc_visits.append((v, btcs))
         if narco_visits:
             ev = run.as_evidence(facts={"category": "narcotic_lexicon",
                                         "url_count": len(narco_visits),
+                                        "substance_hits": sorted(narco_subs)[:10],
                                         "sample_urls": [v.url for v in narco_visits[:5]]})
+            sub_note = (f" Controlled-substance names [INCB Yellow List]: "
+                        f"{sorted(narco_subs)[:5]}." if narco_subs else "")
             out.append(self.emit(ctx, Finding(
                 case_id=ctx.case_id, agent=self.name, confidence="medium",
                 claim=(f"Browser history → narcotic-lexicon match(es) "
                        f"({places_sqlite.name}): {len(narco_visits)} "
-                       f"URL(s) with strain/unit/price markers. Pivot "
-                       f"against firefox downloads + mbox for corroboration."),
+                       f"URL(s) with strain/unit/price markers.{sub_note} "
+                       f"Pivot against firefox downloads + mbox for "
+                       f"corroboration."),
                 evidence=[ev],
                 # Drug-trade browsing is illicit-enterprise evidence,
                 # not insider-exfil or commodity-malware — H_ILLICIT_

@@ -669,14 +669,18 @@ class LinuxForensicatorAgent(Agent):
             conf = "high" if sig == "high" else "medium"
             sample_strains = ", ".join(m.strain_hits[:3]) or "-"
             sample_units = ", ".join(m.unit_hits[:3]) or "-"
+            sample_subs = ", ".join(m.substance_hits[:3]) or "-"
             out.append(self.emit(ctx, Finding(
                 case_id=ctx.case_id, agent=self.name, confidence=conf,
                 claim=(f"Narcotic-lexicon match in {m.path.name}: "
                        f"{len(m.strain_hits)} strain/product term(s), "
                        f"{len(m.unit_hits)} weight marker(s), "
-                       f"{len(m.price_hits)} price-per-unit pattern(s). "
+                       f"{len(m.price_hits)} price-per-unit pattern(s), "
+                       f"{len(m.substance_hits)} controlled-substance "
+                       f"name(s) [INCB Yellow List]. "
                        f"Strains: [{sample_strains}]. "
-                       f"Units: [{sample_units}]."),
+                       f"Units: [{sample_units}]. "
+                       f"Substances: [{sample_subs}]."),
                 evidence=[m.as_evidence()],
                 # Narcotic-trade evidence on a user's own files is
                 # illicit-enterprise, not insider-exfil / commodity.
@@ -724,6 +728,8 @@ class LinuxForensicatorAgent(Agent):
                                  if nmatch.strain_hits else "")
                     iocs.append(f"units={nmatch.unit_hits[:3]}"
                                  if nmatch.unit_hits else "")
+                    iocs.append(f"substances={nmatch.substance_hits[:3]}"
+                                 if nmatch.substance_hits else "")
                 if btcs:
                     iocs.append(f"btc={sorted(btcs)[:3]}")
                 out.append(self.emit(ctx, Finding(
