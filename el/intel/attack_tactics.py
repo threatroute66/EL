@@ -58,6 +58,7 @@ TECHNIQUE_TACTIC: dict[str, str] = {
     "T1569":      "Execution",
     "T1569.002":  "Execution",
     "T1609":      "Execution",            # Container Administration Command
+    "T1014":      "Defense Evasion",      # Rootkit
     "T1610":      "Defense Evasion",      # Deploy Container
     "T1611":      "Privilege Escalation", # Escape to Host
     "T1613":      "Discovery",            # Container and Resource Discovery

@@ -633,6 +633,19 @@ class Coordinator:
 
         rows = list_findings(ctx.case_dir, case_id=ctx.case_id)
         evidence_paths_pre = [e.output_path for f in rows for e in f.evidence]
+        # bulk_extractor carves IOCs (domains/URLs/emails/IPs) into per-feature
+        # TSV files, but findings reference the BE output DIR, not the feature
+        # files — so the carved IOCs never reached iocs.json and ThreatHunter
+        # saw "no hunt-worthy indicators" on carve-only/unallocated cases.
+        # Add the IOC-bearing feature files so they flow through the SAME vetted
+        # extractor (its TLD allowlist + FP filters apply unchanged).
+        _BE_IOC_FEATURES = {"domain.txt", "url.txt", "email.txt", "ip.txt",
+                            "rfc822.txt", "telephone.txt"}
+        be_feature_paths = [
+            str(p) for p in ctx.case_dir.rglob("bulk_extractor/*.txt")
+            if p.name in _BE_IOC_FEATURES and p.is_file()
+        ]
+        evidence_paths_pre.extend(be_feature_paths)
         ioc_sets_pre = ioc_extract.extract_from_paths(evidence_paths_pre)
         # iocsearcher pass — augments the core extractor with broader
         # IOC types EL doesn't have native regex for (crypto wallets,

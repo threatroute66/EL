@@ -118,6 +118,9 @@ TECHNIQUE_CAPACITY: dict[str, str] = {
     "T1611":     "container-to-host breakout via runtime / kernel "
                   "vulnerability — root on the host node",
     # ----- Defense Evasion ----------------------------------------------
+    "T1014":     "rootkit — kernel-mode driver or hooking that hides "
+                  "processes, files, drivers, or network connections from "
+                  "the OS and security tools",
     "T1027":     "obfuscated / packed / encoded payload that evades "
                   "static signature-based detection",
     "T1036":     "process / file / service masquerading as a trusted "
