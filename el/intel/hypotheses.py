@@ -140,7 +140,11 @@ def _h_benign(f: Finding) -> int:
                 # / crypto-laundering) — purpose-built narcotic-lexicon /
                 # darknet signal means the device is running a criminal
                 # business; "no incident here" cannot stand.
-                "H_ILLICIT_ENTERPRISE"):
+                "H_ILLICIT_ENTERPRISE",
+                # Deliberate device/evidence destruction (interrupted disk
+                # wipe, zeroed partition table) is by construction hostile —
+                # the null cannot survive a subject destroying the disk.
+                "H_INSIDER_DEVICE_DESTRUCTION"):
         if tag in f.hypotheses_supported:
             s -= 3
     if _claim_contains("createaccesskey", "putbucketpolicy", "failed console",
@@ -604,6 +608,36 @@ def _h_not_clean_baseline(f: Finding) -> int:
     return s
 
 
+def _h_insider_device_destruction(f: Finding) -> int:
+    """Subject deliberately destroyed the device's on-disk structure to
+    prevent forensic recovery — e.g. an interrupted disk wipe that zeroed the
+    protective MBR + primary GPT (leaving only the backup GPT), or wiped a
+    filesystem boot sector. A competing MOTIVE (a WHY), distinct from
+    H_ANTI_FORENSICS, which is the cross-cutting evidence-tampering MODIFIER
+    (a HOW) those same findings also carry.
+
+    Lifted by the gpt_state wipe detector's tag and corroborated by the
+    encryption / anti-forensic context that accompanies device destruction.
+    """
+    s = 0
+    if _has_tag("H_INSIDER_DEVICE_DESTRUCTION")(f): s += 3
+    # The wipe signature surfaces through the disk_forensicator claim body.
+    # Phrases are deliberately specific so the benign "Partition table parsed:
+    # N usable partition(s)" finding never lifts this hypothesis.
+    if _claim_contains("interrupted disk wipe", "interrupted or failed disk wipe",
+                       "primary gpt destroyed", "primary gpt wiped",
+                       "partition table destroyed", "partition-table wipe",
+                       "boot sector wiped", "vbr wiped",
+                       "recovered from the backup gpt",
+                       "reconstructed read-only from the backup gpt")(f):
+        s += 2
+    # Encryption-at-rest + anti-forensic cleanup corroborate intent-to-hide.
+    if _has_tag("H_ANTI_FORENSICS")(f): s += 1
+    if _claim_contains("luks", "encrypted container", "encrypted volume")(f):
+        s += 1
+    return s
+
+
 HYPOTHESES: list[Hypothesis] = [
     Hypothesis("H_BENIGN_NO_INCIDENT",
                "Benign / no incident",
@@ -650,6 +684,18 @@ HYPOTHESES: list[Hypothesis] = [
                "subject-device corpora like 2019 Narcos, where the "
                "intrusion hypotheses only win weakly and by accident.",
                _h_illicit_enterprise),
+    Hypothesis("H_INSIDER_DEVICE_DESTRUCTION",
+               "Insider device / evidence destruction",
+               "Subject deliberately destroyed the device's on-disk structure "
+               "to prevent forensic recovery — e.g. an interrupted disk wipe "
+               "that zeroed the protective MBR + primary GPT (leaving only the "
+               "backup GPT from which mmls silently recovers), a wiped "
+               "filesystem boot sector, or an encrypted-at-rest volume staged "
+               "for destruction. A competing motive (a WHY), distinct from "
+               "H_ANTI_FORENSICS — the cross-cutting evidence-tampering "
+               "MODIFIER (a HOW) the same findings also carry. The motive that "
+               "fits subject-device corpora like the CIRCL wiped-disk exercise.",
+               _h_insider_device_destruction),
     Hypothesis("H_SUPPLY_CHAIN",
                "Supply-chain / trusted-vendor compromise",
                "Compromised software update, signed binary, or vendor channel.",

@@ -308,6 +308,8 @@ TECHNIQUE_CAPACITY: dict[str, str] = {
                    "tunnel hiding the real traffic underneath)",
     # ----- Impact -------------------------------------------------------
     "T1485":     "destructive file deletion (data destruction)",
+    "T1561":     "disk wipe — zeroing the partition table / boot sectors "
+                  "or overwriting volume contents to destroy the disk",
     "T1486":     "file encryption for impact (ransomware)",
     "T1490":     "inhibit system recovery (delete shadow copies, "
                   "disable Windows backup, wipe restore points)",

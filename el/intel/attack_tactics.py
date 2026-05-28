@@ -164,6 +164,9 @@ TECHNIQUE_TACTIC: dict[str, str] = {
     "T1567":      "Exfiltration",
     # Impact
     "T1485":      "Impact",
+    "T1561":      "Impact",       # Disk Wipe
+    "T1561.001":  "Impact",       # Disk Wipe: Disk Content Wipe
+    "T1561.002":  "Impact",       # Disk Wipe: Disk Structure Wipe
     "T1486":      "Impact",
     "T1489":      "Impact",
     "T1490":      "Impact",

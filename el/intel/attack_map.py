@@ -101,6 +101,13 @@ HYPOTHESIS_MAP: dict[str, list[Technique]] = {
         ("T1534", "Internal Spearphishing"),
         ("T1566.002", "Phishing: Spearphishing Link"),
     ],
+    # Insider device/evidence destruction — interrupted disk wipe, zeroed
+    # partition table, encrypted-at-rest volume staged for destruction.
+    "H_INSIDER_DEVICE_DESTRUCTION": [
+        ("T1561.002", "Disk Wipe: Disk Structure Wipe"),
+        ("T1561.001", "Disk Wipe: Disk Content Wipe"),
+        ("T1485", "Data Destruction"),
+    ],
     # Windows Event ID → ATT&CK technique mappings. These tags are
     # emitted by LateralMovementAnalyst (PR-G) and any future detector
     # that walks chainsaw/hayabusa output. Expanded in PR-P to cover

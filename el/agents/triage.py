@@ -141,6 +141,22 @@ def _detect_raw_disk(path: Path) -> str | None:
             lba_start = struct.unpack("<I", entry[8:12])[0]
             if ptype != 0 and lba_start != 0:
                 return "raw-disk (MBR)"
+    # Damaged/wiped primary GPT — the front of the disk (protective MBR +
+    # primary GPT header) is zeroed, so neither signature above fires and the
+    # image would misroute to MemoryForensicator. But GPT keeps a backup
+    # header in the LAST sector; if "EFI PART" is there while the front is
+    # zeroed, this is a wiped-GPT disk (an interrupted disk wipe). Route it to
+    # DiskForensicator, where mmls recovers via the backup and the gpt_state
+    # detector raises the anti-forensic finding. See CIRCL wiped-disk exercise.
+    if head[:512] == b"\x00" * 512:
+        for sec in (512, 4096):              # try 512B and 4K sector geometries
+            try:
+                with path.open("rb") as f:
+                    f.seek(size - sec)
+                    if f.read(8) == b"EFI PART":
+                        return "raw-disk (GPT-damaged)"
+            except OSError:
+                break
     return None
 
 

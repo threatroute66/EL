@@ -81,6 +81,9 @@ KIND_TO_AGENT: dict[str, type[Agent]] = {
     # kind, so both labels land on the same agent.
     "raw-disk (GPT)": DiskForensicatorAgent,
     "raw-disk (MBR)": DiskForensicatorAgent,
+    # Wiped/damaged primary GPT (interrupted disk wipe) — mmls recovers via
+    # the backup GPT and the gpt_state detector raises the anti-forensic finding.
+    "raw-disk (GPT-damaged)": DiskForensicatorAgent,
     # VM disk wrappers — DiskForensicator converts to raw via qemu-img
     # then runs the normal mmls + fls pipeline.
     "vhdx": DiskForensicatorAgent,

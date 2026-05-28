@@ -371,6 +371,14 @@ class DiskForensicatorAgent(Agent):
                 claim=f"mmls unavailable or failed: {e}",
             )))
 
+        # Read-only GPT/MBR integrity check. mmls silently regenerates the
+        # layout from the BACKUP GPT when the primary is wiped, so a destroyed
+        # partition table (an interrupted disk wipe — a core anti-forensic /
+        # insider device-destruction signal) is otherwise invisible in EL's
+        # output. This surfaces it. Never writes to evidence.
+        out.extend(self._detect_partition_wipe(
+            ctx, raw_image, analysis, sector_size, partitions))
+
         # Per partition: fls -o <start_sector> → bodyfile → mactime
         # Per sleuthkit SKILL: -o flag is more reliable than loopback mount.
         if not partitions:
@@ -481,13 +489,24 @@ class DiskForensicatorAgent(Agent):
                 if extracted:
                     ctx.shared["macos_artifacts_dir"] = str(extracted)
             elif not fls_ok:
-                out.append(self.emit(ctx, Finding(
-                    case_id=ctx.case_id, agent=self.name,
-                    confidence="insufficient",
-                    claim=(f"fls returned no rows for partition {label} "
-                           f"({desc}) — filesystem may be unreadable or "
-                           f"unsupported"),
-                )))
+                # fls can't read the volume. Before giving up, two recovery
+                # paths for a wiped/encrypted partition:
+                #   1) LUKS-encrypted container → identify + report (no key);
+                #   2) NTFS whose primary VBR was wiped → recover from the
+                #      backup boot sector at the volume's end and re-walk.
+                recovered = self._handle_unreadable_partition(
+                    ctx, raw_image, p, sector_size, analysis, label,
+                    artifact_dirs)
+                if recovered:
+                    out.extend(recovered)
+                else:
+                    out.append(self.emit(ctx, Finding(
+                        case_id=ctx.case_id, agent=self.name,
+                        confidence="insufficient",
+                        claim=(f"fls returned no rows for partition {label} "
+                               f"({desc}) — filesystem may be unreadable or "
+                               f"unsupported"),
+                    )))
 
         if artifact_dirs:
             ctx.shared["artifacts_dir"] = str(artifact_dirs[0])
@@ -508,6 +527,146 @@ class DiskForensicatorAgent(Agent):
         sweep_dirs = artifact_dirs + linux_dirs
         if sweep_dirs:
             out.extend(self._run_exiftool(ctx, sweep_dirs[0]))
+        return out
+
+    def _detect_partition_wipe(self, ctx: AgentContext, raw_image: Path,
+                               analysis, sector_size: int,
+                               partitions: list[dict]) -> list[Finding]:
+        """Read-only GPT/MBR integrity check → anti-forensic / device-
+        destruction finding. mmls hides the wipe by recovering from the backup
+        GPT; this is the detector that makes the destruction visible."""
+        from el.skills import gpt_state
+        out: list[Finding] = []
+        try:
+            st = gpt_state.inspect(raw_image, sector_size)
+        except OSError:
+            return out
+        if not (st.interrupted_wipe or st.full_wipe):
+            return out
+        ev = st.as_evidence(analysis / "gpt_state")
+        if st.interrupted_wipe:
+            claim = (
+                f"Interrupted disk wipe detected — primary GPT destroyed but "
+                f"backup GPT intact. Protective MBR={st.protective_mbr_status}, "
+                f"primary GPT header={st.primary_gpt_status}, primary entry "
+                f"array={st.primary_entries_status}; {st.front_zero_sectors}+ "
+                f"leading sector(s) zero-filled. Partition table recovered from "
+                f"the backup GPT ({len(partitions)} partition(s)). The front of "
+                f"the disk was deliberately overwritten and the wipe was "
+                f"interrupted before reaching the backup structures — a "
+                f"signature of subject-driven device/evidence destruction.")
+        else:  # full_wipe
+            claim = (
+                f"Partition-table wipe detected — both primary AND backup GPT "
+                f"destroyed ({st.front_zero_sectors}+ leading sector(s) "
+                f"zero-filled). Layout unrecoverable from GPT structures; "
+                f"a deliberate disk wipe. Falling back to signature carving.")
+        out.append(self.emit(ctx, Finding(
+            case_id=ctx.case_id, agent=self.name, confidence="high",
+            claim=claim, evidence=[ev],
+            hypotheses_supported=["H_ANTI_FORENSICS",
+                                  "H_INSIDER_DEVICE_DESTRUCTION"],
+        )))
+        return out
+
+    def _handle_unreadable_partition(self, ctx: AgentContext, raw_image: Path,
+                                     p: dict, sector_size: int, analysis,
+                                     label: str,
+                                     artifact_dirs: list) -> list[Finding]:
+        """Recovery paths for a partition fls can't read: (1) LUKS container →
+        identify + report (optionally open read-only with an operator key);
+        (2) NTFS with a wiped primary VBR → rebuild from the backup boot sector
+        and re-walk. Returns [] when neither applies (caller emits the generic
+        unreadable-FS finding)."""
+        from el.skills import luks, ntfs_vbr
+        out: list[Finding] = []
+        off_bytes = p["start_sector"] * sector_size
+
+        # 1) LUKS-encrypted container -------------------------------------
+        info = luks.detect(raw_image, off_bytes)
+        if info is not None:
+            ev = info.as_evidence(analysis / "luks")
+            cipher = f", cipher={info.cipher}" if info.cipher else ""
+            key = os.environ.get("EL_LUKS_KEY")
+            base = (f"LUKS{info.version} encrypted container at partition "
+                    f"{label} (uuid={info.uuid or 'n/a'}{cipher})")
+            if key:
+                # Operator-supplied key (never from evidence) → read-only open.
+                mapper = f"el_{ctx.case_id}_{p['slot']}"
+                try:
+                    key_bytes = (Path(key).read_bytes()
+                                 if Path(key).exists() else key.encode())
+                    dev = luks.open_readonly(raw_image, off_bytes, key_bytes,
+                                             mapper)
+                    try:
+                        fls_run = sk.fls(Path(dev), analysis, timeout=1800)
+                        if fls_run.rc == 0 and fls_run.stdout_path.stat().st_size > 0:
+                            out.append(self.emit(ctx, Finding(
+                                case_id=ctx.case_id, agent=self.name,
+                                confidence="high",
+                                claim=f"{base} — opened read-only with "
+                                      f"operator-supplied key; walking inner "
+                                      f"filesystem.",
+                                evidence=[ev],
+                                hypotheses_supported=["H_INSIDER_DEVICE_DESTRUCTION"])))
+                            out.extend(self._fls_to_timeline(
+                                ctx, fls_run, analysis,
+                                part_label=f"{label}-luks", desc="LUKS/inner"))
+                    finally:
+                        luks.close(mapper)
+                    return out
+                except luks.LuksError as e:
+                    out.append(self.emit(ctx, Finding(
+                        case_id=ctx.case_id, agent=self.name,
+                        confidence="insufficient",
+                        claim=f"{base} — supplied key did not unlock it: {e}",
+                        evidence=[ev])))
+                    return out
+            out.append(self.emit(ctx, Finding(
+                case_id=ctx.case_id, agent=self.name, confidence="insufficient",
+                claim=f"{base}; decryption requires key material not present "
+                      f"in evidence (no EL_LUKS_KEY supplied).",
+                evidence=[ev],
+                hypotheses_supported=["H_ANTI_FORENSICS",
+                                      "H_INSIDER_DEVICE_DESTRUCTION"])))
+            return out
+
+        # 2) NTFS with a wiped primary VBR → recover from backup boot sector
+        try:
+            rec = ntfs_vbr.recover(raw_image, p["start_sector"],
+                                   p.get("end_sector", 0),
+                                   analysis / "recovered", sector_size)
+        except ntfs_vbr.NtfsVbrError as e:
+            out.append(self.emit(ctx, Finding(
+                case_id=ctx.case_id, agent=self.name, confidence="insufficient",
+                claim=f"Partition {label}: {e}")))
+            return out
+        if rec is not None:
+            try:
+                fls_run = sk.fls(rec.derived_path, analysis, timeout=1800)
+            except sk.SleuthkitError:
+                fls_run = None
+            if fls_run is not None and fls_run.rc == 0 \
+                    and fls_run.stdout_path.stat().st_size > 0:
+                out.append(self.emit(ctx, Finding(
+                    case_id=ctx.case_id, agent=self.name, confidence="high",
+                    claim=(f"NTFS volume at partition {label} had its primary "
+                           f"boot sector wiped; recovered read-only from the "
+                           f"NTFS backup VBR at sector {rec.vbr_source_sector} "
+                           f"and re-walked."),
+                    evidence=[rec.as_evidence()],
+                    hypotheses_supported=["H_ANTI_FORENSICS",
+                                          "H_INSIDER_DEVICE_DESTRUCTION"])))
+                out.extend(self._fls_to_timeline(
+                    ctx, fls_run, analysis,
+                    part_label=f"{label}-recovered", desc="NTFS (recovered)"))
+                extracted = self._extract_ntfs_artifacts(
+                    ctx, rec.derived_path,
+                    {"slot": p["slot"], "start_sector": 0, "end_sector": 0,
+                     "description": "NTFS (recovered)"},
+                    sector_size, f"{label}-recovered")
+                if extracted:
+                    artifact_dirs.append(extracted)
         return out
 
     def _run_bulk_extractor(self, ctx: AgentContext, raw_image,
