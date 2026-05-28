@@ -60,3 +60,43 @@ def test_finfisher_attack_techniques_have_full_coverage():
         assert tactic_for(tid) is not None, f"{tid} has no tactic"
         assert capacity_for(tid) is not None, f"{tid} has no capacity"
     assert tactic_for("T1014") == "Defense Evasion"
+
+
+def test_malware_triage_attributes_carved_binary(tmp_path, monkeypatch):
+    """End-to-end through MalwareTriageAgent: a carved binary in
+    ctx.shared['carved_files_dir'] is strings-scanned and attributed, emitting
+    a medium-confidence finding WITH tags. Regression: this emission path uses
+    EvidenceItem and previously UnboundLocalError'd because of a redundant
+    in-function import — the unit detect() tests didn't exercise it; the live
+    Unallocated01 run did."""
+    from pathlib import Path
+    from el.agents.base import AgentContext
+    from el.agents.malware_triage import MalwareTriageAgent
+    from el.evidence import intake as intake_mod
+    from el.evidence.ledger import open_ledger
+
+    monkeypatch.setattr(intake_mod, "CASE_ROOT", tmp_path / "cases")
+    src = tmp_path / "x.bin"
+    src.write_bytes(b"x")
+    m = intake_mod.intake(src, case_id="finfisher-carve")
+    with open_ledger(m.case_dir):
+        pass
+    # synthetic carved PE body carrying the distinctive FinSpy markers
+    carved = Path(m.case_dir) / "exports" / "carved"
+    (carved / "exe").mkdir(parents=True)
+    (carved / "exe" / "00001234.exe").write_bytes(
+        b"MZ\x90\x00" + b"\x00" * 64
+        + b"C:\\WINDOWS\\system32\\msnetobj.dll\x00"
+        + b"ERROR: Invalid CustomActionData for VMInstallKernelDriver\x00"
+        + b"http://%s.com/info?id=%u\x00" + b"\x00" * 4096)
+    ctx = AgentContext(case_id="finfisher-carve", case_dir=Path(m.case_dir),
+                       input_path=src, manifest=m.__dict__,
+                       shared={"carved_files_dir": str(carved)})
+    findings = MalwareTriageAgent().run(ctx)
+    carved_hits = [f for f in findings
+                   if "Carved-binary attribution" in f.claim
+                   and "finfisher" in f.claim]
+    assert carved_hits, "expected a carved-binary finfisher attribution finding"
+    f = carved_hits[0]
+    assert f.confidence == "medium"
+    assert "H_C2_OR_REVERSE_SHELL" in f.hypotheses_supported
