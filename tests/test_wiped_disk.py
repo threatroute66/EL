@@ -104,6 +104,20 @@ def test_healthy_gpt_not_flagged(tmp_path):
     assert not st.interrupted_wipe and not st.full_wipe
 
 
+def test_non_gpt_blob_not_flagged_as_wipe(tmp_path):
+    """Regression (Unallocated01): a non-GPT blob — offset 512 holds ordinary
+    non-zero data (no EFI PART) and there is no backup GPT — must classify the
+    primary as 'absent' (no GPT here), NOT 'corrupt', and must NOT trip either
+    wipe condition. The old 'corrupt'+full_wipe behaviour falsely led
+    H_INSIDER_DEVICE_DESTRUCTION on unallocated-space carve cases."""
+    img = tmp_path / "blob.raw"
+    img.write_bytes(b"\x11" * 64 * SS)        # all non-zero, no GPT anywhere
+    st = gpt_state.inspect(img, SS)
+    assert st.primary_gpt_status == "absent"
+    assert st.backup_gpt_status == "absent"
+    assert not st.interrupted_wipe and not st.full_wipe
+
+
 # ---------------------------------------------------------------------------
 # luks
 # ---------------------------------------------------------------------------

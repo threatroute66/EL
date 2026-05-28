@@ -382,9 +382,11 @@ class DiskForensicatorAgent(Agent):
         # Per partition: fls -o <start_sector> → bodyfile → mactime
         # Per sleuthkit SKILL: -o flag is more reliable than loopback mount.
         if not partitions:
+            fs_found = False
             try:
                 fls_run = sk.fls(raw_image, analysis, timeout=1800)
                 if fls_run.rc == 0 and fls_run.stdout_path.stat().st_size > 0:
+                    fs_found = True
                     out.extend(self._fls_to_timeline(ctx, fls_run, analysis,
                                                      part_label="whole-image"))
                     # No partition table = single filesystem at offset 0.
@@ -401,13 +403,19 @@ class DiskForensicatorAgent(Agent):
                     out.append(self.emit(ctx, Finding(
                         case_id=ctx.case_id, agent=self.name, confidence="insufficient",
                         claim=f"fls (no partition offset) produced no output (rc={fls_run.rc}); "
-                              "image may have no recognised filesystem at offset 0",
+                              "image may have no recognised filesystem at offset 0 — "
+                              "treating as a carve-only raw stream",
                     )))
             except sk.SleuthkitError as e:
                 out.append(self.emit(ctx, Finding(
                     case_id=ctx.case_id, agent=self.name, confidence="insufficient",
                     claim=f"fls unavailable: {e}",
                 )))
+            if not fs_found:
+                # No filesystem at offset 0 — this is a carve-only raw stream
+                # (e.g. exported UNALLOCATED disk space). Carve files + features
+                # by signature instead of walking a filesystem that isn't there.
+                out.extend(self._carve_raw_stream(ctx, raw_image, analysis))
             return out
 
         sector_size = ctx.shared.get("sector_size", 512)
@@ -537,6 +545,10 @@ class DiskForensicatorAgent(Agent):
         GPT; this is the detector that makes the destruction visible."""
         from el.skills import gpt_state
         out: list[Finding] = []
+        # A carve-only blob (exported unallocated space) has no partition table
+        # by definition — a "partition-table wipe" claim is meaningless there.
+        if ctx.shared.get("evidence_kind") == "unallocated (carve-only)":
+            return out
         try:
             st = gpt_state.inspect(raw_image, sector_size)
         except OSError:
@@ -667,6 +679,47 @@ class DiskForensicatorAgent(Agent):
                     sector_size, f"{label}-recovered")
                 if extracted:
                     artifact_dirs.append(extracted)
+        return out
+
+    def _carve_raw_stream(self, ctx: AgentContext, raw_image: Path,
+                          analysis) -> list[Finding]:
+        """Carve a partitionless raw stream (exported unallocated space, or any
+        FS-less blob): bulk_extractor for features + winpe PE carving (carves
+        malware bodies, plus evtx/prefetch/lnk/email/net artifacts), then
+        foremost for documents/images by signature. The path for carve-only
+        evidence where there is no filesystem to walk."""
+        out: list[Finding] = []
+        # bulk_extractor — runs BE's full scanner set (incl. winpe → carves PE
+        # files, and evtx/winprefetch/winlnk/email/net feature recovery).
+        out.extend(self._run_bulk_extractor(ctx, raw_image, analysis))
+        # foremost — recover documents/images/archives by file signature.
+        try:
+            from el.skills import file_carve as fc
+            carve_dir = analysis / "foremost"
+            if carve_dir.exists():
+                import shutil as _sh
+                _sh.rmtree(carve_dir)
+            run = fc.foremost(raw_image, carve_dir,
+                              types="pdf,doc,ole,jpg,png,zip,htm,exe",
+                              timeout=2400)
+            if run.total_files:
+                top = ", ".join(f"{k}={v}" for k, v in sorted(
+                    run.file_counts.items(), key=lambda kv: -kv[1])[:8])
+                out.append(self.emit(ctx, Finding(
+                    case_id=ctx.case_id, agent=self.name, confidence="low",
+                    claim=(f"foremost carved {run.total_files} file(s) from the "
+                           f"raw stream by signature: {top}. Carved files have "
+                           f"weaker provenance than parsed-filesystem entries — "
+                           f"treat as lead, not proof."),
+                    evidence=[run.as_evidence()],
+                    hypotheses_supported=["H_DISK_ARTIFACTS"],
+                )))
+                ctx.shared["carved_files_dir"] = str(carve_dir)
+        except Exception as e:
+            out.append(self.emit(ctx, Finding(
+                case_id=ctx.case_id, agent=self.name, confidence="insufficient",
+                claim=f"foremost carving unavailable or failed: {e}",
+            )))
         return out
 
     def _run_bulk_extractor(self, ctx: AgentContext, raw_image,

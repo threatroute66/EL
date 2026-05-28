@@ -69,21 +69,32 @@ def foremost(target: Path, out_dir: Path,
         raise CarveError(f"out_dir not empty (foremost refuses): {out_dir}")
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    cmd = [_bin("foremost"), "-T", "-q", "-t", types,
+    # NB: do NOT pass `-T` — it makes foremost write to a TIMESTAMPED sibling
+    # dir (out_dir_<ts>) and leave out_dir empty, so the per-type count below
+    # silently reports 0 carved files. out_dir is guaranteed empty above, so
+    # foremost writes straight into it.
+    cmd = [_bin("foremost"), "-q", "-t", types,
            "-i", str(target), "-o", str(out_dir)]
     try:
         proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
     except subprocess.TimeoutExpired as e:
         raise CarveError(f"foremost timeout") from e
 
+    # foremost writes one subdir per recovered type (exe/, pdf/, jpg/, …) plus
+    # an audit.txt; count files under each type subdir. Also tolerate a
+    # timestamped sibling dir in case a caller still passes -T elsewhere.
     counts: Counter = Counter()
     total = 0
-    for sub in out_dir.iterdir():
-        if sub.is_dir() and sub.name not in ("audit"):
-            n = sum(1 for _ in sub.iterdir() if _.is_file())
-            if n:
-                counts[sub.name] = n
-                total += n
+    scan_dirs = [out_dir]
+    sibling = sorted(out_dir.parent.glob(out_dir.name + "_*"))
+    scan_dirs += [d for d in sibling if d.is_dir()]
+    for base in scan_dirs:
+        for sub in base.iterdir():
+            if sub.is_dir() and sub.name not in ("audit",):
+                n = sum(1 for _ in sub.iterdir() if _.is_file())
+                if n:
+                    counts[sub.name] += n
+                    total += n
     return CarveRun(target=target, out_dir=out_dir, rc=proc.returncode,
                     tool="foremost", file_counts=dict(counts),
                     total_files=total, command=cmd)

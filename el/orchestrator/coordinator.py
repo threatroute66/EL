@@ -84,6 +84,9 @@ KIND_TO_AGENT: dict[str, type[Agent]] = {
     # Wiped/damaged primary GPT (interrupted disk wipe) — mmls recovers via
     # the backup GPT and the gpt_state detector raises the anti-forensic finding.
     "raw-disk (GPT-damaged)": DiskForensicatorAgent,
+    # Carve-only blob (exported unallocated space) — no partition table / FS;
+    # DiskForensicator's no-partition branch runs bulk_extractor + foremost.
+    "unallocated (carve-only)": DiskForensicatorAgent,
     # VM disk wrappers — DiskForensicator converts to raw via qemu-img
     # then runs the normal mmls + fls pipeline.
     "vhdx": DiskForensicatorAgent,

@@ -160,6 +160,58 @@ def _detect_raw_disk(path: Path) -> str | None:
     return None
 
 
+# File-system-artifact signatures that densely populate UNALLOCATED disk space
+# but are not the structure of a memory image. Used to recognise a headerless
+# "carve-only" blob (e.g. exported unallocated space) so it routes to the
+# carving pipeline instead of misrouting to MemoryForensicator (which would run
+# vol3, find no kernel, and never carve). Deliberately disk-specific
+# (NTFS/Windows artifacts), not generic MZ/PE which a memory dump also carries.
+# Strong, near-unambiguous NTFS/Windows filesystem-artifact signatures that
+# densely populate UNALLOCATED disk space but are not the structure of a memory
+# image: MFT records ("FILE0"), registry hives ("regf"), EVTX logs
+# ("ElfFile\x00"), compressed Win8+ prefetch ("MAM\x04"). Deliberately
+# disk-specific — not generic MZ/PE which a memory dump also carries.
+_CARVE_STRONG: tuple[bytes, ...] = (b"FILE0", b"regf", b"ElfFile\x00", b"MAM\x04")
+
+
+def _detect_carvable_blob(path: Path, min_size: int = 256 * 1024 * 1024) -> str | None:
+    """Recognise a large, headerless raw blob that is filesystem CONTENT
+    (e.g. exported unallocated space) rather than a partitioned disk or a
+    memory image — so it routes to the carving pipeline.
+
+    Cheap: samples 1 MiB at a spread of offsets across the file and looks for
+    NTFS/Windows filesystem-artifact signatures. Requires either one strong
+    signature seen at two or more offsets or two distinct strong signatures, so
+    a stray fragment in a memory dump does not trip it. Returns
+    "unallocated (carve-only)" or None.
+    """
+    try:
+        size = path.stat().st_size
+    except OSError:
+        return None
+    if size < min_size:
+        return None
+    win = 1024 * 1024
+    fracs = (0.0, 0.06, 0.12, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 0.97)
+    offsets = [min(int(size * fr), max(0, size - win)) for fr in fracs]
+    seen: dict[bytes, int] = {}
+    try:
+        with path.open("rb") as f:
+            for off in offsets:
+                f.seek(off)
+                chunk = f.read(win)
+                for sig in _CARVE_STRONG:
+                    if sig in chunk:
+                        seen[sig] = seen.get(sig, 0) + 1
+    except OSError:
+        return None
+    distinct = len(seen)
+    repeated = any(c >= 2 for c in seen.values())
+    if distinct >= 2 or (distinct == 1 and repeated):
+        return "unallocated (carve-only)"
+    return None
+
+
 class TriageAgent(Agent):
     name = "triage"
 
@@ -353,6 +405,15 @@ class TriageAgent(Agent):
             rd_kind = _detect_raw_disk(ctx.input_path)
             if rd_kind:
                 magic_hint = rd_kind
+        if not magic_hint:
+            # Carve-only blob (e.g. exported UNALLOCATED disk space): a large
+            # headerless stream densely populated with NTFS/Windows artifact
+            # signatures. Must run LAST in the magic chain (after every
+            # container/disk check) and BEFORE the memory fallback, so a real
+            # memory image still falls through to MemoryForensicator.
+            cb_kind = _detect_carvable_blob(ctx.input_path)
+            if cb_kind:
+                magic_hint = cb_kind
 
         evidence = [EvidenceItem(
             tool="el.triage", version="0.1.0",
@@ -376,7 +437,8 @@ class TriageAgent(Agent):
             )))
 
         non_memory = ("pcap", "pcapng", "EWF", "EVTX", "Registry",
-                      "vhdx", "vhd", "vmdk", "bitlocker", "raw-disk")
+                      "vhdx", "vhd", "vmdk", "bitlocker", "raw-disk",
+                      "unallocated")
         if magic_hint and any(n in magic_hint for n in non_memory):
             return out
         if head[:1] in (b"{", b"[") or head[:5] in (b"<?xml", b"<html"):

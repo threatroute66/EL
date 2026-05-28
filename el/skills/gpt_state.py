@@ -52,17 +52,22 @@ class GptState:
 
     @property
     def interrupted_wipe(self) -> bool:
-        """True when the front-of-disk GPT structures were destroyed
-        (primary header wiped/corrupt) but the backup GPT survived — the
-        signature of an interrupted or structure-only disk wipe from which
-        mmls silently recovers via the backup."""
-        return (self.primary_gpt_status in ("wiped", "corrupt")
+        """True when a GPT disk's front structures were destroyed but the
+        backup GPT survived — the signature of an interrupted/structure-only
+        wipe from which mmls silently recovers via the backup. The intact
+        backup (EFI PART at the last sector) is positive proof the device WAS
+        GPT, so any non-ok primary alongside it is a real wipe signal."""
+        return (self.primary_gpt_status != "ok"
                 and self.backup_gpt_status == "ok")
 
     @property
     def full_wipe(self) -> bool:
-        """Both primary AND backup GPT destroyed — unrecoverable layout."""
-        return (self.primary_gpt_status in ("wiped", "corrupt")
+        """Both primary AND backup GPT destroyed. Requires the primary header
+        region to be explicitly ZEROED (positive wipe evidence) — NOT merely
+        'absent' (no GPT signature), which is the normal state of unallocated
+        space, a partition image, or an MBR disk and must not be read as a
+        wipe."""
+        return (self.primary_gpt_status == "wiped"
                 and self.backup_gpt_status == "absent")
 
     def as_dict(self) -> dict:
@@ -114,10 +119,14 @@ def _gpt_header_valid_crc(hdr: bytes) -> bool:
 
 
 def _classify_primary_gpt(hdr: bytes) -> str:
+    """ok = EFI PART + valid CRC; wiped = all-zero (cleared); corrupt = a real
+    GPT header (EFI PART signature) with a bad CRC; absent = no GPT signature
+    at all (normal for unallocated space / partition images / MBR disks — NOT
+    a damaged GPT, so must not be conflated with 'corrupt')."""
     if _is_zero(hdr[:512]):
         return "wiped"
     if hdr[0:8] != _GPT_SIG:
-        return "corrupt"
+        return "absent"
     return "ok" if _gpt_header_valid_crc(hdr) else "corrupt"
 
 
