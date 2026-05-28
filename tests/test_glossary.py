@@ -102,3 +102,17 @@ def test_all_entries_nonempty():
     for e in entries:
         assert e.plain.strip()
         assert e.explanation.strip()
+
+
+def test_glossary_covers_all_hypotheses():
+    """Every competing hypothesis must have a plain-language entry, so the
+    executive headline never falls back to 'the leading theory cannot be
+    summarised in plain language'. Regression: H_INSIDER_DEVICE_DESTRUCTION /
+    H_ILLICIT_ENTERPRISE shipped to ACH without a glossary entry and surfaced
+    the raw H_ tag in the digest."""
+    from el.intel.hypotheses import HYPOTHESES
+    missing = [h.hyp_id for h in HYPOTHESES
+               if glossary.translate(h.hyp_id).startswith("H_")]
+    assert not missing, (
+        "hypotheses with no plain-language glossary entry: "
+        f"{missing} — add them to el/reporting/glossary.py _HYPOTHESES")

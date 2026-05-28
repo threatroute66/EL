@@ -126,6 +126,62 @@ _HYPOTHESES: dict[str, tuple[str, str]] = {
         "supply-chain compromise",
         "A trusted vendor's software or update was tampered with before reaching this host.",
     ),
+    # Competing motives + evidence-state hypotheses that can lead the ACH
+    # ranking or appear in the narrative. Every id in el.intel.hypotheses
+    # HYPOTHESES must have a plain-language entry here (locked by
+    # test_glossary_covers_all_hypotheses) so the executive headline never
+    # falls back to "the leading theory cannot be summarised in plain language".
+    "H_PRE_ATTACK_PLANNING": (
+        "attack planning / lone-offender preparation",
+        "User-authored content shows preparation for a physical attack — "
+        "weapons and ammunition research, target or escape-route planning, "
+        "manifesto-style writing.",
+    ),
+    "H_ILLICIT_ENTERPRISE": (
+        "illicit-business device",
+        "The device belongs to someone running a criminal business (drug "
+        "trafficking, contraband marketplace, fraud, crypto-laundering) — "
+        "not an intrusion victim.",
+    ),
+    "H_INSIDER_DEVICE_DESTRUCTION": (
+        "deliberate device destruction",
+        "The owner deliberately wiped or destroyed the disk's structure — "
+        "for example an interrupted disk wipe that zeroed the partition "
+        "table — to prevent forensic recovery.",
+    ),
+    "H_CONTAINER_ESCAPE": (
+        "container escape",
+        "A process broke out of its container to reach and act on the host.",
+    ),
+    "H_K8S_PRIVILEGE_ESCALATION": (
+        "Kubernetes privilege escalation",
+        "An attacker gained elevated rights within a Kubernetes cluster.",
+    ),
+    "H_DISK_ENCRYPTED": (
+        "encrypted disk / volume",
+        "All or part of the disk is encrypted at rest; its contents cannot "
+        "be read without the key.",
+    ),
+    "H_NTFS_ADS_PRESENT": (
+        "hidden NTFS data streams",
+        "Data was tucked into NTFS alternate data streams — a place ordinary "
+        "file listings do not show.",
+    ),
+    "H_SHADOW_COPY_ARTIFACT_DELETED": (
+        "deleted shadow copies",
+        "Windows shadow-copy snapshots that could hold earlier versions of "
+        "files were deleted.",
+    ),
+    "H_NOT_CLEAN_BASELINE": (
+        "comparison baseline is not clean",
+        "The reference image used for comparison is itself not known-clean, "
+        "so 'no difference found' is not proof the host is clean.",
+    ),
+    "H_PAIRED_CAPTURE_CANDIDATE": (
+        "paired baseline capture",
+        "This image looks like a same-host re-capture used for comparison "
+        "rather than an independent clean reference.",
+    ),
 }
 
 
