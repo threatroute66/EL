@@ -37,6 +37,50 @@ class Vol3Error(RuntimeError):
     pass
 
 
+# Substrings vol3 emits when a Linux/macOS image has no matching ISF symbol
+# table. Unlike Windows (PDBs auto-download from Microsoft), Linux/mac kernels
+# need a per-kernel ISF JSON built from the target's debug kernel with
+# dwarf2json — there is no public download for an arbitrary distro kernel.
+_ISF_MISSING_MARKERS = (
+    "unable to validate the plugin requirements",
+    "no suitable",
+    "symbol table",
+    "could not find the symbols",
+    "isf",
+    "banner",
+)
+
+# Operator-facing remediation, referenced by agents and `el doctor`. Kept here
+# so the message stays consistent across the skill, the agent, and the probe.
+ISF_REMEDIATION = (
+    "Linux/macOS memory image: no matching Volatility 3 ISF symbol table. "
+    "Build one with dwarf2json from the target's debug kernel — e.g. "
+    "`dwarf2json linux --elf <vmlinux-with-debug>` (Ubuntu: the matching "
+    "linux-image-...-dbgsym .ddeb) — then drop the JSON under a symbols dir "
+    "and pass it with `vol -s <dir>`. dwarf2json is an OPTIONAL tool "
+    "(see provisioning/optional-tools.txt); `el doctor` reports its presence."
+)
+
+
+def isf_symbols_missing(run: "PluginRun") -> bool:
+    """True when a Linux/mac plugin failed specifically because no ISF symbol
+    table matched the image's kernel banner.
+
+    Lets callers emit a precise, actionable `insufficient` finding ("build an
+    ISF with dwarf2json") instead of a generic vol3 failure. Windows images
+    never hit this path — their PDB symbols auto-download.
+    """
+    if run.rc == 0 and run.rows:
+        return False
+    try:
+        txt = run.stderr_path.read_text(errors="ignore").lower()
+    except Exception:
+        return False
+    if "symbol" not in txt and "isf" not in txt and "requirement" not in txt:
+        return False
+    return any(m in txt for m in _ISF_MISSING_MARKERS)
+
+
 @dataclass
 class PluginRun:
     plugin: str
