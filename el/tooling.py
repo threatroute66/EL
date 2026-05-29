@@ -64,6 +64,37 @@ def probe_volatility3() -> ToolStatus:
     return ToolStatus("volatility3", None, None, False, "not installed; required for memory-image analysis")
 
 
+def probe_dwarf2json() -> ToolStatus:
+    """dwarf2json — builds a Volatility 3 ISF symbol table from a debug kernel.
+
+    OPTIONAL. Windows memory needs nothing here (PDBs auto-download from
+    Microsoft). Linux/macOS memory images, however, need a per-kernel ISF
+    JSON, and there is no public download for an arbitrary distro kernel —
+    dwarf2json generates it from the target's debug `vmlinux`. Absence is
+    non-fatal: EL emits an `insufficient` finding with this remediation when
+    it meets a Linux/mac image without symbols. Single static Go binary."""
+    candidates = [
+        "/opt/dwarf2json/dwarf2json",
+        "/usr/local/bin/dwarf2json",
+    ]
+    p = shutil.which("dwarf2json")
+    if p:
+        candidates.insert(0, p)
+    for c in candidates:
+        if Path(c).is_file():
+            # dwarf2json has no --version; `<bin>` with no args prints usage
+            # to stderr and exits non-zero. Presence of the file is the signal.
+            return ToolStatus(
+                "dwarf2json", [c], "present", True,
+                note="builds vol3 ISF for Linux/macOS memory (needs target debug kernel)",
+            )
+    return ToolStatus(
+        "dwarf2json", None, None, False,
+        note=("optional; build from github.com/volatilityfoundation/dwarf2json "
+              "(only needed for Linux/macOS memory images — Windows uses PDBs)"),
+    )
+
+
 def probe_memory_baseliner() -> ToolStatus:
     p = Path("/opt/memory-baseliner/baseline.py")
     if p.exists():
@@ -100,6 +131,7 @@ def survey() -> list[ToolStatus]:
     floss_bin = str(Path(sys.executable).parent / "floss")
     return [
         probe_volatility3(),
+        probe_dwarf2json(),
         probe_memory_baseliner(),
         probe_simple("fls"),
         probe_simple("icat"),
