@@ -145,6 +145,49 @@ if [[ ${skip_apt} -eq 0 ]] && command -v gcc >/dev/null 2>&1; then
     fi
 fi
 
+# --- dwarf2json (source-built) ----------------------------------------------
+# Volatility 3 auto-downloads Windows PDB symbols, but Linux/macOS memory
+# images need a per-kernel ISF JSON that has no public download. dwarf2json
+# (https://github.com/volatilityfoundation/dwarf2json) builds that ISF from a
+# matching debug vmlinux. `el.tooling.probe_dwarf2json` + the
+# MemoryForensicatorAgent ISF remediation (commits f129494 / a635ec8) point
+# the analyst at /opt/dwarf2json/dwarf2json, so install it there. Needs Go,
+# not gcc. Idempotent — re-runs noop when already built. Absence is non-fatal:
+# Windows memory needs nothing here; the doctor probe just flags it missing.
+D2J_DIR="/opt/dwarf2json"
+if [[ ${skip_apt} -eq 0 ]]; then
+    if [[ ! -x "${D2J_DIR}/dwarf2json" ]]; then
+        if command -v go >/dev/null 2>&1; then
+            log "building dwarf2json from source -> ${D2J_DIR}"
+            if sudo git clone --depth 1 \
+                    https://github.com/volatilityfoundation/dwarf2json.git \
+                    "${D2J_DIR}" >/dev/null 2>&1; then
+                # Build in-tree as the invoking user (Go needs a writable cache);
+                # the repo is sudo-owned, so build to a temp GOPATH/GOCACHE and
+                # copy the binary back with sudo.
+                D2J_CACHE="$(mktemp -d)"
+                if (cd "${D2J_DIR}" && sudo env \
+                        GOPATH="${D2J_CACHE}/gopath" \
+                        GOCACHE="${D2J_CACHE}/gocache" \
+                        GOFLAGS=-mod=mod \
+                        go build -o "${D2J_DIR}/dwarf2json" . >/dev/null 2>&1); then
+                    sudo chmod 755 "${D2J_DIR}/dwarf2json"
+                    log "dwarf2json installed at ${D2J_DIR}/dwarf2json (Linux/macOS-memory ISF builder)"
+                else
+                    log "dwarf2json build failed — Linux/macOS memory images will need a manually-built ISF"
+                fi
+                rm -rf "${D2J_CACHE}"
+            else
+                log "dwarf2json clone failed — see provisioning/optional-tools.txt for the manual ISF workflow"
+            fi
+        else
+            log "go not installed — skipping dwarf2json (apt install golang-go, then re-run; needed only for Linux/macOS memory images)"
+        fi
+    else
+        log "dwarf2json already at ${D2J_DIR} — skipping build"
+    fi
+fi
+
 # --- MITRE CAR analytic rule pack -------------------------------------------
 # `el.skills.car_import` is wired into SigmaAnalystAgent and looks for
 # CAR YAMLs at /opt/EL/rules/car/ by default. The loader was shipped in

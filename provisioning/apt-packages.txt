@@ -12,3 +12,4 @@ autoconf
 automake
 libtool
 libfuse-dev
+golang-go
