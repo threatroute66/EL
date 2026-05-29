@@ -374,8 +374,8 @@ rows as evidence lands and a case completes end-to-end._
 
 | Format | Status | Where to find a sample |
 |---|---|---|
-| LiME (`.lime`, Linux) | **not supported** — vol3 symbol + profile path untested | LiME repo examples, Chris Lonerz talks |
-| AVML (Microsoft Linux) | **not supported** | Azure Defender examples |
+| ~~LiME (`.lime`, Linux)~~ ✅ | Validated end-to-end on the Righteous IT "Linux Forensic Scenario" 8.5 GB AVML/LiME dump (Debian 6.12.74). vol3 reads the LiME range format natively; the only missing piece was the per-kernel ISF. `dwarf2json` is now built by `install.sh` (commit `24445f3`) → `/opt/dwarf2json/dwarf2json` (probe `el.tooling.probe_dwarf2json`); build the ISF with `dwarf2json linux --elf <debug-vmlinux> --system-map <System.map>` and run `vol -s <symdir> -f <image> linux.*`. Defeated a libymv/bdvl LD_PRELOAD rootkit (`linux.pslist` saw the hidden PIDs) and carved the XMRig miner via `linux.proc.Maps --dump`. | — |
+| ~~AVML (Microsoft Linux)~~ ✅ | Same path as LiME — AVML writes the LiME container format. Validated on the scenario above. | Azure Defender examples |
 | VMware `.vmem` + `.vmss` + `.vmsn` | untested — vol3 can read flat vmem, snapshot side unverified | Any VMware suspend-state |
 | Hyper-V `.bin` + `.vsv` | **not supported** | Hyper-V checkpoints |
 | Apple XNU core / kernel panic | **not supported** | macOS `/cores/` dumps |
@@ -604,7 +604,12 @@ shipped April 2026 as part of the hypothesis-set wire-up):
 
   **Truly corpus-gated** (still open): dedicated `fsevents_parse`
   skill, vol3 `mac.*` family branch in `MemoryForensicator`
-  (needs a macOS memory image with matching ISF symbols).
+  (needs a macOS memory image with matching ISF symbols). NB: the
+  ISF-build tooling is no longer the blocker — `dwarf2json` is built by
+  `install.sh` (`24445f3`) and the **Linux** memory path is validated
+  end-to-end (see the LiME/AVML rows in the memory-image tracker).
+  macOS just needs a `mac.*` ISF (`dwarf2json mac --macho <KDK kernel>`)
+  + a real macOS memory image to exercise it.
 
 **T3-5 Mobile** — shipped: `el.skills.ileapp`,
 `el.skills.ios_artifacts`, `el.skills.ios_triage`,
