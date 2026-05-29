@@ -134,7 +134,7 @@ Every plugin below is already in vol3; EL just doesn't run it.
 ### Malware RE / static analysis
 
 - ✅ **`capa`** + **`FLOSS`** — both shipped (see Top-6 #6).
-- **`Detect-It-Easy`** / `diec` — packer + compiler detection. Still open.
+- ◐ **`Detect-It-Easy`** / `diec` — packer + compiler detection: skill module `el.skills.detect_it_easy` exists but is **not yet wired into any agent** (no importer in `el/agents/`). Wrapper-done, consumer-pending.
 - ✅ **`pefile`-deep wrapper** — `el.skills.pefile_deep` shipped: Rich Header, imphash + cross-case clustering, per-section entropy (packed-section flag), anomalous-import sensitive-API groups (lsass handles, memory APIs, process APIs) → ATT&CK technique tags. Wired into `MalwareTriageAgent._run_pefile_deep`.
 - ✅ **`ssdeep`** + **`TLSH`** — both shipped via `el.skills.similarity_digest` + `knowledge.fuzzy_hashes` (`tlsh` column added with auto-migration on legacy DBs). Cross-case malware-family clustering: ssdeep lookup at threshold 20 (Roussev marginal), TLSH lookup at distance ≤70 (Trend Micro same-family); a TLSH match at distance ≤30 (very-close-variant) bumps confidence to medium.
 - ✅ **`olevba`** + **`rtfobj`** shipped via `el.skills.office_deobf`. `pcodedmp` / `xlmdeobfuscator` / `pdfparser` still open.
@@ -535,13 +535,13 @@ Beyond the Tier 1–4 shortlist, the following category items landed:
 
 | Item | Commit | Deferred (needs corpus or bigger dep) |
 |---|---|---|
-| Network depth — DGA entropy + DNS tunneling + SMB admin-share writes | `9821af5` | Umbrella top-1M allowlist (JA3 part landed in `9c2df40`) |
-| ~~JA3 known-bad + cross-case rarity~~ ✅ | `9c2df40` | Umbrella top-1M allowlist still pending |
+| Network depth — DGA entropy + DNS tunneling + SMB admin-share writes | `9821af5` | (JA3 part landed in `9c2df40`; Umbrella allowlist wrapper present but not yet wired) |
+| ~~JA3 known-bad + cross-case rarity~~ ✅ | `9c2df40` | Umbrella top-1M allowlist ◐ — `el.skills.umbrella_allowlist` exists and is imported by `el.skills.network_anomaly`, but `network_anomaly` itself is not yet imported by any agent, so the allowlist is **not in the live pipeline** (wrapper-done, consumer-pending) |
 | Cloud breadth — Azure Activity + GCP Cloud Audit + AWS VPC Flow | `d070478` | Google Workspace + AWS GuardDuty |
-| PowerShell breadth — EID 4103 + PSReadline + transcription scans | `15fdaee` | Windows Cloud-Clipboard (UWP state) |
+| PowerShell breadth — EID 4103 + PSReadline + transcription scans | `15fdaee` | Windows Cloud-Clipboard (UWP state) ✅ shipped via `el.skills.uwp_clipboard` (consumed by `windows_artifact`) |
 | vol3 extras — ssdt + driverirp + kernel-hook detector + filescan + mftscan + dumpfiles per-PID | `8de8f9d` | `_carve_dumpfiles` runs dumpfiles against malfind-flagged PIDs (8-PID cap); carved files feed threat_hunter |
 | ~~vol3 yarascan~~ ✅ | `811764c` + `0874487` | Wraps `windows.vadyarascan.VadYaraScan` with PID + ImageFileName attribution; volume-noise suppression (≥10× median or ≥1000 absolute → low confidence). Validated end-to-end on `srl2018-admin-memory`. |
-| Windows artifact extras — RecentDocs + OpenSave-MRU | `b6ead0d` | CapabilityAccess / UAL mdb / VSS mounting |
+| Windows artifact extras — RecentDocs + OpenSave-MRU | `b6ead0d` | CapabilityAccess ✅ (`el.skills.capability_access`) / UAL mdb ✅ (`el.skills.ual`) / VSS mounting ✅ (`el.skills.vss` + `vss_diff`) — all wired (`windows_artifact` / `disk_forensicator`) |
 | ~~IIS W3C parser~~ ✅ | `71a9a1c` | 5 detectors (webshell URI, scripted UA, admin path, upload burst, verb tunnel) |
 | ~~VMDK / VHD / VHDX ingest~~ ✅ | `317d568` | qemu-img convert → raw → existing fls pipeline |
 | ~~MACB timestomp-skew detector~~ ✅ | `096459b` | crtime > mtime by ≥7 days; first-class `H_ANTI_FORENSICS` hypothesis |
@@ -596,12 +596,15 @@ shipped April 2026 as part of the hypothesis-set wire-up):
   `H_MAC_FILELESS_AMFI_BYPASS` registered + scored + ATT&CK-mapped
   (T1543.001/004, T1548.006, T1556, T1620, T1027.007).
 
-  **Truly corpus-gated** (still open): dedicated
-  `unified_log_parse` skill (needs a macOS host — `log show
-  --style json` only runs on Apple platforms), dedicated
-  `fsevents_parse` skill, vol3 `mac.*` family branch in
-  `MemoryForensicator` (needs a macOS memory image with matching
-  ISF symbols).
+  - ✅ **`el.skills.macos_unifiedlogs`** — Unified Log parser
+    shipped (consumed by `MacOSForensicatorAgent`); when the
+    Apple-only `log show`/`log archive` tooling is absent it
+    surfaces a clear "needs macOS host" marker rather than
+    failing.
+
+  **Truly corpus-gated** (still open): dedicated `fsevents_parse`
+  skill, vol3 `mac.*` family branch in `MemoryForensicator`
+  (needs a macOS memory image with matching ISF symbols).
 
 **T3-5 Mobile** — shipped: `el.skills.ileapp`,
 `el.skills.ios_artifacts`, `el.skills.ios_triage`,
