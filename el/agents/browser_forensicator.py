@@ -86,14 +86,72 @@ class BrowserForensicatorAgent(Agent):
         for prof in chromium_profiles:
             out.extend(self._triage_chromium(ctx, prof, analysis))
 
-        if not places and not chromium_profiles:
+        # Chromium web-storage LevelDB (Local Storage / IndexedDB) — runs
+        # even when Hindsight is unavailable; Snappy-aware, dependency-free.
+        ldb_findings = self._run_leveldb(ctx, [root])
+        out.extend(ldb_findings)
+
+        if not places and not chromium_profiles and not ldb_findings:
             return [self.emit(ctx, Finding(
                 case_id=ctx.case_id, agent=self.name, confidence="insufficient",
-                claim=(f"No Firefox places.sqlite or Chromium profile dirs "
-                       f"(History+Cookies) found under {root}"),
+                claim=(f"No Firefox places.sqlite, Chromium profile dirs "
+                       f"(History+Cookies), or LevelDB web-storage found "
+                       f"under {root}"),
             ))]
 
         return out
+
+    def _run_leveldb(self, ctx: AgentContext,
+                     scan_dirs: list) -> list[Finding]:
+        """Parse Chromium LevelDB web-storage (Local Storage / IndexedDB /
+        Session Storage) under *scan_dirs* and emit a grounded inventory.
+        Snappy-aware and dependency-free, so it works where Hindsight can't.
+        No-op when no store yields records."""
+        from el.skills import chromium_leveldb as cldb
+        seen: set[str] = set()
+        stores: list[Path] = []
+        for d in scan_dirs:
+            d = Path(d)
+            if not d.is_dir():
+                continue
+            for s in cldb.find_leveldbs(d):
+                key = str(s)
+                if key in seen:
+                    continue
+                if not any(k in key for k in
+                           ("Local Storage", "IndexedDB", "Session Storage")):
+                    continue
+                seen.add(key)
+                stores.append(s)
+
+        analysis = ctx.case_dir / "analysis" / self.name / "leveldb"
+        parsed = []
+        for i, store in enumerate(stores[:200]):
+            try:
+                r = cldb.parse(store, output_dir=analysis / f"{i:03d}")
+            except (cldb.ChromiumLevelDBError, OSError):
+                continue
+            if r.total > 0:
+                parsed.append(r)
+        if not parsed:
+            return []
+        parsed.sort(key=lambda r: -r.total)
+        total = sum(r.total for r in parsed)
+        tops = "; ".join(
+            f"{r.db_dir.parent.parent.name}/{r.db_dir.parent.name} ({r.total})"
+            for r in parsed[:5])
+        trunc = (f" (note: {len(stores)} stores found, first 200 parsed)"
+                 if len(stores) > 200 else "")
+        return [self.emit(ctx, Finding(
+            case_id=ctx.case_id, agent=self.name, confidence="medium",
+            claim=(f"Chromium LevelDB web-storage: {len(parsed)} store(s), "
+                   f"{total:,} record(s) decoded (Snappy-aware). "
+                   f"Top: {tops}.{trunc}"),
+            evidence=[parsed[0].as_evidence(facts={
+                "stores_found": len(stores),
+                "stores_parsed": len(parsed), "total_records": total})],
+            hypotheses_supported=["H_DISK_ARTIFACTS"],
+        ))]
 
     def _triage_chromium(self, ctx: AgentContext, profile_dir: Path,
                           analysis: Path) -> list[Finding]:
