@@ -111,7 +111,8 @@ flowchart TB
         A_ENDP["EndpointAnalyst<br/>Velociraptor v0.7+ schema<br/>(PEDump / ProcessInfo / MFT / Linux)"]
         A_TIME["TimelineSynthesist<br/>Plaso → Timesketch push"]
         A_HUNT["ThreatHunter<br/>YARA / YARA-X auto-prefer + stego-carrier"]
-        A_MAL["MalwareTriage<br/>capa + FLOSS + pefile + 19 families"]
+        A_MAL["MalwareTriage<br/>capa + FLOSS + pefile + 21 families"]
+        A_LOGC["<b>LogCorpus</b><br/>multi-host SOC logs → per-format parsers<br/>(Win Event XML / eCAR / Zeek JSON / ASA / Snort / syslog)"]
         A_LIVE["<b>LiveResponseCollector</b><br/>UAC IR-triage + Tracee eBPF"]
         A_DFTW["<b>DFTimewolfDispatcher</b><br/>recipe + sub-artifact inventory"]
         A_K8S["K8sAuditAnalyst"]
@@ -132,7 +133,7 @@ flowchart TB
     AGENTS -. ioc registration .-> KNOW
 
     CORR["<b>Correlator</b><br/>cross-agent Kùzu graph queries"]
-    ACH["<b>ACH Engine</b><br/>25 hypotheses × all findings<br/>Heuer diagnostic scoring"]
+    ACH["<b>ACH Engine</b><br/>33 hypotheses × all findings<br/>Heuer diagnostic scoring"]
     RED["<b>Red Reviewer</b><br/>rule-based challenger (always)<br/>+ LLM (if API key) — blocks SYNTHESIZE<br/>until every unresolved Finding resolves"]
 
     LEDGER --> CORR --> ACH --> RED
@@ -758,15 +759,17 @@ Rolled out in four tiers per
 
 ## Status
 
-- **942 tests; `make test` runs them in ~50 seconds.**
-- 24 specialist agents · 51 skill primitives · 15 case-level hypotheses
-  with deterministic scorers · 104 ATT&CK technique → tactic mappings ·
-  19 malware family fingerprints · 9 disk anomaly patterns
-- Validated end-to-end on 11 evidence types: Windows memory (workstation
+- **3040 tests; `make test` runs them in ~9.5 minutes.**
+- 33 specialist agents · 140+ skill primitives · 33 case-level hypotheses
+  with deterministic scorers · 105 ATT&CK technique → tactic mappings ·
+  21 malware family fingerprints · 9 disk anomaly patterns
+- Validated end-to-end on 12 evidence types: Windows memory (workstation
   + DC) · NTFS E01 disk · paired memory+disk+baseline · malware-traffic
   pcaps (~2000-pcap corpus sweep) · MDD-format XP memory · Linux ext4 ·
   macOS APFS · Android filesystem tree · iOS 14 filesystem tree · AWS
-  CloudTrail JSON · Azure Entra sign-in / M365 UAL exports.
+  CloudTrail JSON · Azure Entra sign-in / M365 UAL exports · multi-host
+  SOC log corpus (Win Event XML / eCAR / Zeek JSON / Cisco ASA / Snort /
+  syslog, fanned out per host).
 - Self-contained HTML case view (`el report --html`) covers all four
   design-doc tiers (static render, attack-chain graph, ATT&CK
   heatmap + Diamond Model, `--watch` live-update).

@@ -48,13 +48,18 @@ el/
 │   ├── disk_forensicator.py       # ewfmount + mmls + per-partition fls + mactime + disk anomaly + NTFS mount + artifact extraction
 │   ├── windows_artifact.py        # auto-chained after disk extracts: MFTECmd, RECmd, AmcacheParser, EvtxECmd, etc.
 │   ├── network_analyst.py
-│   ├── log_analyst.py
+│   ├── log_analyst.py             # EVTX (EvtxECmd) + generic regex scan
+│   ├── log_corpus.py              # multi-host SOC log corpus (evidence_kind=log-corpus): fans per-host files to evtx_xml/ecar/zeek_json/cisco_asa/snort_alert/webserver_access|iis_w3c/syslog_rfc5424; lifts H_PROCESS_INJECTION/H_BRUTE_FORCE/H_SCAN_RECON + writes per-host attack-stage Events into the Kùzu graph for the correlator's cross-host chain
+│   ├── ios_forensicator.py        # iOS FFS: Messages (attributedBody-decoded) + knowledgeC + locationd cell/wifi + Untappd + HealthKit, ileapp, MVT, sysdiagnose
+│   ├── macos_forensicator.py      # macOS FS: triage patterns + Unified Logs (assembled logarchive) + ExecPolicy + install.log + Apple Mail + network-history; runs all extractors unconditionally
+│   ├── browser_forensicator.py    # Firefox/Chromium history (Hindsight) + Chromium LevelDB web-storage
+│   ├── android_forensicator.py    # ALEAPP + MVT + Chromium WebView/Chrome LevelDB web-storage
 │   ├── cloud_forensicator.py
 │   ├── endpoint_analyst.py        # Velociraptor JSONL collections
 │   ├── timeline_synthesist.py     # Plaso (opt-in via --timeline)
 │   ├── correlator.py              # Kùzu cross-agent graph queries
 │   ├── threat_hunter.py           # YARA sweep with auto-generated rules from extracted IOCs
-│   ├── malware_triage.py          # strings + 14-family fingerprint match across .dmp + analysis text
+│   ├── malware_triage.py          # strings + 21-family fingerprint match across .dmp + analysis text (incl. Lumma Stealer)
 │   └── red_reviewer.py            # rule challenger (always) + LLM challenger (if API key)
 ├── skills/                # subprocess wrappers; each returns a dataclass with as_evidence()
 │   ├── vol3.py            # incl. --dump integration; venv-bin discovery via sys.executable
@@ -71,12 +76,19 @@ el/
 │   ├── user_activity_memory.py    # decodes Office MRU [F…][T<filetime>][O…]*path + MountedDevices ASCII column → drive-letter↔USB-serial map; corporate-staging detector (project fragment ∧ removable letter)
 │   ├── rdp_brute_force.py         # walks vol3 netscan JSONL for inbound TCP/3389 from external IPs, clusters per source-IP with CLOSED/SYN_RCVD/ESTABLISHED breakdown; threshold=10 connections/source for a brute-force cluster, ESTABLISHED>0 = breach
 │   ├── disk_anomaly.py    # 9 SKILL/MITRE-grounded path patterns
+│   ├── _sqlite.py         # evidence-safe SQLite: copy db + -wal/-shm/-journal to a workdir, open the COPY (WAL applied, evidence never written). Used by all macOS/iOS DB readers
+│   ├── chromium_leveldb.py        # Local Storage / IndexedDB / Session Storage leveldb ingest — pure-Python Snappy (zstd if present); recovers superseded + tombstoned records. Wired into browser + android agents
+│   ├── apple_archive.py           # NSKeyedArchiver ($objects/$top UID graph, cycle-safe) + typedstream (iMessage attributedBody → text)
+│   ├── macos_unifiedlogs.py       # Mandiant unifiedlog_iterator wrap + build_logarchive() assembles diagnostics+uuidtext into a string-resolvable archive (real dirs, not symlinks)
+│   ├── macos_execpolicy.py / macos_install_log.py / macos_network_history.py / apple_mail.py   # Gatekeeper cdhash/trust · app-install timeline+durations · DHCP+Wi-Fi movement · .emlx mail
+│   ├── ios_messages.py / ios_knowledgec.py / ios_locations.py / untappd_ios.py / ios_health.py # sms.db (attributedBody) · app-usage · cell/wifi fixes · beer check-ins · HealthKit
+│   ├── ecar.py / cisco_asa.py / snort_alert.py / zeek_json.py / evtx_xml.py / syslog_rfc5424.py # SOC log-corpus parsers: EDR telemetry · ASA syslog · Snort fast-alerts · existing-Zeek-JSON ingest · exported Windows Event XML · RFC5424 syslog
 │   └── (challengers/rules.py — adversarial review baseline)
 ├── intel/
-│   ├── hypotheses.py      # 15 case-level hypotheses with deterministic scorers
+│   ├── hypotheses.py      # 33 case-level hypotheses with deterministic scorers
 │   ├── ach.py             # Heuer-style scoring + ranking; insufficient findings excluded
-│   ├── attack_map.py      # 14 ATT&CK technique mappings (T-IDs)
-│   └── malware_families.py        # 14 family fingerprint patterns + hypothesis tags + ATT&CK
+│   ├── attack_map.py      # HYPOTHESIS_MAP (68 hypothesis→technique sets) + PATTERN_MAP + RULE_MAP — 105 (T-ID, name) rows over 61 distinct ATT&CK techniques
+│   └── malware_families.py        # 21 family fingerprint patterns + hypothesis tags + ATT&CK
 ├── orchestrator/
 │   ├── coordinator.py     # the state machine — dispatch + IOC re-extract + cross-case lookup + seal at DONE
 │   └── states.py          # State enum + legal transitions (immutable)
