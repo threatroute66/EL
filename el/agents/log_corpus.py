@@ -251,25 +251,44 @@ class LogCorpusAgent(Agent):
                     r.as_evidence(facts={"recon_alerts": len(recon)})))
             return fins, r.total
 
-        # Web access (Apache/nginx/proxy)
+        # Web / proxy access — Apache/nginx Common-Combined OR W3C extended
+        # (e.g. a secure-web-gateway proxy log). Sniff the W3C header and
+        # route to iis_w3c; otherwise the Combined-Log parser.
         if name.endswith((".log", ".log.gz")) and "access" in name:
-            from el.skills import webserver_access as wa
+            is_w3c = (b"#Fields:" in head or b"#Software:" in head
+                      or head.startswith(b"#Version"))
             try:
-                res = wa.scan_path(f)
+                if is_w3c:
+                    from el.skills import iis_w3c as _wa
+                    fmt, tool = "W3C", "el.iis_w3c"
+                else:
+                    from el.skills import webserver_access as _wa
+                    fmt, tool = "Apache/nginx", "el.webserver_access"
+                res = _wa.scan_path(f)
             except Exception:
                 return [], 0
             sha = hashlib.sha256(str(f).encode()).hexdigest()
-            return [Finding(
+            ev = EvidenceItem(
+                tool=tool, version="0.1.0", command=f"scan_path({f.name})",
+                output_sha256=sha, output_path=str(f),
+                extracted_facts={"format": fmt, "parsed_rows": res.parsed_rows,
+                                 "hits": len(res.hits)})
+            fins = [Finding(
                 case_id=ctx.case_id, agent=self.name, confidence="medium",
-                claim=(f"[{host}] Web access ({f.name}): {res.parsed_rows:,} "
-                       f"request(s) parsed, {len(res.hits)} anomaly hit(s)."),
-                evidence=[EvidenceItem(
-                    tool="el.webserver_access", version="0.1.0",
-                    command=f"scan_path({f.name})", output_sha256=sha,
-                    output_path=str(f),
-                    extracted_facts={"parsed_rows": res.parsed_rows,
-                                     "hits": len(res.hits)})],
-                hypotheses_supported=["H_DISK_ARTIFACTS"])], res.parsed_rows
+                claim=(f"[{host}] Web/proxy access ({fmt}, {f.name}): "
+                       f"{res.parsed_rows:,} request(s) parsed, "
+                       f"{len(res.hits)} anomaly hit(s)."),
+                evidence=[ev], hypotheses_supported=["H_DISK_ARTIFACTS"])]
+            hyp = sorted({h for hit in res.hits
+                          for h in (getattr(hit, "hypotheses", []) or [])})
+            if hyp:
+                desc = getattr(res.hits[0], "description", "")
+                fins.append(self._signal(
+                    ctx, host,
+                    f"{len(res.hits)} web/proxy-access anomaly hit(s) in "
+                    f"{f.name} (e.g. {desc[:80]}).",
+                    hyp, ev))
+            return fins, res.parsed_rows
 
         # RFC5424 syslog
         if name.endswith(".log") and (b">1 " in head[:64] or name == "syslog.log"):

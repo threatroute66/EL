@@ -181,6 +181,38 @@ def test_log_corpus_lifts_intrusion_hypotheses(tmp_path, monkeypatch):
                for f in findings)
 
 
+def test_log_corpus_w3c_proxy_routing(tmp_path, monkeypatch):
+    # A W3C-extended proxy log must route to iis_w3c (NOT the Apache parser,
+    # which returns 0 on W3C) and surface the scripted-client recon hit.
+    from el.agents.log_corpus import LogCorpusAgent
+    root = tmp_path / "corpus"
+    px = root / "PROXY"; px.mkdir(parents=True)
+    lines = [
+        "#Software: Test Secure Web Gateway", "#Version: 7.4",
+        "#Fields: date time c-ip cs-username cs-method cs-uri cs-version "
+        "sc-status sc-bytes cs-bytes time-taken cs-host cs(User-Agent) "
+        "cs(Referer) rs(Content-Type) s-cache-result x-proxy-action",
+    ]
+    for i in range(6):
+        lines.append(
+            f"2024-05-14 12:0{i}:00 10.44.30.10 - CONNECT evil{i}.test:443 "
+            f"HTTP/1.1 200 1 1 1 evil{i}.test python-requests/2.31.0 - - NONE "
+            "tunnel")
+    (px / "proxy_access.log").write_text("\n".join(lines) + "\n")
+    fw = root / "FW"; fw.mkdir(parents=True)
+    (fw / "cisco_asa.log").write_text(
+        "<166>May 14 12:00:00 FW %ASA-6-302013: Built outbound TCP connection "
+        "1 for o:1.2.3.4/5 to i:10.0.0.1/80\n")
+
+    ctx = _ctx(tmp_path, monkeypatch, "t-w3c", root)
+    findings = LogCorpusAgent().run(ctx)
+    web = [f for f in findings if "proxy access (W3C" in f.claim]
+    assert web, "proxy_access.log should be parsed as W3C"
+    assert "6 request(s) parsed" in web[0].claim       # not 0 (the old bug)
+    assert not any("(Apache/nginx, proxy_access.log)" in f.claim
+                   for f in findings)
+
+
 def test_log_corpus_below_threshold_no_lift(tmp_path, monkeypatch):
     # 3 failed logons (< 10) and no injection -> inventory only, no lift.
     from el.agents.log_corpus import LogCorpusAgent
