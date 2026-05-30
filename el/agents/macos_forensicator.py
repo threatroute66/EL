@@ -149,7 +149,36 @@ class MacOSForensicatorAgent(Agent):
         out.extend(self._run_unified_logs(ctx, exports))
         out.extend(self._run_execpolicy(ctx, exports))
         out.extend(self._run_install_log(ctx, exports))
+        out.extend(self._run_apple_mail(ctx, exports))
         return out
+
+    def _run_apple_mail(self, ctx: AgentContext,
+                        exports: Path) -> list[Finding]:
+        """Parse the Apple Mail .emlx store into a message inventory. Emits a
+        grounded summary (count + top correspondents). No-op if absent."""
+        from el.skills import apple_mail as am
+        root = am.find_mail_root(exports)
+        if root is None:
+            return []
+        analysis = ctx.case_dir / "analysis" / self.name / "apple_mail"
+        try:
+            run = am.parse(root, output_dir=analysis)
+        except am.AppleMailError as e:
+            return [self.emit(ctx, Finding(
+                case_id=ctx.case_id, agent=self.name,
+                confidence="insufficient",
+                claim=f"Apple Mail parse skipped: {e}"))]
+        if run.total == 0:
+            return []
+
+        corr = ", ".join(f"{a} ({n})" for a, n in run.top_correspondents(5))
+        return [self.emit(ctx, Finding(
+            case_id=ctx.case_id, agent=self.name, confidence="medium",
+            claim=(f"Apple Mail: {run.total} message(s) parsed from "
+                   f"{root.name}/. Top correspondents: {corr or '-'}."),
+            evidence=[run.as_evidence()],
+            hypotheses_supported=["H_DISK_ARTIFACTS"],
+        ))]
 
     def _run_execpolicy(self, ctx: AgentContext,
                          exports: Path) -> list[Finding]:
