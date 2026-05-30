@@ -142,6 +142,11 @@ class IOSForensicatorAgent(Agent):
                                        or ["H_DISK_ARTIFACTS"],
             )))
 
+        # Messages deep-dive — deterministic sms.db parse with
+        # attributedBody typedstream decode (iOS 14+ stores the text there,
+        # not in the `text` column). Runs regardless of iLEAPP availability.
+        out.extend(self._run_messages(ctx, src))
+
         # iLEAPP wrap — Brignoni's 80+-artifact parser. Skips silently
         # when iLEAPP isn't installed; emits one finding per surfaced
         # high-value artifact (calls, SMS, Safari history, locations,
@@ -182,6 +187,36 @@ class IOSForensicatorAgent(Agent):
         "AirDrop":                ("AirDrop transfers",   "medium", []),
         "Bluetooth":              ("Bluetooth pairings",  "low",    []),
     }
+
+    def _run_messages(self, ctx: AgentContext, src: Path) -> list[Finding]:
+        """Deterministic sms.db parse: handles + chats joined, text recovered
+        from attributedBody typedstream. Emits a grounded message inventory
+        (count, sent/received, top contacts, date range). No-op if absent."""
+        from el.skills import ios_messages as im
+        db = im.find_sms_db(src)
+        if db is None:
+            return []
+        analysis = ctx.case_dir / "analysis" / self.name / "messages"
+        try:
+            run = im.parse(db, output_dir=analysis)
+        except im.IOSMessagesError as e:
+            return [self.emit(ctx, Finding(
+                case_id=ctx.case_id, agent=self.name,
+                confidence="insufficient",
+                claim=f"iOS Messages parse skipped: {e}"))]
+        if run.total == 0:
+            return []
+        lo, hi = run.date_range()
+        top = ", ".join(f"{c} ({n})" for c, n in run.top_contacts(5))
+        return [self.emit(ctx, Finding(
+            case_id=ctx.case_id, agent=self.name, confidence="medium",
+            claim=(f"iOS Messages: {run.total} message(s) "
+                   f"({run.sent} sent / {run.received} received) across "
+                   f"{len(run.contacts())} contact(s), {lo} → {hi} UTC. "
+                   f"Top: {top or '-'}."),
+            evidence=[run.as_evidence()],
+            hypotheses_supported=["H_DISK_ARTIFACTS"],
+        ))]
 
     def _run_ileapp(self, ctx: AgentContext, src: Path) -> list[Finding]:
         from el.skills import ileapp as ileapp_skill
