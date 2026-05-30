@@ -91,9 +91,11 @@ class MacOSForensicatorAgent(Agent):
                 ))]
         exports = Path(exports)
 
+        out: list[Finding] = []
+
         hits = mt.run_all(exports)
         if not hits:
-            return [self.emit(ctx, Finding(
+            out.append(self.emit(ctx, Finding(
                 case_id=ctx.case_id, agent=self.name,
                 confidence="insufficient",
                 claim=(f"MacOSForensicator: walked extracted artifacts "
@@ -101,61 +103,77 @@ class MacOSForensicatorAgent(Agent):
                        f"persistence-plist / quarantine-anomaly / "
                        f"download-plist-suspicious hits. Absence of "
                        f"evidence; not evidence of absence."),
-            ))]
-
-        manifest = exports / "MANIFEST.txt"
-        sha = "0" * 64
-        if manifest.is_file():
-            sha = hashlib.sha256(manifest.read_bytes()).hexdigest()
-
-        out: list[Finding] = []
-        for h in hits:
-            confidence = "high" if h.family in _HIGH_FAMILIES else "medium"
-            facts = {
-                "family": h.family,
-                "matched_pattern": h.matched_pattern,
-                "event_count": h.event_count,
-                "source_files": h.source_files[:5],
-                "attack_techniques": [t for t, _ in h.attack],
-                "sample_text_head": h.sample_text[:200],
-            }
-            ev = EvidenceItem(
-                tool="el.macos_triage", version="0.1.0",
-                command=f"run_all({exports.name})",
-                output_sha256=sha, output_path=str(manifest),
-                extracted_facts=facts,
-            )
-            out.append(self.emit(ctx, Finding(
-                case_id=ctx.case_id, agent=self.name,
-                confidence=confidence,
-                claim=(f"macOS {h.family}: {h.event_count} "
-                       f"event(s) matched pattern {h.matched_pattern!r}. "
-                       f"ATT&CK: "
-                       f"{', '.join(t for t, _ in h.attack) or '-'}. "
-                       f"Sample: {h.sample_text[:150]!r}"),
-                evidence=[ev],
-                hypotheses_supported=mt.hypotheses_for(h.family)
-                                       or ["H_APT_ESPIONAGE"],
             )))
+        else:
+            manifest = exports / "MANIFEST.txt"
+            sha = "0" * 64
+            if manifest.is_file():
+                sha = hashlib.sha256(manifest.read_bytes()).hexdigest()
+
+            for h in hits:
+                confidence = "high" if h.family in _HIGH_FAMILIES else "medium"
+                facts = {
+                    "family": h.family,
+                    "matched_pattern": h.matched_pattern,
+                    "event_count": h.event_count,
+                    "source_files": h.source_files[:5],
+                    "attack_techniques": [t for t, _ in h.attack],
+                    "sample_text_head": h.sample_text[:200],
+                }
+                ev = EvidenceItem(
+                    tool="el.macos_triage", version="0.1.0",
+                    command=f"run_all({exports.name})",
+                    output_sha256=sha, output_path=str(manifest),
+                    extracted_facts=facts,
+                )
+                out.append(self.emit(ctx, Finding(
+                    case_id=ctx.case_id, agent=self.name,
+                    confidence=confidence,
+                    claim=(f"macOS {h.family}: {h.event_count} "
+                           f"event(s) matched pattern {h.matched_pattern!r}. "
+                           f"ATT&CK: "
+                           f"{', '.join(t for t, _ in h.attack) or '-'}. "
+                           f"Sample: {h.sample_text[:150]!r}"),
+                    evidence=[ev],
+                    hypotheses_supported=mt.hypotheses_for(h.family)
+                                           or ["H_APT_ESPIONAGE"],
+                )))
 
         # Tier 4.3 — macOS Unified Logs (tracev3) deep-dive via Mandiant's
-        # Rust parser. Walks for a .logarchive bundle or a Persist tracev3
-        # tree under the extracted filesystem; runs unifiedlog_iterator;
-        # emits a high-signal-event summary finding when something fires.
+        # parser. Runs UNCONDITIONALLY — a benign but artifact-rich Mac (no
+        # malicious-pattern hit above) still has a fully parseable Unified
+        # Log store, and short-circuiting here used to leave it untouched.
+        # The Mandiant Rust parser runs over a string-resolvable logarchive
+        # assembled from the extracted filesystem; emits a high-signal-event
+        # summary finding when something fires.
         out.extend(self._run_unified_logs(ctx, exports))
         return out
 
     def _run_unified_logs(self, ctx: AgentContext,
                             exports: Path) -> list[Finding]:
-        """Drive macos_unifiedlogs against any tracev3 / .logarchive found
-        under *exports*. No-op silently if the parser isn't installed or
-        no unified-log artifacts are present."""
+        """Drive macos_unifiedlogs against the extracted filesystem.
+
+        Prefers a freshly-assembled logarchive (diagnostics + uuidtext, so
+        message strings resolve); falls back to whatever
+        :func:`find_unified_logs` locates (a pre-exported ``.logarchive`` or a
+        bare ``diagnostics/`` tree). No-op silently if the parser isn't
+        installed or no unified-log artifacts are present."""
         from el.skills import macos_unifiedlogs as mul
         out: list[Finding] = []
-        target = mul.find_unified_logs(exports)
+        analysis = ctx.case_dir / "analysis" / self.name / "unified_logs"
+
+        # Assemble a string-resolvable logarchive when the raw store is
+        # present (returns None when there's no uuidtext table to gain from,
+        # in which case we parse whatever find_unified_logs turns up).
+        target = None
+        try:
+            target = mul.build_logarchive(exports, analysis / "logarchive")
+        except (mul.MacOSUnifiedLogsError, OSError):
+            target = None
+        if target is None:
+            target = mul.find_unified_logs(exports)
         if target is None:
             return out
-        analysis = ctx.case_dir / "analysis" / self.name / "unified_logs"
         try:
             run = mul.parse(target, analysis)
         except (mul.MacOSUnifiedLogsError, OSError, TypeError, ValueError) as e:

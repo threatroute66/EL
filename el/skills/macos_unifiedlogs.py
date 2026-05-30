@@ -24,6 +24,7 @@ from __future__ import annotations
 import gzip
 import hashlib
 import json
+import os
 import shutil
 import subprocess
 import time
@@ -315,3 +316,152 @@ def find_unified_logs(macos_root: Path) -> Path | None:
         if f.is_file():
             return f
     return None
+
+
+# ---------------------------------------------------------------------------
+# logarchive assembly
+# ---------------------------------------------------------------------------
+#
+# A mounted macOS filesystem keeps the two halves of the Unified Logging
+# store in *sibling* locations:
+#
+#   * tracev3 chunks + boot/time mapping  →  /private/var/db/diagnostics/
+#       (Persist/, Special/, Signpost/, HighVolume/, timesync/)
+#   * the format-string tables (dsc + uuidtext hex dirs) that resolve a
+#     chunk's `<private>`/shared-string references into readable messages
+#       →  /private/var/db/uuidtext/  (dsc/ + <2-hex>/ dirs)
+#
+# `unifiedlog_iterator --mode log-archive` expects ALL of these under one
+# directory root. Pointing it at `diagnostics/` alone parses the events but
+# leaves every message as "Unknown shared string message" because the dsc /
+# uuidtext tables aren't found. Assembling a real logarchive (diagnostics
+# subdirs + uuidtext children at the root) restores string resolution.
+#
+# CRITICAL GOTCHA: the parser enumerates the archive root with `read_dir`
+# and filters entries by `file_type().is_dir()`, which does NOT follow
+# symlinks. A symlink-based archive is therefore silently skipped and yields
+# ZERO events. We must materialise REAL directories. To avoid copying GB of
+# tracev3 when the case workspace is on the same filesystem as the evidence,
+# we hardlink the leaf files (real dirs + hardlinked files are
+# indistinguishable from a plain tree to the parser) and fall back to a byte
+# copy across filesystem boundaries (EXDEV) — the common SIFT case, where
+# evidence lives on /media and the case workspace on /.
+
+_DIAG_SUBDIRS = ("Persist", "Special", "Signpost", "HighVolume", "timesync")
+
+
+def _first_existing_dir(root: Path, rel_candidates: tuple[tuple[str, ...], ...]
+                         ) -> Path | None:
+    for rel in rel_candidates:
+        p = root.joinpath(*rel)
+        if p.is_dir():
+            return p
+    return None
+
+
+def _locate_diagnostics(macos_root: Path) -> Path | None:
+    found = _first_existing_dir(macos_root, (
+        ("private", "var", "db", "diagnostics"),
+        ("var", "db", "diagnostics"),
+        ("diagnostics",),
+    ))
+    if found:
+        return found
+    # macos_root may itself BE a diagnostics dir.
+    if (macos_root / "Persist").is_dir() or (macos_root / "Special").is_dir():
+        return macos_root
+    return None
+
+
+def _locate_uuidtext(macos_root: Path) -> Path | None:
+    return _first_existing_dir(macos_root, (
+        ("private", "var", "db", "uuidtext"),
+        ("var", "db", "uuidtext"),
+        ("uuidtext",),
+    ))
+
+
+def _link_or_copy(src: Path, dst: Path, *, force_copy: bool) -> None:
+    """Hardlink *src* → *dst*, falling back to a byte copy on EXDEV /
+    permission errors. Idempotent: a pre-existing *dst* is left untouched."""
+    if dst.exists():
+        return
+    if not force_copy:
+        try:
+            os.link(src, dst)
+            return
+        except OSError:
+            pass  # cross-device (EXDEV), perms, or already-linked → copy
+    try:
+        shutil.copy2(src, dst)
+    except OSError:
+        # copy2 can fail setting metadata on some FUSE/exfat mounts.
+        shutil.copyfile(src, dst)
+
+
+def _replicate_tree(src: Path, dst: Path, *, force_copy: bool) -> int:
+    """Replicate *src* into *dst* as real directories with hardlinked (or
+    copied) files. Returns the number of files materialised. Unreadable
+    subtrees are skipped rather than aborting the whole walk."""
+    count = 0
+    for dirpath, _dirnames, filenames in os.walk(src, onerror=lambda _e: None):
+        rel = os.path.relpath(dirpath, src)
+        target_dir = dst if rel == "." else dst / rel
+        target_dir.mkdir(parents=True, exist_ok=True)
+        for fn in filenames:
+            try:
+                _link_or_copy(Path(dirpath) / fn, target_dir / fn,
+                              force_copy=force_copy)
+                count += 1
+            except OSError:
+                continue
+    return count
+
+
+def build_logarchive(macos_root: Path, dest: Path,
+                      *, force_copy: bool = False) -> Path | None:
+    """Assemble a string-resolvable ``.logarchive``-shaped directory from a
+    mounted macOS filesystem *macos_root* into *dest*.
+
+    Returns *dest* on success, or ``None`` when the inputs needed for string
+    resolution aren't both present — in which case the caller should fall
+    back to :func:`find_unified_logs` (parsing ``diagnostics/`` in place is
+    equivalent and avoids a pointless copy when no uuidtext table exists).
+
+    The result contains real directories (never symlinks — see the module
+    note) so ``unifiedlog_iterator --mode log-archive`` can enumerate them.
+    Idempotent: re-running over an existing *dest* tops up missing files
+    without re-copying what's already there.
+    """
+    macos_root = Path(macos_root)
+    dest = Path(dest)
+
+    diagnostics = _locate_diagnostics(macos_root)
+    if diagnostics is None:
+        return None
+    uuidtext = _locate_uuidtext(macos_root)
+    if uuidtext is None:
+        # No format-string table → assembling buys nothing over parsing the
+        # real diagnostics dir directly. Signal the caller to fall back.
+        return None
+
+    dest.mkdir(parents=True, exist_ok=True)
+
+    materialised_chunks = False
+    for name in _DIAG_SUBDIRS:
+        src = diagnostics / name
+        if src.is_dir():
+            _replicate_tree(src, dest / name, force_copy=force_copy)
+            if name in ("Persist", "Special", "HighVolume"):
+                materialised_chunks = True
+    if not materialised_chunks:
+        # diagnostics dir had no tracev3 chunk store — nothing to parse.
+        return None
+
+    # uuidtext children (dsc/ + <2-hex>/ dirs) go at the archive ROOT,
+    # alongside Persist/ — that is where the parser looks for them.
+    for child in uuidtext.iterdir():
+        if child.is_dir():
+            _replicate_tree(child, dest / child.name, force_copy=force_copy)
+
+    return dest
