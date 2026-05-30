@@ -147,7 +147,103 @@ class MacOSForensicatorAgent(Agent):
         # assembled from the extracted filesystem; emits a high-signal-event
         # summary finding when something fires.
         out.extend(self._run_unified_logs(ctx, exports))
+        out.extend(self._run_execpolicy(ctx, exports))
+        out.extend(self._run_install_log(ctx, exports))
         return out
+
+    def _run_execpolicy(self, ctx: AgentContext,
+                         exports: Path) -> list[Finding]:
+        """Parse the Gatekeeper/notarization ExecPolicy scan cache. Emits a
+        grounded inventory summary plus a per-executable lead for any binary
+        recorded as unsigned-and-downloaded or signed-but-invalid (the
+        dropper / tampered-binary patterns). No-op if the DB isn't present."""
+        from el.skills import macos_execpolicy as ep
+        db = ep.find_execpolicy(exports)
+        if db is None:
+            return []
+        analysis = ctx.case_dir / "analysis" / self.name / "execpolicy"
+        try:
+            run = ep.parse(db, output_dir=analysis)
+        except ep.MacOSExecPolicyError as e:
+            return [self.emit(ctx, Finding(
+                case_id=ctx.case_id, agent=self.name,
+                confidence="insufficient",
+                claim=f"macOS ExecPolicy parse skipped: {e}"))]
+        if run.total == 0:
+            return []
+
+        out: list[Finding] = []
+        out.append(self.emit(ctx, Finding(
+            case_id=ctx.case_id, agent=self.name, confidence="medium",
+            claim=(f"macOS ExecPolicy: {run.total} executable(s) scanned by "
+                   f"Gatekeeper — {len(run.unsigned)} unsigned, "
+                   f"{len(run.invalid)} invalid-signature, "
+                   f"{len(run.quarantined)} quarantined (downloaded)."),
+            evidence=[run.as_evidence()],
+            hypotheses_supported=["H_DISK_ARTIFACTS"],
+        )))
+
+        # Narrow, low-false-positive leads: a plain unsigned local interpreter
+        # is benign, so only surface signed-but-invalid (revoked/tampered) or
+        # unsigned-AND-quarantined (an unsigned binary that came from the net).
+        strong = [m for m in run.measurements
+                  if (m.is_signed is True and m.is_valid is False)
+                  or (m.is_signed is False and m.is_quarantined is True)]
+        for m in strong:
+            why = ("signed but signature invalid/revoked"
+                   if m.is_signed else "unsigned and quarantined (downloaded)")
+            out.append(self.emit(ctx, Finding(
+                case_id=ctx.case_id, agent=self.name, confidence="medium",
+                claim=(f"macOS ExecPolicy flagged {m.file_identifier!r} "
+                       f"({m.bundle_identifier or 'no bundle id'}): {why}. "
+                       f"cdhash={m.cdhash or '-'}, "
+                       f"team={m.team_identifier or '-'}, "
+                       f"first-scanned {m.scanned_utc or '?'} UTC."),
+                evidence=[run.as_evidence(facts={
+                    "file_identifier": m.file_identifier,
+                    "cdhash": m.cdhash,
+                    "is_signed": m.is_signed,
+                    "is_valid": m.is_valid,
+                    "is_quarantined": m.is_quarantined,
+                    "scanned_utc": m.scanned_utc,
+                })],
+                hypotheses_supported=["H_MAC_FILELESS_AMFI_BYPASS",
+                                       "H_LIVING_OFF_THE_LAND"],
+            )))
+        return out
+
+    def _run_install_log(self, ctx: AgentContext,
+                          exports: Path) -> list[Finding]:
+        """Parse install.log into a software-install timeline. Emits a grounded
+        summary (installed apps, tz/host changes). No-op if absent."""
+        from el.skills import macos_install_log as il
+        logs = il.find_install_logs(exports)
+        if not logs:
+            return []
+        analysis = ctx.case_dir / "analysis" / self.name / "install_log"
+        try:
+            run = il.parse(logs[0], output_dir=analysis)
+        except il.MacOSInstallLogError as e:
+            return [self.emit(ctx, Finding(
+                case_id=ctx.case_id, agent=self.name,
+                confidence="insufficient",
+                claim=f"macOS install.log parse skipped: {e}"))]
+        if not run.installed_apps and not run.durations:
+            return []
+
+        recent = ", ".join(
+            f"{a.name} ({a.version})" for a in run.installed_apps[-5:]) or "-"
+        tz_note = ""
+        if run.tz_changed:
+            tz_note = (f" Device crossed timezones (offsets "
+                       f"{', '.join(o for o, _ in run.tz_offsets)}).")
+        return [self.emit(ctx, Finding(
+            case_id=ctx.case_id, agent=self.name, confidence="medium",
+            claim=(f"macOS install.log: {len(run.installed_apps)} app "
+                   f"install(s) recorded; most recent: {recent}.{tz_note}"),
+            evidence=[run.as_evidence()],
+            hypotheses_supported=["H_DISK_ARTIFACTS"],
+        ))]
 
     def _run_unified_logs(self, ctx: AgentContext,
                             exports: Path) -> list[Finding]:
