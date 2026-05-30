@@ -160,6 +160,33 @@ def scan_paths(rules_path: Path, target: Path, out_dir: Path,
     )
 
 
+# Curated family rules appended to every generated rule file so a known
+# family is named even when the case IOC catalog doesn't already carry its
+# indicators. Keep these high-signal (hallmark UA / build string / specific
+# C2 endpoint) to avoid false positives. No regex / external modules so the
+# block compiles under both YARA 4.x and YARA-X.
+_CURATED_RULES = r'''
+rule EL_Lumma_Stealer {
+    meta:
+        description = "Lumma Stealer (LummaC2) infostealer — C2 / UA markers"
+        family = "Lumma Stealer"
+        author = "EL"
+    strings:
+        $ua    = "TeslaBrowser/5.5" ascii wide
+        $name  = "LummaC2" ascii wide nocase
+        $c2api = "/api/set_agent" ascii wide nocase
+        $tok   = "token=" ascii wide nocase
+        $log   = "act=log" ascii wide nocase
+        $act1  = "act=receive_message" ascii wide nocase
+        $act2  = "act=recive_message" ascii wide nocase
+        $act3  = "act=life" ascii wide nocase
+    condition:
+        $ua or $name or $act1 or $act2 or $act3 or
+        ($c2api and ($tok or $log))
+}
+'''
+
+
 def generate_ioc_rules(iocs: dict[str, list[str]], out_path: Path,
                        case_id: str = "case") -> Path:
     """Emit a YARA file targeting the case's IOC catalog.
@@ -214,5 +241,6 @@ def generate_ioc_rules(iocs: dict[str, list[str]], out_path: Path,
                       f'        $a = "{v}" ascii nocase wide',
                       "    condition: $a", "}", ""]
 
+    lines.append(_CURATED_RULES)
     out_path.write_text("\n".join(lines))
     return out_path
