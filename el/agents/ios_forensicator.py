@@ -151,6 +151,9 @@ class IOSForensicatorAgent(Agent):
         # deterministic, run independently of iLEAPP.
         out.extend(self._run_knowledgec(ctx, src))
         out.extend(self._run_locations(ctx, src))
+        # App-data extractors: Untappd check-ins + HealthKit summary.
+        out.extend(self._run_untappd(ctx, src))
+        out.extend(self._run_health(ctx, src))
 
         # iLEAPP wrap — Brignoni's 80+-artifact parser. Skips silently
         # when iLEAPP isn't installed; emits one finding per surfaced
@@ -275,6 +278,62 @@ class IOSForensicatorAgent(Agent):
             case_id=ctx.case_id, agent=self.name, confidence="medium",
             claim=(f"iOS location cache: {run.total} cell/Wi-Fi fix(es) from "
                    f"{', '.join(run.tables_read)}, {lo} → {hi} UTC."),
+            evidence=[run.as_evidence()],
+            hypotheses_supported=["H_DISK_ARTIFACTS"],
+        ))]
+
+    def _run_untappd(self, ctx: AgentContext, src: Path) -> list[Finding]:
+        """Parse cached Untappd beer check-ins (beer, venue + coords, rating,
+        comment). Emits a grounded summary. No-op if the app isn't present."""
+        from el.skills import untappd_ios as ut
+        cache = ut.find_untappd_cache(src)
+        if cache is None:
+            return []
+        analysis = ctx.case_dir / "analysis" / self.name / "untappd"
+        try:
+            run = ut.parse(cache, output_dir=analysis)
+        except ut.UntappdError as e:
+            return [self.emit(ctx, Finding(
+                case_id=ctx.case_id, agent=self.name,
+                confidence="insufficient",
+                claim=f"Untappd parse skipped: {e}"))]
+        if run.total == 0:
+            return []
+        commented = run.with_comments()
+        return [self.emit(ctx, Finding(
+            case_id=ctx.case_id, agent=self.name, confidence="medium",
+            claim=(f"Untappd: {run.total} cached beer check-in(s), "
+                   f"{len(commented)} with comments, across "
+                   f"{len(run.venues())} venue(s) "
+                   f"(check-in venues carry recorded lat/lon)."),
+            evidence=[run.as_evidence()],
+            hypotheses_supported=["H_DISK_ARTIFACTS"],
+        ))]
+
+    def _run_health(self, ctx: AgentContext, src: Path) -> list[Finding]:
+        """Parse HealthKit (workouts + quantity-sample type histogram). Emits a
+        grounded summary. No-op if absent."""
+        from el.skills import ios_health as ih
+        db = ih.find_health_db(src)
+        if db is None:
+            return []
+        analysis = ctx.case_dir / "analysis" / self.name / "health"
+        try:
+            run = ih.parse(db, output_dir=analysis)
+        except ih.IOSHealthError as e:
+            return [self.emit(ctx, Finding(
+                case_id=ctx.case_id, agent=self.name,
+                confidence="insufficient",
+                claim=f"iOS Health parse skipped: {e}"))]
+        if run.workout_count == 0 and not run.type_aggs:
+            return []
+        dist = (f"max workout distance {run.max_workout_distance:g} m; "
+                if run.max_workout_distance else "")
+        return [self.emit(ctx, Finding(
+            case_id=ctx.case_id, agent=self.name, confidence="medium",
+            claim=(f"iOS Health: {run.workout_count} workout(s); {dist}"
+                   f"{len(run.type_aggs)} quantity-sample type(s), "
+                   f"{run.first_sample_utc} → {run.last_sample_utc} UTC."),
             evidence=[run.as_evidence()],
             hypotheses_supported=["H_DISK_ARTIFACTS"],
         ))]
