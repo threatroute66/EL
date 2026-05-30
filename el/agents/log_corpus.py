@@ -22,6 +22,9 @@ from el.schemas.finding import EvidenceItem, Finding
 
 _ZEEK_MIN = 2                     # min recognised Zeek logs to treat a dir as Zeek
 _SNIFF = 4096
+# Conservative thresholds for lifting an intrusion hypothesis from a count.
+_FAILED_LOGON_MIN = 10            # Windows 4625 burst -> brute force
+_ASA_DENY_MIN = 50                # blocked inbound probing -> recon/scan
 
 
 def _head(path: Path) -> bytes:
@@ -115,16 +118,28 @@ class LogCorpusAgent(Agent):
         for f in files:
             if f in handled:
                 continue
-            fin, n = self._route_file(ctx, f, host.name, outdir)
-            if fin is not None:
-                out.append(self.emit(ctx, fin))
+            fins, n = self._route_file(ctx, f, host.name, outdir)
+            if fins:
+                for fin in fins:
+                    out.append(self.emit(ctx, fin))
                 sources += 1
                 events += n
         return out, sources, events
 
+    def _signal(self, ctx: AgentContext, host: str, claim: str,
+                tags: list[str], evidence) -> Finding:
+        """A targeted threat finding that lifts a specific intrusion
+        hypothesis (kept separate from the H_DISK_ARTIFACTS inventory)."""
+        return Finding(
+            case_id=ctx.case_id, agent=self.name, confidence="medium",
+            claim=f"[{host}] {claim}", evidence=[evidence],
+            hypotheses_supported=tags)
+
     def _route_file(self, ctx: AgentContext, f: Path, host: str,
                     outdir: Path):
-        """Dispatch one file to its parser; return (Finding|None, record_count)."""
+        """Dispatch one file to its parser. Returns (list[Finding], count):
+        an H_DISK_ARTIFACTS inventory finding, plus any targeted threat
+        findings whose high-signal counts cross a conservative threshold."""
         name = f.name.lower()
         head = _head(f)
 
@@ -136,15 +151,24 @@ class LogCorpusAgent(Agent):
             try:
                 r = ex.parse(f, output_dir=outdir / "evtx")
             except ex.EvtxXmlError:
-                return None, 0
+                return [], 0
             fail = len(r.with_id("4625"))
-            return Finding(
+            fins = [Finding(
                 case_id=ctx.case_id, agent=self.name, confidence="medium",
                 claim=(f"[{host}] Windows Event XML ({f.name}): {r.total:,} "
                        f"event(s); {len(r.logons())} logon, {fail} failed-logon "
                        f"(4625), {len(r.process_creations())} process event(s)."),
                 evidence=[r.as_evidence()],
-                hypotheses_supported=["H_DISK_ARTIFACTS"]), r.total
+                hypotheses_supported=["H_DISK_ARTIFACTS"])]
+            if fail >= _FAILED_LOGON_MIN:
+                fins.append(self._signal(
+                    ctx, host,
+                    f"{fail} failed logons (Event 4625) on {host} — "
+                    f"failed-authentication burst consistent with brute-force "
+                    f"/ password-spray.",
+                    ["H_BRUTE_FORCE"],
+                    r.as_evidence(facts={"failed_logon_4625": fail})))
+            return fins, r.total
 
         # eCAR EDR telemetry
         if name.endswith(".json") and b'"object"' in head and b'"action"' in head:
@@ -152,16 +176,26 @@ class LogCorpusAgent(Agent):
             try:
                 r = ecar.parse(f, output_dir=outdir / "ecar")
             except ecar.ECARError:
-                return None, 0
-            inj = len(r.remote_thread_creations())
-            return Finding(
+                return [], 0
+            inj = r.remote_thread_creations()
+            fins = [Finding(
                 case_id=ctx.case_id, agent=self.name, confidence="medium",
                 claim=(f"[{host}] eCAR EDR: {r.total:,} event(s); "
                        f"{len(r.processes())} process-create, "
-                       f"{len(r.network_flows())} net-flow, {inj} remote-thread "
-                       f"injection(s)."),
+                       f"{len(r.network_flows())} net-flow, {len(inj)} "
+                       f"remote-thread injection(s)."),
                 evidence=[r.as_evidence()],
-                hypotheses_supported=["H_DISK_ARTIFACTS"]), r.total
+                hypotheses_supported=["H_DISK_ARTIFACTS"])]
+            if inj:
+                tgt = sorted({str(e.target_pid) for e in inj if e.target_pid})
+                fins.append(self._signal(
+                    ctx, host,
+                    f"{len(inj)} cross-process remote-thread creation(s) on "
+                    f"{host} (target pid(s): {', '.join(tgt) or '?'}) — "
+                    f"high-fidelity process-injection telemetry.",
+                    ["H_PROCESS_INJECTION"],
+                    r.as_evidence(facts={"remote_thread_creations": len(inj)})))
+            return fins, r.total
 
         # Cisco ASA syslog
         if name.endswith(".log") and (b"%ASA-" in head or "asa" in name):
@@ -169,15 +203,24 @@ class LogCorpusAgent(Agent):
             try:
                 r = cisco_asa.parse(f, output_dir=outdir / "asa")
             except cisco_asa.CiscoASAError:
-                return None, 0
-            if r.total:
-                return Finding(
-                    case_id=ctx.case_id, agent=self.name, confidence="medium",
-                    claim=(f"[{host}] Cisco ASA: {r.total:,} event(s); "
-                           f"{len(r.connections())} connection(s), "
-                           f"{len(r.denies())} ACL deny(ies)."),
-                    evidence=[r.as_evidence()],
-                    hypotheses_supported=["H_DISK_ARTIFACTS"]), r.total
+                return [], 0
+            if not r.total:
+                return [], 0
+            fins = [Finding(
+                case_id=ctx.case_id, agent=self.name, confidence="medium",
+                claim=(f"[{host}] Cisco ASA: {r.total:,} event(s); "
+                       f"{len(r.connections())} connection(s), "
+                       f"{len(r.denies())} ACL deny(ies)."),
+                evidence=[r.as_evidence()],
+                hypotheses_supported=["H_DISK_ARTIFACTS"])]
+            if len(r.denies()) >= _ASA_DENY_MIN:
+                fins.append(self._signal(
+                    ctx, host,
+                    f"{len(r.denies())} ASA ACL denies — sustained blocked "
+                    f"inbound probing consistent with scanning / recon.",
+                    ["H_SCAN_RECON"],
+                    r.as_evidence(facts={"acl_denies": len(r.denies())})))
+            return fins, r.total
 
         # Snort / ET fast-alert
         if name.endswith(".log") and (b"[**]" in head or "snort" in name):
@@ -185,15 +228,28 @@ class LogCorpusAgent(Agent):
             try:
                 r = sn.parse(f, output_dir=outdir / "snort")
             except sn.SnortAlertError:
-                return None, 0
-            if r.total:
-                return Finding(
-                    case_id=ctx.case_id, agent=self.name, confidence="medium",
-                    claim=(f"[{host}] Snort IDS: {r.total:,} alert(s); "
-                           f"{len(r.high_priority())} priority-1; "
-                           f"top: {[s for s, _ in r.top_signatures(3)]}."),
-                    evidence=[r.as_evidence()],
-                    hypotheses_supported=["H_DISK_ARTIFACTS"]), r.total
+                return [], 0
+            if not r.total:
+                return [], 0
+            fins = [Finding(
+                case_id=ctx.case_id, agent=self.name, confidence="medium",
+                claim=(f"[{host}] Snort IDS: {r.total:,} alert(s); "
+                       f"{len(r.high_priority())} priority-1; "
+                       f"top: {[s for s, _ in r.top_signatures(3)]}."),
+                evidence=[r.as_evidence()],
+                hypotheses_supported=["H_DISK_ARTIFACTS"])]
+            recon = [a for a in r.alerts
+                     if "recon" in a.classification.lower()
+                     or "scan" in a.classification.lower()
+                     or "scan" in a.msg.lower()]
+            if recon:
+                fins.append(self._signal(
+                    ctx, host,
+                    f"{len(recon)} Snort recon/scan alert(s) (e.g. "
+                    f"{recon[0].msg!r}) — network scanning / reconnaissance.",
+                    ["H_SCAN_RECON"],
+                    r.as_evidence(facts={"recon_alerts": len(recon)})))
+            return fins, r.total
 
         # Web access (Apache/nginx/proxy)
         if name.endswith((".log", ".log.gz")) and "access" in name:
@@ -201,9 +257,9 @@ class LogCorpusAgent(Agent):
             try:
                 res = wa.scan_path(f)
             except Exception:
-                return None, 0
+                return [], 0
             sha = hashlib.sha256(str(f).encode()).hexdigest()
-            return Finding(
+            return [Finding(
                 case_id=ctx.case_id, agent=self.name, confidence="medium",
                 claim=(f"[{host}] Web access ({f.name}): {res.parsed_rows:,} "
                        f"request(s) parsed, {len(res.hits)} anomaly hit(s)."),
@@ -213,7 +269,7 @@ class LogCorpusAgent(Agent):
                     output_path=str(f),
                     extracted_facts={"parsed_rows": res.parsed_rows,
                                      "hits": len(res.hits)})],
-                hypotheses_supported=["H_DISK_ARTIFACTS"]), res.parsed_rows
+                hypotheses_supported=["H_DISK_ARTIFACTS"])], res.parsed_rows
 
         # RFC5424 syslog
         if name.endswith(".log") and (b">1 " in head[:64] or name == "syslog.log"):
@@ -221,14 +277,15 @@ class LogCorpusAgent(Agent):
             try:
                 r = sl.parse(f, output_dir=outdir / "syslog")
             except sl.SyslogError:
-                return None, 0
-            if r.total:
-                return Finding(
-                    case_id=ctx.case_id, agent=self.name, confidence="medium",
-                    claim=(f"[{host}] syslog ({f.name}): {r.total:,} event(s) "
-                           f"from {len(r.by_app())} app(s); "
-                           f"{len(r.high_severity())} at severity<=err."),
-                    evidence=[r.as_evidence()],
-                    hypotheses_supported=["H_DISK_ARTIFACTS"]), r.total
+                return [], 0
+            if not r.total:
+                return [], 0
+            return [Finding(
+                case_id=ctx.case_id, agent=self.name, confidence="medium",
+                claim=(f"[{host}] syslog ({f.name}): {r.total:,} event(s) "
+                       f"from {len(r.by_app())} app(s); "
+                       f"{len(r.high_severity())} at severity<=err."),
+                evidence=[r.as_evidence()],
+                hypotheses_supported=["H_DISK_ARTIFACTS"])], r.total
 
-        return None, 0
+        return [], 0

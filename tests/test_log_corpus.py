@@ -133,6 +133,72 @@ def test_log_corpus_agent_fans_out(tmp_path, monkeypatch):
     assert "eCAR EDR" in claims
 
 
+def _evtx_n_4625(n: int) -> str:
+    ev = (f'<Event xmlns="{_NS}"><System>'
+          '<Provider Name="Microsoft-Windows-Security-Auditing"/>'
+          '<EventID>4625</EventID>'
+          '<TimeCreated SystemTime="2024-05-14T12:00:00.0Z"/>'
+          '<Computer>DC</Computer><Channel>Security</Channel></System>'
+          '<EventData><Data Name="TargetUserName">admin</Data></EventData></Event>')
+    return '<?xml version="1.0"?>\n<Events>\n' + ev * n + '\n</Events>'
+
+
+def _make_threat_corpus(root: Path):
+    edr = root / "EDR"; edr.mkdir(parents=True)
+    (edr / "ecar.json").write_text("\n".join(json.dumps(d) for d in [
+        {"timestamp_ms": 1715688000000, "hostname": "EDR", "object": "PROCESS",
+         "action": "CREATE", "properties": {"command_line": "x"}},
+        {"timestamp_ms": 1715688001000, "hostname": "EDR", "object": "THREAD",
+         "action": "REMOTE_CREATE", "properties": {"target_pid": 1234,
+         "image_path": "inj.exe"}},
+    ]) + "\n")
+    dc = root / "DC"; dc.mkdir(parents=True)
+    (dc / "windows_event_security.xml").write_text(_evtx_n_4625(12))
+    fw = root / "FW"; fw.mkdir(parents=True)
+    deny = ("<166>May 14 12:00:00 FW %ASA-4-106023: Deny tcp src o:1.2.3.4/5 "
+            "dst i:10.0.0.1/3389 by access-group x\n")
+    (fw / "cisco_asa.log").write_text(deny * 60)
+    ids = root / "IDS"; ids.mkdir(parents=True)
+    (ids / "snort_alert.log").write_text(
+        "05/14-12:00:28.844 [**] [1:2000575:8] ET SCAN ICMP PING IPTools [**] "
+        "[Classification: attempted-recon] [Priority: 3] {ICMP} 1.2.3.4 -> 10.0.0.1\n")
+
+
+def test_log_corpus_lifts_intrusion_hypotheses(tmp_path, monkeypatch):
+    from el.agents.log_corpus import LogCorpusAgent
+    root = tmp_path / "threat"
+    _make_threat_corpus(root)
+    ctx = _ctx(tmp_path, monkeypatch, "t-threat", root)
+    findings = LogCorpusAgent().run(ctx)
+    tags = {t for f in findings for t in f.hypotheses_supported}
+    assert "H_PROCESS_INJECTION" in tags       # eCAR remote-thread creation
+    assert "H_BRUTE_FORCE" in tags             # 12 × Event 4625
+    assert "H_SCAN_RECON" in tags              # 60 ASA denies + Snort scan
+    # the inventory findings remain (low-FP separation)
+    assert "H_DISK_ARTIFACTS" in tags
+    # a targeted finding names the brute-force burst
+    assert any("brute-force" in f.claim and "H_BRUTE_FORCE" in f.hypotheses_supported
+               for f in findings)
+
+
+def test_log_corpus_below_threshold_no_lift(tmp_path, monkeypatch):
+    # 3 failed logons (< 10) and no injection -> inventory only, no lift.
+    from el.agents.log_corpus import LogCorpusAgent
+    root = tmp_path / "quiet"
+    dc = root / "DC"; dc.mkdir(parents=True)
+    (dc / "windows_event_security.xml").write_text(_evtx_n_4625(3))
+    h2 = root / "H2"; h2.mkdir(parents=True)
+    (h2 / "cisco_asa.log").write_text(
+        "<166>May 14 12:00:00 FW %ASA-6-302013: Built outbound TCP connection 1 "
+        "for o:1.2.3.4/5 to i:10.0.0.1/80\n")
+    ctx = _ctx(tmp_path, monkeypatch, "t-quiet", root)
+    findings = LogCorpusAgent().run(ctx)
+    tags = {t for f in findings for t in f.hypotheses_supported}
+    assert "H_BRUTE_FORCE" not in tags and "H_PROCESS_INJECTION" not in tags
+    assert "H_SCAN_RECON" not in tags
+    assert tags == {"H_DISK_ARTIFACTS"}
+
+
 def test_log_corpus_agent_empty(tmp_path, monkeypatch):
     from el.agents.log_corpus import LogCorpusAgent
     root = tmp_path / "empty"
