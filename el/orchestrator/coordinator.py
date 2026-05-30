@@ -34,6 +34,7 @@ from el.agents.macos_forensicator import MacOSForensicatorAgent
 from el.agents.execution_corroborator import ExecutionCorroboratorAgent
 from el.agents.lateral_movement_analyst import LateralMovementAnalystAgent
 from el.agents.log_analyst import LogAnalystAgent
+from el.agents.log_corpus import LogCorpusAgent
 from el.agents.malware_triage import MalwareTriageAgent
 from el.agents.windows_artifact import WindowsArtifactAgent
 from el.agents.memory_forensicator import MemoryForensicatorAgent
@@ -120,6 +121,8 @@ KIND_TO_AGENT: dict[str, type[Agent]] = {
     # iOS sysdiagnose tarball (sysdiagnose_*.tar.gz)
     "ios-sysdiagnose": IOSForensicatorAgent,
     "linux-fs-dir": LinuxForensicatorAgent,
+    # Multi-host SOC/IR log corpus (per-host dirs of mixed log formats)
+    "log-corpus": LogCorpusAgent,
     "qnap-nas-dir": LinuxForensicatorAgent,
     # CyLR offline-collector zip — triage classifies target OS by
     # inspecting the zip's tree shape (drive-letter prefix → Windows,

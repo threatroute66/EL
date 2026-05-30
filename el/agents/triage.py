@@ -683,11 +683,65 @@ class TriageAgent(Agent):
             return False
         return False
 
+    @staticmethod
+    def _looks_like_log_corpus(d) -> bool:
+        """True if *d* has >=2 child subdirs that each contain a recognised
+        log source (Windows Event XML / eCAR / Zeek / Cisco ASA / Snort /
+        web access / syslog) — the multi-host SOC log-corpus shape."""
+        try:
+            subdirs = [c for c in d.iterdir() if c.is_dir()]
+        except OSError:
+            return False
+        if len(subdirs) < 2:
+            return False
+        logset = {"ecar.json", "cisco_asa.log", "snort_alert.log",
+                  "syslog.log", "conn.json", "dns.json", "web_access.log",
+                  "proxy_access.log"}
+        marker_hosts = 0
+        for sd in subdirs[:40]:
+            try:
+                for f in sd.iterdir():
+                    n = f.name.lower()
+                    if (n in logset or n.startswith("windows_event")
+                            or n.endswith("access.log")
+                            or n.endswith("_alert.log")):
+                        marker_hosts += 1
+                        break
+            except OSError:
+                continue
+            if marker_hosts >= 2:
+                return True
+        return False
+
     def _classify_directory(self, ctx: AgentContext, analysis) -> list[Finding]:
         """Classify a directory input: Windows artifacts vs Velociraptor collection vs unknown."""
         import hashlib
         out: list[Finding] = []
         d = ctx.input_path
+
+        # Multi-host log corpus — a directory of per-host subdirs each holding
+        # mixed-format logs (Windows Event XML / eCAR / Zeek JSON / Cisco ASA /
+        # Snort / web access / syslog). Checked early: the root carries no
+        # FS-root markers, so the OS-shape probes below would all miss it.
+        if self._looks_like_log_corpus(d):
+            import hashlib as _hl
+            ctx.shared["evidence_kind"] = "log-corpus"
+            hosts = sorted(c.name for c in d.iterdir() if c.is_dir())[:50]
+            sha = _hl.sha256(("log-corpus:" + ",".join(hosts)).encode()).hexdigest()
+            out.append(self.emit(ctx, Finding(
+                case_id=ctx.case_id, agent=self.name, confidence="high",
+                claim=(f"Input directory looks like a multi-host log corpus "
+                       f"({len(hosts)} host dir(s)) with recognised log "
+                       f"sources (Windows Event XML / eCAR / Zeek JSON / "
+                       f"Cisco ASA / Snort / web access / syslog) — routes to "
+                       f"LogCorpusAgent."),
+                evidence=[EvidenceItem(
+                    tool="el.triage", version="0.1.0",
+                    command=f"log-corpus shape probe {d.name}",
+                    output_sha256=sha, output_path=str(d),
+                    extracted_facts={"host_dirs": hosts})],
+                hypotheses_supported=["H_DISK_ARTIFACTS"])))
+            return out
 
         # MTD/YAFFS2 bundle — old Android phone dumps (pre-Android-4)
         # arrive as a directory with multiple mtdN.dd raw partition
