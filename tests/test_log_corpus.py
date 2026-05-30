@@ -231,6 +231,32 @@ def test_log_corpus_below_threshold_no_lift(tmp_path, monkeypatch):
     assert tags == {"H_DISK_ARTIFACTS"}
 
 
+def test_log_corpus_correlator_cross_host_chain(tmp_path, monkeypatch):
+    # LogCorpusAgent writes per-host attack-stage Events into the graph;
+    # the Correlator must tie them into a multi-stage intrusion chain and
+    # flag the shared external attacker IP as a pivot.
+    from el.agents.log_corpus import LogCorpusAgent
+    from el.agents.correlator import CorrelatorAgent
+    from el.evidence.graph import init_graph
+    root = tmp_path / "threat"
+    _make_threat_corpus(root)               # injection + denies + snort scan
+    ctx = _ctx(tmp_path, monkeypatch, "t-corr", root)
+    init_graph(ctx.case_dir)
+    LogCorpusAgent().run(ctx)               # populates Host/Event/IPAddress
+    findings = CorrelatorAgent().run(ctx)
+
+    chain = [f for f in findings
+             if "Multi-stage intrusion chain" in f.claim
+             and "H_APT_ESPIONAGE" in f.hypotheses_supported]
+    assert chain, "correlator should surface the cross-host intrusion chain"
+    assert "process_injection" in chain[0].claim
+
+    pivot = [f for f in findings
+             if "1.2.3.4" in f.claim
+             and "H_LATERAL_MOVEMENT" in f.hypotheses_supported]
+    assert pivot, "shared attacker IP across hosts should lift H_LATERAL_MOVEMENT"
+
+
 def test_log_corpus_agent_empty(tmp_path, monkeypatch):
     from el.agents.log_corpus import LogCorpusAgent
     root = tmp_path / "empty"

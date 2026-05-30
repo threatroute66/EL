@@ -174,6 +174,60 @@ class CorrelatorAgent(Agent):
         except Exception as e:
             notes.append(f"dns enrichment failed: {e}")
 
+        # Cross-host log-corpus chain. LogCorpusAgent writes one
+        # Event{source='log_corpus', channel=<attack-stage>} per host signal.
+        # Correlate the stages estate-wide: a multi-stage chain spanning hosts
+        # is a coordinated intrusion, and an external IP touching several hosts
+        # is an attacker pivot.
+        _KILL_CHAIN = ["scan_recon", "brute_force", "web_shell",
+                       "process_injection"]
+        try:
+            r = conn.execute(
+                "MATCH (e:Event)-[:OBSERVED_ON]->(h:Host) "
+                "WHERE e.source = 'log_corpus' "
+                "RETURN e.channel AS stage, count(DISTINCT h.name) AS hosts")
+            stage_hosts: dict[str, int] = {}
+            while r.has_next():
+                row = r.get_next()
+                stage_hosts[row[0]] = row[1]
+            present = [s for s in _KILL_CHAIN if s in stage_hosts]
+            if len(present) >= 2:
+                chain = " -> ".join(present)
+                notes.append(f"log-corpus attack stages: {stage_hosts}")
+                out.append(self._emit_correlation(
+                    ctx,
+                    f"Multi-stage intrusion chain across the estate "
+                    f"({chain}) spanning "
+                    f"{max(stage_hosts.values())} host(s) — correlated "
+                    f"log-corpus signals indicate a coordinated intrusion, "
+                    f"not isolated events.",
+                    "high", ["H_APT_ESPIONAGE"], report_path))
+        except Exception as e:
+            notes.append(f"log-corpus stage query failed: {e}")
+
+        try:
+            r = conn.execute(
+                "MATCH (e:Event)-[:SOURCE_IP]->(i:IPAddress), "
+                "      (e)-[:OBSERVED_ON]->(h:Host) "
+                "WHERE e.source = 'log_corpus' "
+                "RETURN i.addr AS ip, count(DISTINCT h.name) AS hosts "
+                "ORDER BY hosts DESC LIMIT 10")
+            pivots = []
+            while r.has_next():
+                row = r.get_next()
+                if row[1] >= 2:
+                    pivots.append({"ip": row[0], "hosts": row[1]})
+            if pivots:
+                notes.append(f"log-corpus attacker pivots: {pivots}")
+                out.append(self._emit_correlation(
+                    ctx,
+                    f"External IP {pivots[0]['ip']} appears in log signals on "
+                    f"{pivots[0]['hosts']} host(s) — single source touching "
+                    f"multiple hosts (attacker pivot / fan-out).",
+                    "medium", ["H_LATERAL_MOVEMENT"], report_path))
+        except Exception as e:
+            notes.append(f"log-corpus pivot query failed: {e}")
+
         report_path.write_text("\n".join(notes))
 
         if not out:

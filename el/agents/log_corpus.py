@@ -51,14 +51,21 @@ class LogCorpusAgent(Agent):
         sources = 0
         total_events = 0
         hosts_seen: set[str] = set()
+        signals: list[dict] = []      # (host, stage, ips) for graph population
 
         for host in host_dirs:
-            host_out, n_src, n_evt = self._run_host(ctx, host, analysis)
+            host_out, n_src, n_evt = self._run_host(
+                ctx, host, analysis, signals)
             out.extend(host_out)
             if n_src:
                 hosts_seen.add(host.name)
                 sources += n_src
                 total_events += n_evt
+
+        # Feed per-host attack-stage signals into the Kùzu graph so the
+        # Correlator can tie the recon -> web-shell -> injection chain across
+        # hosts (Host + Event[stage] + IPAddress / OBSERVED_ON / SOURCE_IP).
+        self._populate_graph(ctx, signals)
 
         if sources == 0:
             return [self.emit(ctx, Finding(
@@ -87,7 +94,7 @@ class LogCorpusAgent(Agent):
         return out
 
     def _run_host(self, ctx: AgentContext, host: Path,
-                  analysis: Path) -> tuple[list[Finding], int, int]:
+                  analysis: Path, signals: list) -> tuple[list[Finding], int, int]:
         out: list[Finding] = []
         sources = 0
         events = 0
@@ -118,7 +125,7 @@ class LogCorpusAgent(Agent):
         for f in files:
             if f in handled:
                 continue
-            fins, n = self._route_file(ctx, f, host.name, outdir)
+            fins, n = self._route_file(ctx, f, host.name, outdir, signals)
             if fins:
                 for fin in fins:
                     out.append(self.emit(ctx, fin))
@@ -135,8 +142,72 @@ class LogCorpusAgent(Agent):
             claim=f"[{host}] {claim}", evidence=[evidence],
             hypotheses_supported=tags)
 
+    @staticmethod
+    def _external_ips(ips, *, cap: int = 200) -> list[str]:
+        """Distinct routable (non-RFC1918 / loopback / link-local) IPv4s."""
+        out: set[str] = set()
+        for ip in ips:
+            ip = (ip or "").strip()
+            if not ip or ":" in ip:
+                continue
+            parts = ip.split(".")
+            if len(parts) != 4 or not all(p.isdigit() for p in parts):
+                continue
+            a, b = int(parts[0]), int(parts[1])
+            if (a == 10 or a == 127 or (a == 192 and b == 168)
+                    or (a == 172 and 16 <= b <= 31) or (a == 169 and b == 254)
+                    or a == 0 or a >= 224):
+                continue
+            out.add(ip)
+            if len(out) >= cap:
+                break
+        return sorted(out)
+
+    def _populate_graph(self, ctx: AgentContext, signals: list) -> None:
+        """Write per-host attack-stage signals into the Kùzu graph as
+        Host + Event(channel=stage) nodes (OBSERVED_ON), plus external
+        attacker IPs (SOURCE_IP). The Correlator then ties the multi-host
+        chain together. Best-effort: graph failures never break the agent."""
+        if not signals:
+            return
+        from el.evidence.graph import open_graph
+        try:
+            db, conn = open_graph(ctx.case_dir)
+        except Exception:
+            return
+
+        def esc(s: str) -> str:
+            return (s or "").replace("'", "''").replace("\\", "\\\\")
+
+        for sig in signals:
+            host = sig.get("host", "")
+            stage = sig.get("stage", "")
+            if not host or not stage:
+                continue
+            try:
+                conn.execute(
+                    f"MERGE (h:Host {{name: '{esc(host)}'}})")
+                eid = f"{host}:log_corpus:{stage}"[:180]
+                conn.execute(
+                    f"MERGE (e:Event {{event_id: '{esc(eid)}'}}) "
+                    f"SET e.source='log_corpus', e.channel='{esc(stage)}', "
+                    f"e.eid=0, e.host='{esc(host)}'")
+                conn.execute(
+                    f"MATCH (e:Event {{event_id: '{esc(eid)}'}}), "
+                    f"      (h:Host {{name: '{esc(host)}'}}) "
+                    f"MERGE (e)-[:OBSERVED_ON]->(h)")
+                for ip in sig.get("ips", []):
+                    conn.execute(
+                        f"MERGE (:IPAddress {{addr: '{esc(ip)}', version: 4}})")
+                    conn.execute(
+                        f"MATCH (e:Event {{event_id: '{esc(eid)}'}}), "
+                        f"      (i:IPAddress {{addr: '{esc(ip)}'}}) "
+                        f"MERGE (e)-[:SOURCE_IP]->(i)")
+            except Exception:
+                continue
+
     def _route_file(self, ctx: AgentContext, f: Path, host: str,
-                    outdir: Path):
+                    outdir: Path, signals: list):
         """Dispatch one file to its parser. Returns (list[Finding], count):
         an H_DISK_ARTIFACTS inventory finding, plus any targeted threat
         findings whose high-signal counts cross a conservative threshold."""
@@ -168,6 +239,10 @@ class LogCorpusAgent(Agent):
                     f"/ password-spray.",
                     ["H_BRUTE_FORCE"],
                     r.as_evidence(facts={"failed_logon_4625": fail})))
+                signals.append({"host": host, "stage": "brute_force",
+                                "ips": self._external_ips(
+                                    e.data.get("IpAddress", "")
+                                    for e in r.with_id("4625"))})
             return fins, r.total
 
         # eCAR EDR telemetry
@@ -195,6 +270,8 @@ class LogCorpusAgent(Agent):
                     f"high-fidelity process-injection telemetry.",
                     ["H_PROCESS_INJECTION"],
                     r.as_evidence(facts={"remote_thread_creations": len(inj)})))
+                signals.append({"host": host, "stage": "process_injection",
+                                "ips": []})
             return fins, r.total
 
         # Cisco ASA syslog
@@ -220,6 +297,9 @@ class LogCorpusAgent(Agent):
                     f"inbound probing consistent with scanning / recon.",
                     ["H_SCAN_RECON"],
                     r.as_evidence(facts={"acl_denies": len(r.denies())})))
+                signals.append({"host": host, "stage": "scan_recon",
+                                "ips": self._external_ips(
+                                    e.src_ip for e in r.denies())})
             return fins, r.total
 
         # Snort / ET fast-alert
@@ -249,6 +329,9 @@ class LogCorpusAgent(Agent):
                     f"{recon[0].msg!r}) — network scanning / reconnaissance.",
                     ["H_SCAN_RECON"],
                     r.as_evidence(facts={"recon_alerts": len(recon)})))
+                signals.append({"host": host, "stage": "scan_recon",
+                                "ips": self._external_ips(
+                                    a.src_ip for a in recon)})
             return fins, r.total
 
         # Web / proxy access — Apache/nginx Common-Combined OR W3C extended
@@ -288,6 +371,9 @@ class LogCorpusAgent(Agent):
                     f"{len(res.hits)} web/proxy-access anomaly hit(s) in "
                     f"{f.name} (e.g. {desc[:80]}).",
                     hyp, ev))
+                stage = ("web_shell" if any("WEB_SHELL" in h for h in hyp)
+                         else "scan_recon")
+                signals.append({"host": host, "stage": stage, "ips": []})
             return fins, res.parsed_rows
 
         # RFC5424 syslog
