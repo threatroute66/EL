@@ -150,7 +150,35 @@ class MacOSForensicatorAgent(Agent):
         out.extend(self._run_execpolicy(ctx, exports))
         out.extend(self._run_install_log(ctx, exports))
         out.extend(self._run_apple_mail(ctx, exports))
+        out.extend(self._run_network_history(ctx, exports))
         return out
+
+    def _run_network_history(self, ctx: AgentContext,
+                             exports: Path) -> list[Finding]:
+        """Parse DHCP leases + Wi-Fi known networks into a movement timeline.
+        Emits a grounded summary (SSIDs + leased router MACs). No-op if
+        neither artifact is present."""
+        from el.skills import macos_network_history as nh
+        try:
+            run = nh.parse(exports,
+                           output_dir=ctx.case_dir / "analysis" / self.name
+                           / "network_history")
+        except nh.MacOSNetworkHistoryError:
+            return []
+        if run.total == 0:
+            return []
+
+        ssids = ", ".join(n.ssid for n in run.networks) or "-"
+        routers = ", ".join(sorted({l.router_mac for l in run.leases
+                                    if l.router_mac})) or "-"
+        return [self.emit(ctx, Finding(
+            case_id=ctx.case_id, agent=self.name, confidence="medium",
+            claim=(f"macOS network history: {len(run.networks)} known "
+                   f"Wi-Fi network(s) [{ssids}]; {len(run.leases)} DHCP "
+                   f"lease(s), leased router MAC(s): {routers}."),
+            evidence=[run.as_evidence()],
+            hypotheses_supported=["H_DISK_ARTIFACTS"],
+        ))]
 
     def _run_apple_mail(self, ctx: AgentContext,
                         exports: Path) -> list[Finding]:
