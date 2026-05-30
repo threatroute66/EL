@@ -147,6 +147,11 @@ class IOSForensicatorAgent(Agent):
         # not in the `text` column). Runs regardless of iLEAPP availability.
         out.extend(self._run_messages(ctx, src))
 
+        # knowledgeC app-usage timeline + locationd cell/Wi-Fi location cache —
+        # deterministic, run independently of iLEAPP.
+        out.extend(self._run_knowledgec(ctx, src))
+        out.extend(self._run_locations(ctx, src))
+
         # iLEAPP wrap — Brignoni's 80+-artifact parser. Skips silently
         # when iLEAPP isn't installed; emits one finding per surfaced
         # high-value artifact (calls, SMS, Safari history, locations,
@@ -214,6 +219,62 @@ class IOSForensicatorAgent(Agent):
                    f"({run.sent} sent / {run.received} received) across "
                    f"{len(run.contacts())} contact(s), {lo} → {hi} UTC. "
                    f"Top: {top or '-'}."),
+            evidence=[run.as_evidence()],
+            hypotheses_supported=["H_DISK_ARTIFACTS"],
+        ))]
+
+    def _run_knowledgec(self, ctx: AgentContext, src: Path) -> list[Finding]:
+        """Parse knowledgeC.db into an app-usage / activity timeline. Emits a
+        grounded summary (event count, streams, top apps by foreground time).
+        No-op if absent."""
+        from el.skills import ios_knowledgec as kc
+        db = kc.find_knowledgec(src)
+        if db is None:
+            return []
+        analysis = ctx.case_dir / "analysis" / self.name / "knowledgec"
+        try:
+            run = kc.parse(db, output_dir=analysis)
+        except kc.IOSKnowledgeCError as e:
+            return [self.emit(ctx, Finding(
+                case_id=ctx.case_id, agent=self.name,
+                confidence="insufficient",
+                claim=f"iOS knowledgeC parse skipped: {e}"))]
+        if run.total == 0:
+            return []
+        lo, hi = run.date_range()
+        tops = ", ".join(f"{a} ({round(s)}s)" for a, s in run.top_apps(5))
+        return [self.emit(ctx, Finding(
+            case_id=ctx.case_id, agent=self.name, confidence="medium",
+            claim=(f"iOS knowledgeC: {run.total} event(s) across "
+                   f"{len(run.by_stream())} stream(s); {len(run.app_usage())} "
+                   f"app-usage event(s), {lo} → {hi} UTC. "
+                   f"Top apps: {tops or '-'}."),
+            evidence=[run.as_evidence()],
+            hypotheses_supported=["H_DISK_ARTIFACTS"],
+        ))]
+
+    def _run_locations(self, ctx: AgentContext, src: Path) -> list[Finding]:
+        """Parse the locationd cell/Wi-Fi harvest cache. Emits a grounded
+        summary (fix count, sources, date range). No-op if absent."""
+        from el.skills import ios_locations as il
+        db = il.find_location_cache(src)
+        if db is None:
+            return []
+        analysis = ctx.case_dir / "analysis" / self.name / "locations"
+        try:
+            run = il.parse(db, output_dir=analysis)
+        except il.IOSLocationsError as e:
+            return [self.emit(ctx, Finding(
+                case_id=ctx.case_id, agent=self.name,
+                confidence="insufficient",
+                claim=f"iOS location cache parse skipped: {e}"))]
+        if run.total == 0:
+            return []
+        lo, hi = run.date_range()
+        return [self.emit(ctx, Finding(
+            case_id=ctx.case_id, agent=self.name, confidence="medium",
+            claim=(f"iOS location cache: {run.total} cell/Wi-Fi fix(es) from "
+                   f"{', '.join(run.tables_read)}, {lo} → {hi} UTC."),
             evidence=[run.as_evidence()],
             hypotheses_supported=["H_DISK_ARTIFACTS"],
         ))]
