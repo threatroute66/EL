@@ -35,6 +35,8 @@ import sqlite3
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from el.skills._sqlite import EvidenceDBError, open_evidence_db
+
 
 # ---------------------------------------------------------------------------
 # Manifest.plist + Status.plist + Info.plist parsers
@@ -206,17 +208,14 @@ def list_files(backup_dir: Path,
     p = Path(backup_dir) / "Manifest.db"
     if not p.is_file():
         return []
+    # Copy-then-open so we never create -wal/-shm on the evidence backup and
+    # so any WAL-resident rows are read. See el.skills._sqlite.
     try:
-        conn = sqlite3.connect(p)
-    except sqlite3.OperationalError:
+        with open_evidence_db(p) as conn:
+            return _parse_manifest_db_rows(conn, max_rows)
+    except (sqlite3.DatabaseError, EvidenceDBError):
+        # Encrypted Manifest.db (not a valid SQLite file) or copy failure.
         return []
-    try:
-        return _parse_manifest_db_rows(conn, max_rows)
-    except sqlite3.DatabaseError:
-        # Encrypted Manifest.db — content is not a valid SQLite file.
-        return []
-    finally:
-        conn.close()
 
 
 # ---------------------------------------------------------------------------

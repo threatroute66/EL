@@ -35,6 +35,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from el.skills._sqlite import EvidenceDBError, open_evidence_db
+
 
 # ActivityType enum from MS docs + reverse-engineering by Eric
 # Zimmerman's WxTCmd / Ryan Benson's CCL work.
@@ -135,29 +137,26 @@ def parse_activities_cache(db_path: Path) -> list[TimelineEntry]:
     if not p.is_file():
         return []
 
-    uri = f"file:{p.resolve()}?mode=ro&immutable=1"
-    try:
-        conn = sqlite3.connect(uri, uri=True)
-    except sqlite3.Error:
-        return []
-
+    # Copy-then-open: ActivitiesCache.db's newest activities are often still
+    # in a -wal sidecar that ?immutable=1 would skip, and the copy keeps the
+    # evidence read-only. See el.skills._sqlite.
     rows: list[TimelineEntry] = []
     try:
-        conn.row_factory = sqlite3.Row
-        try:
-            cur = conn.execute("""
-                SELECT Id, AppId, ActivityType, Payload,
-                       StartTime, EndTime, LastModifiedTime
-                FROM Activity
-            """)
-        except sqlite3.Error:
-            return []
-        for r in cur:
-            entry = _row_to_entry(r, source_db=str(p))
-            if entry:
-                rows.append(entry)
-    finally:
-        conn.close()
+        with open_evidence_db(p, row_factory=sqlite3.Row) as conn:
+            try:
+                cur = conn.execute("""
+                    SELECT Id, AppId, ActivityType, Payload,
+                           StartTime, EndTime, LastModifiedTime
+                    FROM Activity
+                """)
+            except sqlite3.Error:
+                return []
+            for r in cur:
+                entry = _row_to_entry(r, source_db=str(p))
+                if entry:
+                    rows.append(entry)
+    except (sqlite3.Error, EvidenceDBError):
+        return []
     return rows
 
 

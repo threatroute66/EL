@@ -37,6 +37,7 @@ import sqlite3
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from el.skills._sqlite import EvidenceDBError, open_evidence_db
 from el.skills.linux_triage import (
     detect_shell_history_malicious as _linux_shell_detect,
 )
@@ -311,21 +312,18 @@ def detect_quarantine_unusual_source(
         return []
     suspicious: list[tuple[str, str]] = []
     for db in dbs:
+        # Copy-then-open: the quarantine DB's newest rows may live only in a
+        # -wal sidecar that ?immutable=1 would skip; the copy keeps evidence
+        # read-only. See el.skills._sqlite.
         try:
-            uri = f"file:{db.resolve()}?mode=ro&immutable=1"
-            conn = sqlite3.connect(uri, uri=True)
-        except sqlite3.Error:
-            continue
-        try:
-            rows = conn.execute(
-                "SELECT LSQuarantineAgentName, "
-                "LSQuarantineOriginURLString, LSQuarantineDataURLString "
-                "FROM LSQuarantineEvent"
-            ).fetchall()
-        except sqlite3.Error:
+            with open_evidence_db(db) as conn:
+                rows = conn.execute(
+                    "SELECT LSQuarantineAgentName, "
+                    "LSQuarantineOriginURLString, LSQuarantineDataURLString "
+                    "FROM LSQuarantineEvent"
+                ).fetchall()
+        except (sqlite3.Error, EvidenceDBError):
             rows = []
-        finally:
-            conn.close()
         for agent, origin_url, data_url in rows:
             url = origin_url or data_url or ""
             if not url:

@@ -27,6 +27,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from el.schemas.finding import EvidenceItem
+from el.skills._sqlite import EvidenceDBError, open_evidence_db
 
 
 class BrowserError(RuntimeError):
@@ -94,55 +95,54 @@ def firefox_places(places_sqlite: Path,
     if not places_sqlite.is_file():
         raise BrowserError(f"places.sqlite not found: {places_sqlite}")
 
-    uri = f"file:{places_sqlite}?mode=ro"
+    # Copy-then-open so recent history still in a -wal sidecar is read and the
+    # evidence is never written (the old ?mode=ro open missed WAL frames).
+    # See el.skills._sqlite.
     try:
-        conn = sqlite3.connect(uri, uri=True)
-    except sqlite3.DatabaseError as e:
+        with open_evidence_db(places_sqlite) as conn:
+            has_lvd = _column_exists(conn, "moz_places", "last_visit_date")
+            has_hv = _table_exists(conn, "moz_historyvisits")
+            if has_lvd:
+                cur = conn.execute(
+                    "SELECT url, COALESCE(title, ''), COALESCE(visit_count, 0), "
+                    "       last_visit_date "
+                    "FROM moz_places "
+                    "WHERE url IS NOT NULL AND url != '' "
+                    "ORDER BY last_visit_date DESC NULLS LAST "
+                    "LIMIT ?",
+                    (max_rows,),
+                )
+                rows = cur.fetchall()
+            elif has_hv:
+                # Pre-3.5 layout: LEFT JOIN to get the max(visit_date) per place.
+                cur = conn.execute(
+                    "SELECT p.url, COALESCE(p.title, ''), "
+                    "       COALESCE(p.visit_count, 0), "
+                    "       MAX(hv.visit_date) AS lvd "
+                    "FROM moz_places p "
+                    "LEFT JOIN moz_historyvisits hv ON hv.place_id = p.id "
+                    "WHERE p.url IS NOT NULL AND p.url != '' "
+                    "GROUP BY p.id "
+                    "ORDER BY lvd DESC NULLS LAST "
+                    "LIMIT ?",
+                    (max_rows,),
+                )
+                rows = cur.fetchall()
+            else:
+                # Neither schema matches — emit a run with error set rather
+                # than crash the investigation.
+                return BrowserRun(
+                    source_path=places_sqlite, source_kind="firefox",
+                    visits=[],
+                    error="places.sqlite has neither last_visit_date column "
+                          "nor moz_historyvisits table — unknown schema "
+                          "version",
+                )
+    except EvidenceDBError as e:
         raise BrowserError(f"cannot open {places_sqlite}: {e}") from e
-
-    try:
-        has_lvd = _column_exists(conn, "moz_places", "last_visit_date")
-        has_hv = _table_exists(conn, "moz_historyvisits")
-        if has_lvd:
-            cur = conn.execute(
-                "SELECT url, COALESCE(title, ''), COALESCE(visit_count, 0), "
-                "       last_visit_date "
-                "FROM moz_places "
-                "WHERE url IS NOT NULL AND url != '' "
-                "ORDER BY last_visit_date DESC NULLS LAST "
-                "LIMIT ?",
-                (max_rows,),
-            )
-            rows = cur.fetchall()
-        elif has_hv:
-            # Pre-3.5 layout: LEFT JOIN to get the max(visit_date) per place.
-            cur = conn.execute(
-                "SELECT p.url, COALESCE(p.title, ''), "
-                "       COALESCE(p.visit_count, 0), "
-                "       MAX(hv.visit_date) AS lvd "
-                "FROM moz_places p "
-                "LEFT JOIN moz_historyvisits hv ON hv.place_id = p.id "
-                "WHERE p.url IS NOT NULL AND p.url != '' "
-                "GROUP BY p.id "
-                "ORDER BY lvd DESC NULLS LAST "
-                "LIMIT ?",
-                (max_rows,),
-            )
-            rows = cur.fetchall()
-        else:
-            # Neither schema matches — emit a run with error set rather
-            # than crash the investigation.
-            return BrowserRun(
-                source_path=places_sqlite, source_kind="firefox",
-                visits=[],
-                error="places.sqlite has neither last_visit_date column "
-                      "nor moz_historyvisits table — unknown schema version",
-            )
     except sqlite3.DatabaseError as e:
         return BrowserRun(source_path=places_sqlite, source_kind="firefox",
                           visits=[], error=str(e))
-    finally:
-        conn.close()
 
     visits = [
         Visit(url=r[0], title=r[1], visit_count=r[2] or 0,
