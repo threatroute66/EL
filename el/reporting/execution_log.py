@@ -199,7 +199,7 @@ def build_events(case_dir: str | Path) -> list[ExecutionEvent]:
     _type_order = {
         "state_transition": 0, "investigator_selected": 1,
         "agent_start": 2, "tool_execution": 3,
-        "finding_emitted": 4, "agent_done": 5,
+        "finding_emitted": 4, "agent_handoff": 5, "agent_done": 6,
     }
     events.sort(key=lambda e: (
         e.ts_utc,
@@ -237,6 +237,7 @@ def write_markdown(events: list[ExecutionEvent], out_path: Path,
     summary = {
         "state_transition": 0, "agent_start": 0, "agent_done": 0,
         "tool_execution": 0, "finding_emitted": 0, "investigator_selected": 0,
+        "agent_handoff": 0, "llm_call": 0,
     }
     for ev in events:
         if ev.event_type in summary:
@@ -247,7 +248,9 @@ def write_markdown(events: list[ExecutionEvent], out_path: Path,
     lines.append(f"- State transitions: **{summary['state_transition']}**")
     lines.append(f"- Investigators selected: **{summary['investigator_selected']}**")
     lines.append(f"- Agent invocations: **{summary['agent_start']}**")
+    lines.append(f"- Agent-to-agent handoffs: **{summary['agent_handoff']}**")
     lines.append(f"- Tool executions: **{summary['tool_execution']}**")
+    lines.append(f"- LLM calls (token-metered): **{summary['llm_call']}**")
     lines.append(f"- Findings emitted: **{summary['finding_emitted']}**")
     lines.append("")
 
@@ -274,11 +277,24 @@ def write_markdown(events: list[ExecutionEvent], out_path: Path,
             lines.append(f"#### {ev.agent} — start  ·  _{ev.ts_utc}_")
             current_agent = ev.agent or "—"
             continue
+        if ev.event_type == "agent_handoff":
+            pub = ev.fields.get("published", "")
+            lines.append(f"- _{ev.ts_utc}_ · **{ev.agent} → shared context**: "
+                          f"published `{pub}`")
+            continue
         if ev.event_type == "agent_done":
             n = ev.fields.get("findings_emitted", "?")
             lines.append(f"#### {ev.agent} — done ({n} finding(s))  ·  "
                           f"_{ev.ts_utc}_")
             lines.append("")
+            continue
+        if ev.event_type == "llm_call":
+            comp = ev.fields.get("component", "?")
+            model = ev.fields.get("model", "?")
+            it = ev.fields.get("input_tokens", "?")
+            ot = ev.fields.get("output_tokens", "?")
+            lines.append(f"- _{ev.ts_utc}_ · **LLM call** ({comp}) `{model}` "
+                          f"— tokens in={it} out={ot}")
             continue
         if ev.event_type == "tool_execution":
             sha = (ev.output_sha256 or "")[:16] + "…" if ev.output_sha256 else "—"

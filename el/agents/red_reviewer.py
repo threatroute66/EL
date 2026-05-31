@@ -66,7 +66,8 @@ def _merge(rule: _ChallengeResult, llm: _ChallengeResult | None) -> _ChallengeRe
     return _ChallengeResult(status=winner_status, notes=notes, checklist=checklist)
 
 
-def _llm_challenge(reviewable: list[Finding]) -> dict[str, _ChallengeResult] | None:
+def _llm_challenge(reviewable: list[Finding],
+                   audit=None) -> dict[str, _ChallengeResult] | None:
     api_key = os.environ.get("ANTHROPIC_API_KEY")
     if not api_key:
         return None
@@ -95,6 +96,14 @@ def _llm_challenge(reviewable: list[Finding]) -> dict[str, _ChallengeResult] | N
             system=SYSTEM,
             messages=[{"role": "user", "content": json.dumps(payload)}],
         )
+        if audit is not None:
+            u = getattr(msg, "usage", None)
+            audit.info(
+                "llm_call", component="red_reviewer", model=CHALLENGER_MODEL,
+                input_tokens=getattr(u, "input_tokens", None),
+                output_tokens=getattr(u, "output_tokens", None),
+                findings_reviewed=len(reviewable),
+            )
         text = "".join(b.text for b in msg.content if getattr(b, "type", "") == "text")
         start = text.index("[")
         end = text.rindex("]") + 1
@@ -134,7 +143,9 @@ class RedReviewerAgent(Agent):
             status, notes, checklist = rule_challenge(f)
             rule_results[f.finding_id] = _ChallengeResult(status, notes, checklist)
 
-        llm_results = _llm_challenge(reviewable)
+        from el.audit import AuditLog
+        llm_results = _llm_challenge(
+            reviewable, audit=AuditLog(ctx.case_dir, ctx.case_id))
 
         passed = challenged = unresolved = 0
         for f in reviewable:

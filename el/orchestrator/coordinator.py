@@ -141,6 +141,25 @@ KIND_TO_AGENT: dict[str, type[Agent]] = {
 }
 
 
+def _shared_preview(v, limit: int = 160) -> str:
+    """Short, log-safe string preview of a value an agent published to
+    ctx.shared. Scalars/Paths render verbatim; richer objects collapse to
+    their type name so a memory-baseline object or a big dict never bloats
+    the audit log."""
+    try:
+        if v is None or isinstance(v, (str, int, float, bool, Path)):
+            s = str(v)
+        elif isinstance(v, (list, tuple, set)):
+            s = f"{type(v).__name__}[{len(v)}]"
+        elif isinstance(v, dict):
+            s = f"dict[{len(v)}]"
+        else:
+            s = f"<{type(v).__name__}>"
+    except Exception:
+        s = "<unrepr>"
+    return s[:limit]
+
+
 def _sample_head(path: Path, n: int = 8192) -> bytes:
     """Read up to *n* bytes from *path*, or from the first .json/.gz
     child if *path* is a directory. Returns b"" on any failure."""
@@ -344,9 +363,34 @@ class Coordinator:
         if self.audit:
             self.audit.info("agent_start", agent=agent.name, state=self.state.value)
         self._current_agent = agent.name
+        # Snapshot the shared-context bus by identity so we can record what
+        # this agent PUBLISHES for downstream agents to consume. EL agents
+        # don't message each other directly — they hand off through
+        # ctx.shared — so the published-keys diff IS the agent-to-agent
+        # message log (Find Evil: 'agent-to-agent message logs with
+        # timestamps'). agent_start/agent_done bracket the timestamps;
+        # agent_handoff names the payload.
+        before = dict(getattr(ctx, "shared", None) or {})
         try:
             findings = agent.run(ctx)
+            shared = getattr(ctx, "shared", None) or {}
             if self.audit:
+                published = {
+                    k: v for k, v in shared.items()
+                    if k not in before or before[k] is not v
+                }
+                if published:
+                    # One readable string (not a JSON list) so it survives
+                    # the audit-log shlex round-trip intact: "k=preview,
+                    # k2=preview". This IS the agent-to-agent message —
+                    # the keys this agent put on the shared bus for the
+                    # downstream agents the coordinator routes next.
+                    pub_str = ", ".join(
+                        f"{k}={_shared_preview(v)}"
+                        for k, v in sorted(published.items())
+                    )
+                    self.audit.info(
+                        "agent_handoff", agent=agent.name, published=pub_str)
                 self.audit.info("agent_done", agent=agent.name,
                                 findings_emitted=len(findings))
         except Exception as e:

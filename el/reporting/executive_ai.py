@@ -510,6 +510,20 @@ def synthesize_executive_ai(
     except Exception:
         return None
 
+    _usage = getattr(msg, "usage", None)
+    _in_tok = getattr(_usage, "input_tokens", None)
+    _out_tok = getattr(_usage, "output_tokens", None)
+    # Token usage → forensic audit log so it surfaces in the execution
+    # log alongside every other run event (Find Evil: tool/agent execution
+    # logs must include token usage for LLM-backed steps).
+    try:
+        from el.audit import AuditLog
+        AuditLog(reports_dir.parent, nr.case_id).info(
+            "llm_call", component="executive_ai", model=chosen,
+            input_tokens=_in_tok, output_tokens=_out_tok)
+    except Exception:
+        pass
+
     brief = _parse_brief(text)
     if brief is None:
         return None
@@ -520,6 +534,8 @@ def synthesize_executive_ai(
         "cache": "miss",
         "cache_key": desired_key,
         "cache_path": str(cache_path),
+        "input_tokens": _in_tok,
+        "output_tokens": _out_tok,
     }
 
 

@@ -150,6 +150,43 @@ def test_write_all_produces_three_artefacts(tmp_path, monkeypatch):
     assert "a" * 16 in tm               # truncated sha256 marker
 
 
+def test_agent_handoff_and_llm_call_render(tmp_path, monkeypatch):
+    """Find Evil multi-agent requirement: agent-to-agent message logs +
+    token usage must surface in the execution log. agent_handoff (the
+    ctx.shared publish that hands off to downstream agents) and llm_call
+    (token-metered LLM step) are written to the audit log by the
+    coordinator/red_reviewer/executive_ai and must round-trip through the
+    renderer with their payloads intact."""
+    from el.audit import AuditLog
+    from el.reporting.execution_log import write_markdown
+
+    case_dir = _mk_case(tmp_path, monkeypatch, case_id="handoff-t")
+    a = AuditLog(case_dir, "handoff-t")
+    a.info("agent_start", agent="triage", state="triage")
+    a.info("agent_handoff", agent="triage",
+           published="evidence_kind=memory, mem_os=windows")
+    a.info("agent_done", agent="triage", findings_emitted=1)
+    a.info("llm_call", component="red_reviewer", model="claude-opus-4-8",
+           input_tokens=4210, output_tokens=880, findings_reviewed=7)
+
+    events = build_events(case_dir)
+    by_type = {e.event_type: e for e in events}
+    assert "agent_handoff" in by_type
+    assert "llm_call" in by_type
+    # Payloads survive the audit shlex round-trip (no JSON mangling)
+    assert by_type["agent_handoff"].fields["published"] == \
+        "evidence_kind=memory, mem_os=windows"
+    assert by_type["llm_call"].fields["input_tokens"] == "4210"
+    assert by_type["llm_call"].fields["output_tokens"] == "880"
+
+    md = write_markdown(events, case_dir / "reports" / "el.md", "handoff-t")
+    text = md.read_text()
+    assert "Agent-to-agent handoffs: **1**" in text
+    assert "LLM calls (token-metered): **1**" in text
+    assert "evidence_kind=memory, mem_os=windows" in text
+    assert "tokens in=4210 out=880" in text
+
+
 def test_write_all_handles_empty_case(tmp_path, monkeypatch):
     """No findings, no audit log — emit empty-but-valid artefacts."""
     case_dir = _mk_case(tmp_path, monkeypatch, case_id="empty-t")
