@@ -57,6 +57,7 @@ from pathlib import Path
 
 from pydantic import BaseModel, Field, ValidationError
 
+from el import llm_defer as _llm_defer
 from el.case_metadata import CaseMetadata
 from el.reporting.narrative import NarrativeReport
 from el.schemas.finding import Finding
@@ -276,25 +277,16 @@ def _write_cache(cache_path: Path, cache_key: str,
     cache_path.write_text(json.dumps(payload, indent=2))
 
 
+# Claude Code deferral detection lives in el.llm_defer (single source of
+# truth shared with the red-review challenger). These thin wrappers keep
+# the existing call sites + the public name `_running_inside_claude_code`
+# stable while delegating the actual logic.
 def _defer_enabled() -> bool:
-    val = (os.environ.get(DEFER_ENV) or "").strip().lower()
-    return val in {"1", "true", "yes", "on"}
+    return _llm_defer.defer_enabled(DEFER_ENV)
 
 
 def _running_inside_claude_code() -> bool:
-    """True when EL is being executed from a Claude Code session.
-
-    Detection priority: CLAUDECODE=1 (the canonical marker set by the
-    Claude Code CLI). Falls back to the AI_AGENT prefix
-    (`claude-code_…`) for older versions that didn't set CLAUDECODE.
-    Both vars sit in the subprocess environment we inherited, so this
-    check is free.
-    """
-    val = (os.environ.get(CLAUDE_CODE_ENV) or "").strip().lower()
-    if val in {"1", "true", "yes", "on"}:
-        return True
-    agent = (os.environ.get("AI_AGENT") or "").strip().lower()
-    return agent.startswith("claude-code")
+    return _llm_defer.running_inside_claude_code()
 
 
 def _claude_code_path_enabled() -> bool:
@@ -303,7 +295,7 @@ def _claude_code_path_enabled() -> bool:
     inside a Claude Code session. Either way the request file should
     be written — the el-ai-brief skill picks it up and a Claude model
     fulfils it."""
-    return _defer_enabled() or _running_inside_claude_code()
+    return _llm_defer.claude_code_path_enabled(DEFER_ENV)
 
 
 def _write_request_file(reports_dir: Path, cache_key: str,

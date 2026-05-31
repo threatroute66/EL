@@ -340,6 +340,20 @@ def _render_case_once(cd: Path, *, html: bool, executive: bool = False,
 
     manifest = _json.loads((cd / "manifest.json").read_text())
     case_id = manifest["case_id"]
+    # Merge any deferred red-review LLM verdicts (fulfilled out-of-band by
+    # the el-red-review skill) into the ledger before we read it. Idempotent
+    # no-op when there's nothing pending.
+    try:
+        from el.agents.red_reviewer import apply_deferred_red_review
+        from el.audit import AuditLog
+        _rr = apply_deferred_red_review(cd, case_id, audit=AuditLog(cd, case_id))
+        if not quiet and _rr.get("applied"):
+            console.print(f"[bold]red-review[/bold]: merged "
+                          f"{_rr['applied']} deferred verdict(s) "
+                          f"({_rr.get('changed', 0)} status change(s))")
+    except Exception as e:
+        if not quiet:
+            console.print(f"[yellow]deferred red-review merge skipped: {e}[/yellow]")
     rows = list_findings(cd, case_id=case_id)
     ranked, _ = score_findings(rows)
     write_matrix(cd, ranked, rows)
