@@ -108,6 +108,82 @@ def _maybe_detach(detach: bool, label: str) -> None:
     raise typer.Exit(0)
 
 
+def _auto_detach_gb_threshold() -> float:
+    """Input size (GB) at/above which a foreground run is auto-promoted to
+    --detach. Anything bigger than a few GB is a multi-hour / heavy-carve
+    run that a session crash or systemd-oomd would kill if left attached.
+    Override with EL_AUTODETACH_GB; set to 0 to disable auto-detach."""
+    import os as _os
+    try:
+        return float(_os.environ.get("EL_AUTODETACH_GB", "4"))
+    except ValueError:
+        return 4.0
+
+
+def _input_size_gb(*paths: str) -> float:
+    """Total size in GB of one or more evidence inputs. A single image is a
+    plain stat; a directory (CyLR/FFS tree) is summed with a bounded walk.
+    Read-only — never touches the evidence."""
+    from pathlib import Path as _P
+    total = 0
+    for path in paths:
+        p = _P(path)
+        try:
+            if p.is_file():
+                total += p.stat().st_size
+            elif p.is_dir():
+                for f in p.rglob("*"):
+                    try:
+                        if f.is_file() and not f.is_symlink():
+                            total += f.stat().st_size
+                    except OSError:
+                        continue
+        except OSError:
+            continue
+    return total / 1e9
+
+
+def _should_auto_detach(*paths: str, explicit_detach: bool, foreground: bool,
+                        already_detached: bool, have_systemd: bool) -> tuple[bool, float, float]:
+    """Decide whether to auto-promote a foreground run to --detach because the
+    input is large enough that a session crash / oomd kill would lose a
+    multi-hour run. Returns (auto, size_gb, threshold_gb).
+
+    Suppressed when the operator already asked for --detach (nothing to add),
+    passed --foreground (explicit opt-out), we're already inside the detached
+    unit (EL_DETACHED=1), systemd-run is unavailable (can't detach anyway), or
+    the threshold is disabled (EL_AUTODETACH_GB=0)."""
+    thr = _auto_detach_gb_threshold()
+    if explicit_detach or foreground or already_detached or not have_systemd or thr <= 0:
+        return (False, 0.0, thr)
+    gb = _input_size_gb(*paths)
+    return (gb >= thr, gb, thr)
+
+
+def _maybe_auto_detach(*paths: str, explicit_detach: bool, foreground: bool,
+                       label: str) -> None:
+    """Compute the auto-detach decision, announce it, and hand off to
+    _maybe_detach. Centralises the heavy-input safety net for both
+    `investigate` and `investigate-bundle` so neither can be launched
+    attached by accident."""
+    import os as _os
+    import shutil as _shutil
+    auto, gb, thr = _should_auto_detach(
+        *paths,
+        explicit_detach=explicit_detach,
+        foreground=foreground,
+        already_detached=_os.environ.get("EL_DETACHED") == "1",
+        have_systemd=bool(_shutil.which("systemd-run")),
+    )
+    if auto:
+        console.print(
+            f"[yellow]input is {gb:.1f} GB (≥ {thr:g} GB threshold) — "
+            f"auto-detaching so the run survives a session crash / logout / "
+            f"oomd kill. Pass [bold]--foreground[/bold] to override, or set "
+            f"EL_AUTODETACH_GB to change the threshold.[/yellow]")
+    _maybe_detach(explicit_detach or auto, label)
+
+
 @app.command()
 def doctor() -> None:
     """Survey SIFT tooling and verify EL primitives are wired correctly."""
@@ -1182,9 +1258,15 @@ def investigate(
              "close (nohup does NOT — systemd kills the session "
              "cgroup). Prints the unit name + how to follow it, then "
              "returns the prompt. Requires systemd-run + user lingering."),
+    foreground: bool = typer.Option(
+        False, "--foreground",
+        help="Force an attached/foreground run even for large inputs. By "
+             "default an input at/above EL_AUTODETACH_GB (4 GB) auto-detaches "
+             "so it survives a session crash; this overrides that safety net."),
 ) -> None:
     """Run the EL coordinator end-to-end on an evidence file."""
-    _maybe_detach(detach, f"investigate-{case_id or 'case'}")
+    _maybe_auto_detach(input_path, explicit_detach=detach, foreground=foreground,
+                       label=f"investigate-{case_id or 'case'}")
     if defer_ai_brief:
         import os as _os
         from el.reporting.executive_ai import DEFER_ENV as _DEFER_ENV
@@ -1327,6 +1409,12 @@ def investigate_bundle_cmd(
              "teardown (systemd kills the session cgroup); a --user "
              "service does. Strongly recommended for bundles. Requires "
              "systemd-run + user lingering."),
+    foreground: bool = typer.Option(
+        False, "--foreground",
+        help="Force an attached/foreground run even for large bundles. By "
+             "default a bundle whose devices sum to at/above EL_AUTODETACH_GB "
+             "(4 GB) auto-detaches so it survives a session crash; this "
+             "overrides that safety net."),
 ) -> None:
     """Investigate a multi-device case as a single bundle.
 
@@ -1337,7 +1425,6 @@ def investigate_bundle_cmd(
     (so cross-device evidence sums into the same hypothesis), and
     writes bundle.json.
     """
-    _maybe_detach(detach, f"bundle-{bundle_id}")
     from el.bundle import (
         BundleManifest, DeviceEntry, create_bundle_layout,
         create_device_layout, make_device_case_id, save as save_bundle,
@@ -1356,6 +1443,11 @@ def investigate_bundle_cmd(
             console.print(f"[red]duplicate device name: {name!r}[/red]")
             raise typer.Exit(2)
         seen_names.add(name)
+
+    # Heavy-input safety net BEFORE any layout creation: a bundle is the
+    # canonical multi-hour run, so size all device paths and auto-detach.
+    _maybe_auto_detach(*[p for _, p in parsed], explicit_detach=detach,
+                       foreground=foreground, label=f"bundle-{bundle_id}")
 
     bundle_dir = create_bundle_layout(CASE_ROOT, bundle_id)
     bundle = BundleManifest(bundle_id=bundle_id)

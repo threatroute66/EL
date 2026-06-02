@@ -137,17 +137,24 @@ make doctor                # = .venv/bin/el doctor
 .venv/bin/el investigate <input> --baseline <baseline.img>   # paired memory diff
 .venv/bin/el investigate <input> --timeline                  # also Plaso super-timeline (slow)
 
-# Long runs (multi-hour bundles, big memory images): ALWAYS --detach.
-# nohup does NOT survive a GUI/login-session restart — systemd kills
-# the session cgroup and takes the nohup'd process down with it. A
-# GUI session crash once killed a 15-device SRL-2018 bundle this way.
-# --detach re-launches as a `systemd --user` transient service in its
-# own unit (lingering is enabled on this host), the same mechanism
-# that keeps el-serve.service alive across logouts. Follow progress
-# via `journalctl --user -u <unit> -f` or the per-case
-# analysis/forensic_audit.log (canonical either way).
-.venv/bin/el investigate-bundle <id> -d a:/p1 -d b:/p2 --detach
-.venv/bin/el investigate <input> --case-id <name> --detach
+# Long runs (multi-hour bundles, big memory images): detaching is now
+# AUTOMATIC. Any input (or bundle of devices) totalling >= EL_AUTODETACH_GB
+# (default 4 GB) auto-promotes to a detached `systemd --user` transient
+# service — you no longer have to remember --detach. Pass --foreground to
+# force an attached run, or set EL_AUTODETACH_GB=0 to disable the net.
+# WHY it's load-bearing: nohup does NOT survive a GUI/login-session restart
+# (systemd kills the session cgroup and the nohup'd PID with it), and
+# systemd-oomd kills attached runs at high PSI. A GUI session crash once
+# killed a 15-device SRL-2018 bundle; a 19GB memory image crashed the same
+# way when launched attached — which is what motivated the auto-detach net.
+# The transient unit lives outside the session scope (lingering is enabled
+# on this host), the same mechanism that keeps el-serve.service alive across
+# logouts. Follow progress via `journalctl --user -u <unit> -f` or the
+# per-case analysis/forensic_audit.log (canonical either way).
+.venv/bin/el investigate-bundle <id> -d a:/p1 -d b:/p2   # auto-detaches if >=4GB
+.venv/bin/el investigate <input> --case-id <name>        # auto-detaches if >=4GB
+.venv/bin/el investigate <input> --case-id <name> --detach      # force detach (small input)
+.venv/bin/el investigate <input> --case-id <name> --foreground  # force attached
 
 # Re-render a report after editing the ledger or improving a filter
 .venv/bin/el report /opt/EL/cases/<name>

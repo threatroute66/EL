@@ -168,3 +168,83 @@ def test_foreground_fallback_when_spawn_fails(monkeypatch):
                          ["/opt/EL/.venv/bin/el", "investigate", "/ev"])
     # Must NOT raise — falls through to foreground
     cli._maybe_detach(True, "investigate-case")
+
+
+# --- auto-detach safety net -------------------------------------------------
+# A 19GB memory image launched ATTACHED (no --detach) once crashed when the
+# session died — exactly the SRL-2018 failure above, but reached by forgetting
+# the flag rather than by using nohup. _should_auto_detach promotes any input
+# at/above EL_AUTODETACH_GB to detached so the flag can't be forgotten.
+
+def _big(tmp_path, gb):
+    """Create a sparse file of approximately `gb` gigabytes (no real disk)."""
+    p = tmp_path / f"img_{gb}.raw"
+    with p.open("wb") as f:
+        f.seek(int(gb * 1e9))
+        f.write(b"\0")
+    return str(p)
+
+
+def test_auto_detach_triggers_for_large_input(tmp_path, monkeypatch):
+    monkeypatch.delenv("EL_AUTODETACH_GB", raising=False)
+    auto, gb, thr = cli._should_auto_detach(
+        _big(tmp_path, 19), explicit_detach=False, foreground=False,
+        already_detached=False, have_systemd=True)
+    assert auto is True
+    assert gb >= 18  # ~19 GB sparse file
+    assert thr == 4.0
+
+
+def test_auto_detach_skips_small_input(tmp_path, monkeypatch):
+    monkeypatch.delenv("EL_AUTODETACH_GB", raising=False)
+    small = tmp_path / "capture.pcap"
+    small.write_bytes(b"\0" * 1024)
+    auto, gb, _ = cli._should_auto_detach(
+        str(small), explicit_detach=False, foreground=False,
+        already_detached=False, have_systemd=True)
+    assert auto is False
+
+
+def test_auto_detach_suppressed_by_foreground(tmp_path):
+    auto, _, _ = cli._should_auto_detach(
+        _big(tmp_path, 19), explicit_detach=False, foreground=True,
+        already_detached=False, have_systemd=True)
+    assert auto is False
+
+
+def test_auto_detach_suppressed_when_already_detached(tmp_path):
+    """Inside the transient unit (EL_DETACHED=1) the re-exec must not
+    recurse — even though the input is huge."""
+    auto, _, _ = cli._should_auto_detach(
+        _big(tmp_path, 19), explicit_detach=False, foreground=False,
+        already_detached=True, have_systemd=True)
+    assert auto is False
+
+
+def test_auto_detach_suppressed_without_systemd(tmp_path):
+    """Can't detach without systemd-run, so don't claim to."""
+    auto, _, _ = cli._should_auto_detach(
+        _big(tmp_path, 19), explicit_detach=False, foreground=False,
+        already_detached=False, have_systemd=False)
+    assert auto is False
+
+
+def test_auto_detach_disabled_by_zero_threshold(tmp_path, monkeypatch):
+    monkeypatch.setenv("EL_AUTODETACH_GB", "0")
+    auto, _, thr = cli._should_auto_detach(
+        _big(tmp_path, 19), explicit_detach=False, foreground=False,
+        already_detached=False, have_systemd=True)
+    assert auto is False
+    assert thr == 0.0
+
+
+def test_auto_detach_sums_bundle_devices(tmp_path, monkeypatch):
+    """A bundle of several mid-size devices that individually sit under the
+    threshold still auto-detaches once their combined size crosses it."""
+    monkeypatch.delenv("EL_AUTODETACH_GB", raising=False)
+    d1, d2 = _big(tmp_path, 2.5), _big(tmp_path, 2.5)
+    auto, gb, _ = cli._should_auto_detach(
+        d1, d2, explicit_detach=False, foreground=False,
+        already_detached=False, have_systemd=True)
+    assert auto is True
+    assert gb >= 4.5
