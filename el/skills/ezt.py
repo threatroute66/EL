@@ -158,9 +158,11 @@ def run_pecmd(prefetch_dir: Path, out_dir: Path, timeout: int = 600) -> EztRun:
 
 
 def run_sbecmd(target: Path, out_dir: Path, timeout: int = 600) -> EztRun:
-    """Shellbags. --tz UTC: SKILL warns default is local."""
+    """Shellbags. SBECmd 2.x emits UTC timestamps natively and dropped the
+    legacy --tz switch (passing it makes SBECmd print help + parse nothing);
+    --dt sets only the display format. Keep ISO-8601 UTC, no --tz."""
     args = ["-d" if target.is_dir() else "-f", str(target),
-            "--csv", str(out_dir), "--tz", "UTC", "--dedupe"]
+            "--csv", str(out_dir), "--dt", "yyyy-MM-dd HH:mm:ss", "--dedupe"]
     return run_ezt("SBECmd.dll", None, args, out_dir, timeout)
 
 
