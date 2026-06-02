@@ -346,11 +346,45 @@ class WindowsArtifactAgent(Agent):
         # the multi-cloud mirror pattern (Lone Wolf 2018 — Cloudy gave
         # his brother AWS keys via Brother Chat after staging plans on S3).
         out.extend(self._aws_credential_exposure(ctx, root))
+        # iCloud-for-Windows account attribution — Apple ID + DSID from the
+        # AOSKit / iCloudWinPref plists. The handles to subpoena Apple for
+        # the account's iCloud contents (Photos w/ GPS, device backup,
+        # Find My) — i.e. evidence not on the disk (a missing phone).
+        out.extend(self._icloud_attribution(ctx, root))
 
         if all(f.confidence == "insufficient" for f in out):
             out.append(self.emit(ctx, Finding(
                 case_id=ctx.case_id, agent=self.name, confidence="insufficient",
                 claim=f"No recognised Windows artifacts found under {root.name}",
+            )))
+        return out
+
+    def _icloud_attribution(self, ctx: AgentContext, root: Path) -> list[Finding]:
+        """Recover Apple ID + DSID from any iCloud-for-Windows config plists
+        under *root* (extracted to exports/windows-artifacts/icloud/)."""
+        from el.skills import icloud_attribution as ic
+        out: list[Finding] = []
+        for prefs in ic.find_prefs_dirs(root):
+            r = ic.parse_icloud_attribution(prefs)
+            if not r.found():
+                continue
+            bits = []
+            if r.apple_id:
+                bits.append(f"Apple ID {r.apple_id}")
+            if r.dsid:
+                bits.append(f"DSID {r.dsid}")
+            quota = ""
+            if r.quota_total_bytes:
+                quota = (f"; iCloud {r.quota_total_bytes // (1024**3)}GB plan, "
+                         f"~{(r.quota_used_bytes or 0) // (1024**2)}MB used")
+            out.append(self.emit(ctx, Finding(
+                case_id=ctx.case_id, agent=self.name, confidence="high",
+                claim=(f"iCloud-for-Windows account attribution: "
+                       f"{', '.join(bits)}{quota}. These identifiers are the "
+                       f"legal handle to compel Apple to produce the account's "
+                       f"iCloud contents (Photos with GPS, device backup, Find "
+                       f"My location history) — evidence not resident on this disk."),
+                evidence=[r.as_evidence()],
             )))
         return out
 

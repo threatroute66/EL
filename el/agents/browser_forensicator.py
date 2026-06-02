@@ -233,6 +233,70 @@ class BrowserForensicatorAgent(Agent):
 
         return out
 
+    def _firefox_credentials(self, ctx: AgentContext,
+                             profile_dir: Path) -> list[Finding]:
+        """Decrypt the Firefox saved-login vault (logins.json + key4.db) and
+        emit credential-exposure / password-reuse / covert-identity findings.
+        Decryption is subprocess-isolated (crash-safe); no-op when the
+        profile has no vault or it's protected by a Primary password."""
+        from el.skills import browser_credentials as bcred
+        if not bcred.is_firefox_profile(profile_dir):
+            return []
+        r = bcred.decrypt_firefox(profile_dir)
+        out: list[Finding] = []
+        if not r.ok:
+            if r.primary_password_set:
+                out.append(self.emit(ctx, Finding(
+                    case_id=ctx.case_id, agent=self.name, confidence="low",
+                    claim=(f"Firefox saved-login vault present ({profile_dir.name}) "
+                           f"but protected by a Primary password — {r.saved_count} "
+                           f"saved login(s), not offline-recoverable here."),
+                    evidence=[r.as_evidence()],
+                )))
+            return out
+
+        decrypted = [L for L in r.logins if L.password]
+        if not decrypted:
+            return out
+        origins = sorted({L.origin for L in decrypted if L.origin})
+        # (1) credential exposure — no primary password
+        out.append(self.emit(ctx, Finding(
+            case_id=ctx.case_id, agent=self.name, confidence="high",
+            claim=(f"Firefox saved-login vault recovered ({profile_dir.name}): "
+                   f"{len(decrypted)} credential(s) decrypted with NO Primary "
+                   f"password across {len(origins)} site(s) "
+                   f"({', '.join(s for s in origins if not s.startswith('chrome://'))[:200]}). "
+                   f"Any actor on the unlocked profile recovers them in cleartext."),
+            evidence=[r.as_evidence(facts={"origins": origins})],
+            hypotheses_supported=["H_CREDENTIAL_ACCESS"],
+        )))
+        # (2) password reuse
+        reuse = bcred.password_reuse(r.logins)
+        if reuse:
+            worst = max(reuse.values(), key=len)
+            out.append(self.emit(ctx, Finding(
+                case_id=ctx.case_id, agent=self.name, confidence="medium",
+                claim=(f"Password reuse in Firefox vault ({profile_dir.name}): a "
+                       f"single saved password is shared across {len(worst)} "
+                       f"accounts ({', '.join(worst)[:200]}) — compromise of one "
+                       f"compromises all (incl. any host/SSO account using it)."),
+                evidence=[r.as_evidence(facts={"reused_across": worst})],
+                hypotheses_supported=["H_CREDENTIAL_ACCESS"],
+            )))
+        # (3) covert / secondary identity
+        alts = bcred.find_alternate_identities(r.logins)
+        if alts:
+            out.append(self.emit(ctx, Finding(
+                case_id=ctx.case_id, agent=self.name, confidence="medium",
+                claim=(f"Alternate/secondary account identity in Firefox saved "
+                       f"logins ({profile_dir.name}): {', '.join(alts)} — local-part "
+                       f"does not match the dominant profile-owner identity. Review "
+                       f"as a possible covert or secondary persona; pivot on the "
+                       f"address."),
+                evidence=[r.as_evidence(facts={"alternate_identities": alts})],
+            )))
+        return out
+
     def _triage_places(self, ctx: AgentContext, places_sqlite: Path) -> list[Finding]:
         out: list[Finding] = []
         try:
@@ -256,6 +320,11 @@ class BrowserForensicatorAgent(Agent):
             evidence=[run.as_evidence()],
             hypotheses_supported=["H_BROWSER_HISTORY_PARSED"],
         )))
+
+        # Saved-login vault: decrypt logins.json + key4.db (NSS) when the
+        # profile carries them. Surfaces credential exposure, password
+        # reuse, and covert/secondary account identities.
+        out.extend(self._firefox_credentials(ctx, places_sqlite.parent))
 
         # Bucket by category
         forum_hits: list[browser.Visit] = []

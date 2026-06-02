@@ -490,6 +490,17 @@ def extract_windows_artifacts(mount_point: Path, exports_dir: Path) -> dict:
                         dst_dir.mkdir(parents=True, exist_ok=True)
                         if _sudo_cp(places, dst_dir / "places.sqlite"):
                             n_firefox += 1
+                        # Saved-login vault: logins.json holds the encrypted
+                        # credentials, key4.db the NSS key that decrypts them
+                        # (browser_credentials skill). cert9.db completes the
+                        # profile for NSS; signedInUser.json carries the FxA
+                        # identity. Copy alongside places.sqlite so the
+                        # credential decryptor runs offline.
+                        for cred in ("logins.json", "key4.db", "cert9.db",
+                                     "logins-backup.json", "signedInUser.json"):
+                            src = _child_ci(prof, cred)
+                            if src and src.is_file():
+                                _sudo_cp(src, dst_dir / cred)
             # Windows 10/11 Timeline (ActivitiesCache.db) — per-user
             # SQLite under AppData\Local\ConnectedDevicesPlatform\L.<user>\.
             # One user can have multiple L.* subdirs (profile migrations,
@@ -513,6 +524,36 @@ def extract_windows_artifacts(mount_point: Path, exports_dir: Path) -> dict:
                                 out["activities_cache_files"] = (
                                     out.get("activities_cache_files", 0) + 1
                                 )
+            # iCloud for Windows account config — com.apple.AOSKit.plist
+            # (Apple ID) + iCloudWinPref.plist (DSID + quota). Store build
+            # buries them under AppData\Local\Packages\AppleInc.iCloud_*\
+            # LocalCache\Roaming\Apple Computer\Preferences; classic
+            # installer uses AppData\Roaming\Apple Computer\Preferences.
+            icloud_dir = exports_dir / "icloud"
+            icloud_pref_dirs: list[Path] = []
+            classic_pref = _resolve_ci(user_dir, "AppData", "Roaming",
+                                       "Apple Computer", "Preferences")
+            if classic_pref and classic_pref.is_dir():
+                icloud_pref_dirs.append(classic_pref)
+            pkgs = _resolve_ci(user_dir, "AppData", "Local", "Packages")
+            if pkgs and pkgs.is_dir():
+                for pkg in pkgs.iterdir():
+                    if (pkg.is_dir()
+                            and pkg.name.lower().startswith("appleinc.icloud")):
+                        pref = _resolve_ci(pkg, "LocalCache", "Roaming",
+                                           "Apple Computer", "Preferences")
+                        if pref and pref.is_dir():
+                            icloud_pref_dirs.append(pref)
+            for pref in icloud_pref_dirs:
+                for fname in ("com.apple.AOSKit.plist", "iCloudWinPref.plist",
+                               "com.apple.AOSKit.RegInfo.plist"):
+                    src = _child_ci(pref, fname)
+                    if src and src.is_file():
+                        dst_dir = icloud_dir / user_dir.name
+                        dst_dir.mkdir(parents=True, exist_ok=True)
+                        if _sudo_cp(src, dst_dir / fname):
+                            out["icloud_config_files"] = (
+                                out.get("icloud_config_files", 0) + 1)
             # IE5 Content.IE5 index.dat + cached files — XP + legacy Vista/7
             # profiles. The directory tree is:
             #   XP    : <user>/Local Settings/Temporary Internet Files/
