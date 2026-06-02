@@ -458,15 +458,35 @@ install_ja4_tools() {
         return 0
     fi
     log "cloning FoxIO ja4 tools to /opt/ja4-tools"
-    if sudo git clone --quiet --depth 1 \
-        https://github.com/FoxIO-LLC/ja4.git /tmp/foxio-ja4 2>/dev/null; then
+    local clone_dir=/tmp/foxio-ja4
+    local err_log=/tmp/foxio-ja4.err
+    local attempt rc=1
+    # A single clone has no resilience to transient network blips (DNS, TLS,
+    # GitHub 5xx) — which is what failed mid-install. Retry with linear backoff,
+    # clear any partial clone between attempts (git refuses a non-empty target),
+    # and capture stderr instead of discarding it so a real failure is diagnosable.
+    for attempt in 1 2 3; do
+        sudo rm -rf "${clone_dir}"
+        if sudo git clone --quiet --depth 1 \
+            https://github.com/FoxIO-LLC/ja4.git "${clone_dir}" 2>"${err_log}"; then
+            rc=0
+            break
+        fi
+        [[ ${attempt} -lt 3 ]] && {
+            log "ja4 clone attempt ${attempt}/3 failed; retrying in $((attempt * 3))s"
+            sleep "$((attempt * 3))"
+        }
+    done
+    if [[ ${rc} -eq 0 ]]; then
         sudo mkdir -p /opt/ja4-tools
-        sudo cp -r /tmp/foxio-ja4/python /opt/ja4-tools/python
-        sudo rm -rf /tmp/foxio-ja4
+        sudo cp -r "${clone_dir}/python" /opt/ja4-tools/python
         log "FoxIO ja4 tools installed at /opt/ja4-tools/python/"
     else
-        log "WARN: FoxIO ja4 clone failed — JA4 fingerprinting unavailable (JA3 still works)"
+        log "WARN: FoxIO ja4 clone failed after 3 attempts — JA4 fingerprinting unavailable (JA3 still works)"
+        [[ -s "${err_log}" ]] && log "  last git error: $(tail -n1 "${err_log}")"
     fi
+    sudo rm -rf "${clone_dir}"
+    rm -f "${err_log}"
 }
 
 if [[ ${skip_apt} -eq 0 ]]; then
