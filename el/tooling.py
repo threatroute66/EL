@@ -21,7 +21,11 @@ def _run(cmd: list[str], timeout: int = 8) -> tuple[int, str, str]:
     try:
         p = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
         return p.returncode, p.stdout.strip(), p.stderr.strip()
-    except (FileNotFoundError, subprocess.TimeoutExpired) as e:
+    except (OSError, subprocess.TimeoutExpired) as e:
+        # OSError (a superclass of FileNotFoundError/PermissionError) also
+        # covers ENOEXEC "Exec format error" from a malformed or wrong-arch
+        # binary sitting on PATH. Treat any of these as "tool unusable" so a
+        # single bad binary can't crash the whole `el doctor` survey.
         return 127, "", str(e)
 
 
@@ -129,6 +133,12 @@ def probe_simple(name: str, version_args: list[str] | None = None) -> ToolStatus
     version = ""
     if version_args:
         rc, out, err = _run([p, *version_args])
+        # rc==127 with no stdout is _run's signal that the binary could not be
+        # executed at all (ENOEXEC "Exec format error", wrong arch, or timeout)
+        # — it's on PATH but unusable. Report unavailable rather than a
+        # misleading "yes" (no false positives).
+        if rc == 127 and not out:
+            return ToolStatus(name, None, (err or "not executable")[:60], False)
         text = out or err
         for line in text.splitlines():
             if line.strip():

@@ -769,17 +769,31 @@ _install_release_binary() {
         *.gz)           gunzip -c "${arc}" > "${tmp}/x/${name}" 2>/dev/null || true ;;
         *)              log "WARN: ${name}: unrecognised asset type ${arc##*/} — skipping"; rm -rf "${tmp}"; return 0 ;;
     esac
-    # Pick the binary: prefer an exact-name match, else the first file whose
-    # name starts with the tool name (hayabusa ships versioned binary names).
-    local bin
-    bin="$(find "${tmp}/x" -type f -name "${name}" 2>/dev/null | head -n1)"
-    [[ -z "${bin}" ]] && bin="$(find "${tmp}/x" -type f -name "${name}*" 2>/dev/null | head -n1)" || true
+    # Pick the binary: among files named ${name}* (hayabusa ships versioned
+    # names like hayabusa-3.8.1-lin-x64-gnu), choose the first that `file`
+    # reports as an ELF executable. Name-matching alone is not enough — the
+    # archive also carries rules/configs/licences, and installing a non-ELF
+    # (or wrong-arch) file produces a /usr/local/bin/${name} that dies with
+    # "Exec format error" on every invocation (and crashed el doctor).
+    local bin="" cand
+    while IFS= read -r cand; do
+        [[ -z "${cand}" ]] && continue
+        if file -b "${cand}" 2>/dev/null | grep -q 'ELF.*executable'; then
+            bin="${cand}"; break
+        fi
+    done < <(find "${tmp}/x" -type f \( -name "${name}" -o -name "${name}*" \) 2>/dev/null)
     if [[ -n "${bin}" ]]; then
-        sudo install -m 0755 "${bin}" "/usr/local/bin/${name}" \
-            && log "${name} installed at /usr/local/bin/${name}" \
-            || log "WARN: ${name}: could not install binary to /usr/local/bin"
+        # Reject a wrong-arch ELF (e.g. aarch64 asset on an x86-64 host).
+        local host_arch; host_arch="$(uname -m)"
+        if file -b "${bin}" 2>/dev/null | grep -qiE 'x86-64|x86_64' || [[ "${host_arch}" != "x86_64" ]]; then
+            sudo install -m 0755 "${bin}" "/usr/local/bin/${name}" \
+                && log "${name} installed at /usr/local/bin/${name}" \
+                || log "WARN: ${name}: could not install binary to /usr/local/bin"
+        else
+            log "WARN: ${name}: only a non-${host_arch} ELF found in asset — skipping"
+        fi
     else
-        log "WARN: ${name}: no binary found in asset — skipping"
+        log "WARN: ${name}: no ELF executable found in asset — skipping"
     fi
     rm -rf "${tmp}"
 }
