@@ -285,5 +285,27 @@ def generate_ioc_rules(iocs: dict[str, list[str]], out_path: Path,
                       "    condition: $a", "}", ""]
 
     lines.append(_CURATED_RULES)
+    lines.append(_vendored_rules())
     out_path.write_text("\n".join(lines))
     return out_path
+
+
+# Vendored third-party / authoritative rule packs (e.g. US-CERT HIDDEN
+# COBRA). Kept as verbatim .yar files under el/skills/rules/ and appended
+# to every case rule set so named-actor tooling is covered without
+# retyping byte signatures. Hits on the rule files themselves are dropped
+# by the .yar self-match guard in scan_paths.
+_RULES_DIR = Path(__file__).resolve().parent / "rules"
+
+
+def _vendored_rules() -> str:
+    if not _RULES_DIR.is_dir():
+        return ""
+    blocks: list[str] = []
+    for yar in sorted(_RULES_DIR.glob("*.yar")):
+        try:
+            blocks.append(f"// ----- vendored: {yar.name} -----\n"
+                          + yar.read_text(encoding="utf-8", errors="replace"))
+        except OSError:
+            continue
+    return "\n".join(blocks)
