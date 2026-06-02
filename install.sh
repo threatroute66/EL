@@ -625,10 +625,15 @@ if [[ ! -d "${EL_DIR}/.venv" ]]; then
 fi
 
 log "upgrading pip"
-"${EL_DIR}/.venv/bin/pip" install --quiet --upgrade pip
+# Drive pip through the interpreter, not the `pip` console-script. When pip
+# upgrades ITSELF via its own entry point it unlinks the running process's
+# files mid-operation and then fails with "[Errno 2] No such file or
+# directory". `python -m pip` keeps the interpreter — not pip's own script —
+# as the live process, which is the pip project's documented-safe upgrade path.
+"${EL_DIR}/.venv/bin/python" -m pip install --quiet --upgrade pip
 
 log "installing EL + Python deps from pyproject.toml"
-"${EL_DIR}/.venv/bin/pip" install --quiet -e "${EL_DIR}[dev]"
+"${EL_DIR}/.venv/bin/python" -m pip install --quiet -e "${EL_DIR}[dev]"
 
 # --- vol3 on PATH -----------------------------------------------------------
 # Volatility 3 is venv-resident (installed via pyproject above), so the bare
