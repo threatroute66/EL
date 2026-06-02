@@ -13,3 +13,10 @@ automake
 libtool
 libfuse-dev
 golang-go
+# Python venv scaffolding — `python -m venv` needs ensurepip, which Debian/
+# Ubuntu split into a separate package. python3-venv pulls the default
+# interpreter's pythonX.Y-venv (e.g. python3.12-venv on Ubuntu 24.04);
+# python3-virtualenv is the universal fallback the installer uses for
+# non-default interpreters (e.g. a deadsnakes python3.13).
+python3-venv
+python3-virtualenv

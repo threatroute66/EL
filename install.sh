@@ -91,8 +91,24 @@ if [[ ${skip_apt} -eq 0 ]] && command -v gcc >/dev/null 2>&1; then
         Y2U_BUILD="$(mktemp -d)"
         if git clone --depth 1 https://github.com/justsoso8/yaffs2utils.git \
                 "${Y2U_BUILD}/yaffs2utils" >/dev/null 2>&1; then
-            (cd "${Y2U_BUILD}/yaffs2utils/src" && make -s 2>&1 | tail -20) \
-                || log "yaffs2utils build failed (gcc warnings?) — continuing"
+            # yaffs2utils is old (2010) C that compiles cleanly to working
+            # binaries on modern gcc but emits cosmetic warnings (-Wunused-
+            # result, -Wstringop-truncation, -Warray-bounds). Capture the full
+            # build to a log instead of spamming the console — only a genuine
+            # non-zero make (real error, not a warning) is worth surfacing.
+            # NB: the old `make … | tail` masked make's exit status behind
+            # tail's, so failures were silently swallowed; this checks make
+            # directly.
+            Y2U_LOG="${SNAP}/yaffs2utils-build-${TS}.log"
+            if (cd "${Y2U_BUILD}/yaffs2utils/src" && make -s >"${Y2U_LOG}" 2>&1); then
+                if grep -qi warning "${Y2U_LOG}" 2>/dev/null; then
+                    log "yaffs2utils built (compiler warnings logged to ${Y2U_LOG})"
+                else
+                    log "yaffs2utils built -> ${Y2U_DIR}/"
+                fi
+            else
+                log "yaffs2utils build failed — see ${Y2U_LOG}; continuing (optional stage-2 YAFFS2 fallback; Debian unyaffs still covers the common layout)"
+            fi
             sudo mkdir -p "${Y2U_DIR}"
             for bin in unyaffs2 mkyaffs2 unspare2; do
                 if [[ -x "${Y2U_BUILD}/yaffs2utils/src/${bin}" ]]; then
@@ -564,17 +580,43 @@ log "selected python interpreter: ${PYTHON_BIN} ($(${PYTHON_BIN} --version 2>&1)
 # --- venv phase -------------------------------------------------------------
 if [[ ! -d "${EL_DIR}/.venv" ]]; then
     log "creating Python venv at ${EL_DIR}/.venv (using ${PYTHON_BIN})"
-    # Prefer `<python> -m venv` so the venv inherits the exact interpreter
-    # the preflight selected. `virtualenv` without --python could otherwise
-    # default back to the system python3 (3.10 on Ubuntu 22.04) and undo
-    # the preflight check.
-    if "${PYTHON_BIN}" -m venv --help >/dev/null 2>&1; then
+    # Prefer `<python> -m venv` so the venv inherits the exact interpreter the
+    # preflight selected. `virtualenv` without --python could otherwise default
+    # back to the system python3 (3.10 on Ubuntu 22.04) and undo the preflight.
+    #
+    # BUT: `python -m venv` needs the ensurepip scaffolding, which on
+    # Debian/Ubuntu ships in a SEPARATE apt package (pythonX.Y-venv). The
+    # interpreter can be present without it — and crucially `-m venv --help`
+    # STILL succeeds — so the old guard committed to the stdlib-venv path and
+    # then failed at creation with "ensurepip is not available", never reaching
+    # the virtualenv fallback. Test ensurepip itself; remediate via apt; only
+    # then choose the creation method.
+    venv_pkg="${PYTHON_BIN##*/}-venv"   # python3.12 -> python3.12-venv
+    if ! "${PYTHON_BIN}" -c 'import ensurepip' >/dev/null 2>&1; then
+        if [[ ${skip_apt} -eq 0 ]]; then
+            log "ensurepip missing for ${PYTHON_BIN}; installing ${venv_pkg}"
+            sudo apt-get install -y "${venv_pkg}" >/dev/null 2>&1 \
+                || sudo apt-get install -y python3-venv >/dev/null 2>&1 \
+                || log "could not apt-install ${venv_pkg}/python3-venv — will try virtualenv"
+        else
+            log "ensurepip missing for ${PYTHON_BIN} and --no-apt set — will try virtualenv"
+        fi
+    fi
+
+    if "${PYTHON_BIN}" -c 'import ensurepip' >/dev/null 2>&1; then
         "${PYTHON_BIN}" -m venv "${EL_DIR}/.venv"
     elif command -v virtualenv >/dev/null 2>&1; then
+        log "stdlib venv unavailable for ${PYTHON_BIN}; falling back to virtualenv"
+        virtualenv -q --python="${PYTHON_BIN}" "${EL_DIR}/.venv"
+    elif [[ ${skip_apt} -eq 0 ]] && sudo apt-get install -y python3-virtualenv >/dev/null 2>&1; then
+        log "installed python3-virtualenv; creating venv with it"
         virtualenv -q --python="${PYTHON_BIN}" "${EL_DIR}/.venv"
     else
-        echo "ERROR: ${PYTHON_BIN} found but neither '${PYTHON_BIN} -m venv' nor virtualenv is available" >&2
-        echo "Try: sudo apt install -y ${PYTHON_BIN}-venv  OR  sudo apt install -y python3-virtualenv" >&2
+        echo "ERROR: cannot create a venv for ${PYTHON_BIN} — ensurepip is" >&2
+        echo "missing and virtualenv is unavailable." >&2
+        echo "  Install the venv scaffolding and retry:" >&2
+        echo "    sudo apt install -y ${venv_pkg}      # or: sudo apt install -y python3-venv" >&2
+        echo "  Or install virtualenv:  sudo apt install -y python3-virtualenv" >&2
         exit 2
     fi
 fi
