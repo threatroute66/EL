@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -125,6 +126,54 @@ def probe_ezt(dll: str, subdir: str | None = None) -> ToolStatus:
     return ToolStatus(dll, None, None, False)
 
 
+def probe_vendored_yara_rules() -> ToolStatus:
+    """Vendored authoritative YARA rule packs under el/skills/rules/ that
+    yara_hunt appends to every case sweep (e.g. the US-CERT HIDDEN COBRA /
+    FALLCHILL pack). Counts packs + rules and, when a YARA engine is
+    present, confirms they compile."""
+    name = "vendored-yara-rules"
+    try:
+        from el.skills import yara_hunt
+        rules_dir = Path(yara_hunt._RULES_DIR)
+    except Exception as e:  # noqa: BLE001
+        return ToolStatus(name, None, None, False, f"yara_hunt import failed: {e}")
+    if not rules_dir.is_dir():
+        return ToolStatus(name, None, None, False,
+                          "el/skills/rules/ absent — no vendored packs "
+                          "(yara_hunt degrades gracefully)")
+    packs = sorted(rules_dir.glob("*.yar"))
+    if not packs:
+        return ToolStatus(name, [str(rules_dir)], "0 packs", False,
+                          "no .yar packs vendored")
+    n_rules = 0
+    for p in packs:
+        try:
+            n_rules += sum(1 for ln in p.read_text(errors="replace").splitlines()
+                           if ln.lstrip().startswith("rule "))
+        except OSError:
+            pass
+    # Best-effort compile check when a YARA engine is available.
+    compile_note = " (no yara engine to compile-check)"
+    try:
+        ybin = yara_hunt._yara_bin()
+        probe_file = Path(tempfile.gettempdir()) / "_el_doctor_yara_probe"
+        probe_file.write_text("x")
+        bad = []
+        for p in packs:
+            if yara_hunt._is_yara_x(ybin):
+                rc, _, _ = _run([ybin, "scan", str(p), str(probe_file)])
+            else:
+                rc, _, _ = _run([ybin, str(p), str(probe_file)])
+            if rc != 0:
+                bad.append(p.name)
+        compile_note = "; all compile" if not bad else f"; FAILED compile: {bad}"
+    except Exception:  # noqa: BLE001
+        pass
+    return ToolStatus(
+        name, [str(rules_dir)], f"{len(packs)} pack(s), {n_rules} rule(s)",
+        True, f"{', '.join(p.name for p in packs)}{compile_note}")
+
+
 def survey() -> list[ToolStatus]:
     import sys
     capa_bin = str(Path(sys.executable).parent / "capa")
@@ -142,6 +191,7 @@ def survey() -> list[ToolStatus]:
         probe_simple("bulk_extractor", ["-V"]),
         probe_simple("yara", ["--version"]),
         probe_yara_x(),
+        probe_vendored_yara_rules(),
         probe_ja4(),
         probe_cape(),
         probe_m365_collect(),
