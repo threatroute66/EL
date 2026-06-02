@@ -192,7 +192,10 @@ if [[ ${skip_apt} -eq 0 ]]; then
                 else
                     log "dwarf2json build failed — Linux/macOS memory images will need a manually-built ISF"
                 fi
-                rm -rf "${D2J_CACHE}"
+                # Cache files were written by the `sudo … go build` above, so
+                # they are root-owned and read-only — clean up with sudo to
+                # match, else rm sprays "Permission denied" for every entry.
+                sudo rm -rf "${D2J_CACHE}"
             else
                 log "dwarf2json clone failed — see provisioning/optional-tools.txt for the manual ISF workflow"
             fi
