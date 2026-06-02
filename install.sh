@@ -78,11 +78,20 @@ command -v vol >/dev/null && vol --help >/dev/null 2>&1 && \
     echo "vol3 not on PATH" > "${SNAP}/vol3-pre-${TS}.txt"
 
 # --- apt phase --------------------------------------------------------------
+# Run apt non-interactively so a transitively-pulled package with a debconf
+# prompt (e.g. postfix's MTA-type menu) can't block the autonomous install.
+# sudo resets the environment, so DEBIAN_FRONTEND must ride on each sudo line.
+# Preseed postfix to "No configuration" too: under the noninteractive frontend
+# it would otherwise take its built-in default — and a forensic box wants no
+# MTA wired up at all.
 if [[ ${skip_apt} -eq 0 && -s "${APT_LIST}" ]]; then
     log "installing apt packages from ${APT_LIST}"
+    echo "postfix postfix/main_mailer_type select No configuration" \
+        | sudo debconf-set-selections 2>/dev/null || true
     sudo apt-get update -qq
     # shellcheck disable=SC2046
-    sudo apt-get install -y -qq $(grep -v '^#' "${APT_LIST}" | grep -v '^$' | tr '\n' ' ')
+    sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
+        $(grep -v '^#' "${APT_LIST}" | grep -v '^$' | tr '\n' ' ')
 else
     log "skipping apt phase"
 fi
@@ -101,7 +110,7 @@ if [[ ${with_optional} -eq 1 ]]; then
         log "--with-optional: C toolchain already present — skipping build-essential"
     else
         log "--with-optional: installing build-essential (C toolchain for source builds)"
-        sudo apt-get install -y -qq build-essential \
+        sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq build-essential \
             || log "WARN: build-essential install failed — source-built tools may skip"
     fi
 fi
@@ -794,7 +803,7 @@ if [[ ${with_optional} -eq 1 ]]; then
 
     if [[ ${skip_apt} -eq 0 ]]; then
         # hayabusa + chainsaw — Rust release binaries; need unzip for hayabusa.
-        command -v unzip >/dev/null 2>&1 || sudo apt-get install -y -qq unzip || true
+        command -v unzip >/dev/null 2>&1 || sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq unzip || true
         _install_release_binary hayabusa Yamato-Security/hayabusa 'lin(ux)?-?x64-?gnu.*\.zip'
         _install_release_binary chainsaw WithSecureLabs/chainsaw   'x86_64-unknown-linux-gnu.*\.(tar\.gz|tgz)'
 
@@ -811,7 +820,7 @@ if [[ ${with_optional} -eq 1 ]]; then
                     | sudo tee /etc/apt/trusted.gpg.d/security_zeek.gpg >/dev/null; then
                 echo "deb ${zeek_repo}/ /" \
                     | sudo tee /etc/apt/sources.list.d/security:zeek.list >/dev/null
-                if sudo apt-get update -qq && sudo apt-get install -y -qq zeek; then
+                if sudo apt-get update -qq && sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq zeek; then
                     # Zeek installs under /opt/zeek/bin; expose on PATH.
                     [[ -x /opt/zeek/bin/zeek ]] && sudo ln -sf /opt/zeek/bin/zeek /usr/local/bin/zeek || true
                     log "zeek installed"
