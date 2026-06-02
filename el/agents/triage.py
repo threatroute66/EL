@@ -212,6 +212,52 @@ def _detect_carvable_blob(path: Path, min_size: int = 256 * 1024 * 1024) -> str 
     return None
 
 
+# A Windows memory image caches huge volumes of filesystem metadata — MFT
+# records (FILE0), registry hives (regf), event logs (ElfFile) and prefetch
+# (MAM) all sit resident in RAM — so a raw memory capture trips
+# _detect_carvable_blob() exactly like an exported unallocated-space blob.
+# (Measured on the 19 GiB SRL "Rocba" capture: FILE0 present in 9 of 12 sample
+# windows.) Signature density therefore cannot separate "memory image" from
+# "carve-only blob". The discriminator is the input naming itself a memory
+# capture — via a conventional extension/name token, or the bundle device
+# label carried in case_id ("<bundle>:<device>"). When that hint fires we let
+# Volatility 3 be the authority: kernel found → MemoryForensicator; no kernel
+# → fall back to carving (see TriageAgent.run). _EXT_STRONG values are
+# unambiguously volatile-memory formats; _EXT_WEAK (.raw/.img/.bin) only count
+# as a hint alongside a name/label token, since they are also disk extensions.
+_MEM_NAME_TOKENS: tuple[str, ...] = (
+    "memory", "memdump", "mem-dump", "mem_dump", "ramdump", "ram-dump",
+    "ram_dump", "pmem", "winpmem", "memimage", "physmem", "memcapture",
+)
+_MEM_LABEL_TOKENS: tuple[str, ...] = ("memory", "mem", "ram") + _MEM_NAME_TOKENS
+_MEM_EXT_STRONG: frozenset[str] = frozenset(
+    {".lime", ".vmem", ".vmss", ".vmsn", ".pmem", ".dmp", ".dump",
+     ".core", ".crash", ".mem"})
+_MEM_EXT_WEAK: frozenset[str] = frozenset({".raw", ".img", ".bin"})
+
+
+def _looks_like_memory_input(path: Path, case_id: str | None) -> bool:
+    """True when the input *names itself* a memory capture — so a carve-blob
+    false positive can be deferred to a vol3 kernel probe instead of being
+    routed straight to carving. Name-only heuristic (no I/O); correctness is
+    still decided by Volatility downstream, this only gates whether we bother
+    to probe before carving."""
+    name = path.name.lower()
+    ext = path.suffix.lower()
+    # Bundle device label, e.g. case_id "rocba:memory" → "memory".
+    label = ""
+    if case_id and ":" in case_id:
+        label = case_id.rsplit(":", 1)[-1].strip().lower()
+    if label and (label in _MEM_LABEL_TOKENS
+                  or any(t in label for t in _MEM_NAME_TOKENS)):
+        return True
+    if any(t in name for t in _MEM_NAME_TOKENS):
+        return True
+    if ext in _MEM_EXT_STRONG:
+        return True
+    return False
+
+
 class TriageAgent(Agent):
     name = "triage"
 
@@ -405,6 +451,7 @@ class TriageAgent(Agent):
             rd_kind = _detect_raw_disk(ctx.input_path)
             if rd_kind:
                 magic_hint = rd_kind
+        deferred_carve: str | None = None
         if not magic_hint:
             # Carve-only blob (e.g. exported UNALLOCATED disk space): a large
             # headerless stream densely populated with NTFS/Windows artifact
@@ -413,7 +460,15 @@ class TriageAgent(Agent):
             # memory image still falls through to MemoryForensicator.
             cb_kind = _detect_carvable_blob(ctx.input_path)
             if cb_kind:
-                magic_hint = cb_kind
+                # A Windows memory image trips this same heuristic (its RAM
+                # caches MFT/registry/EVTX/prefetch). If the input names
+                # itself a memory capture, don't commit to carve-only — defer
+                # to the vol3 kernel probe below and only carve if vol3 finds
+                # no kernel.
+                if _looks_like_memory_input(ctx.input_path, ctx.case_id):
+                    deferred_carve = cb_kind
+                else:
+                    magic_hint = cb_kind
 
         evidence = [EvidenceItem(
             tool="el.triage", version="0.1.0",
@@ -466,7 +521,22 @@ class TriageAgent(Agent):
             ctx.shared["evidence_kind"] = ctx.shared.get("evidence_kind") or "structured-text"
             return out
 
-        return out + self._maybe_run_vol3(ctx, analysis)
+        out += self._maybe_run_vol3(ctx, analysis)
+        if deferred_carve and not ctx.shared.get("mem_os"):
+            # The input named itself a memory capture and tripped the
+            # carve-blob heuristic, but Volatility found no kernel — it is a
+            # headerless blob after all (e.g. an unallocated export with a
+            # memory-ish name). Route to the carving pipeline as originally
+            # detected rather than dropping it.
+            ctx.shared["evidence_kind"] = deferred_carve
+            out.append(self.emit(ctx, Finding(
+                case_id=ctx.case_id, agent=self.name, confidence="high",
+                claim=(f"Input named like a memory capture but Volatility "
+                       f"found no kernel — reclassifying as {deferred_carve} "
+                       f"and routing to the carving pipeline"),
+                evidence=evidence,
+            )))
+        return out
 
     def _maybe_run_vol3(self, ctx: AgentContext, analysis):
         out: list[Finding] = []
