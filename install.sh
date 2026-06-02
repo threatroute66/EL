@@ -26,10 +26,12 @@
 #   ./install.sh --with-serve  # also install + enable the el serve
 #                              # systemd --user unit (case-report viewer
 #                              # auto-starts at login, survives reboots)
-#   ./install.sh --with-optional  # apt-install build-essential first, so the
-#                              # source-built tools (yaffs2utils, refsprogs,
-#                              # dwarf2json) compile instead of silently
-#                              # skipping when no C toolchain is present
+#   ./install.sh --with-optional  # maximal install. apt-installs build-essential
+#                              # (so the source-built tools yaffs2utils/refsprogs/
+#                              # dwarf2json compile instead of skipping) AND the
+#                              # off-SIFT analysis tools el doctor reports "no":
+#                              # memory-baseliner, capa, floss, hayabusa,
+#                              # chainsaw, zeek. Each stage is best-effort.
 #
 # Flags compose: ./install.sh --with-optional --with-serve  # full install.
 
@@ -707,6 +709,123 @@ log "upgrading pip"
 
 log "installing EL + Python deps from pyproject.toml"
 "${EL_DIR}/.venv/bin/python" -m pip install --quiet -e "${EL_DIR}[dev]"
+
+# --- optional analysis tools (--with-optional) ------------------------------
+# These tools are not on the SIFT base and `el doctor` reports them "no" until
+# present (the affected agents then emit confidence=insufficient). --with-optional
+# installs the tractable ones so a single command yields a fuller survey:
+#   memory-baseliner (git) · capa + floss (venv pip) · hayabusa + chainsaw
+#   (GitHub release binaries) · zeek (official OBS apt repo).
+# Each stage is best-effort and non-fatal — a failure WARNs and the install
+# continues, consistent with the rest of the script.
+
+# Resolve a GitHub release asset URL whose filename matches an extended-regex.
+# Echoes the first matching browser_download_url, nothing on failure. Resolving
+# at runtime (rather than hardcoding) survives upstream asset-name drift — the
+# same failure mode that broke the MemProcFS pin.
+_gh_asset_url() {
+    local repo="$1" ref="$2" pat="$3"   # e.g. Yamato-Security/hayabusa  latest  'lin-x64-gnu.*\.zip'
+    curl -fsSL "https://api.github.com/repos/${repo}/releases/${ref}" 2>/dev/null \
+        | grep -oE '"browser_download_url":[[:space:]]*"https://[^"]+"' \
+        | grep -oE 'https://[^"]+' \
+        | grep -iE "${pat}" \
+        | head -n1
+}
+
+# Install a single Rust-style release binary to /usr/local/bin. Handles .zip,
+# .tar.gz and .gz assets, locates the executable by name, and chmods it.
+_install_release_binary() {
+    local name="$1" repo="$2" pat="$3"   # bin name, owner/repo, asset filename regex
+    if command -v "${name}" >/dev/null 2>&1; then
+        log "${name} already on PATH — skipping"
+        return 0
+    fi
+    local url; url="$(_gh_asset_url "${repo}" latest "${pat}")"
+    if [[ -z "${url}" ]]; then
+        log "WARN: could not resolve a ${name} release asset from GitHub — ${name} unavailable"
+        return 0
+    fi
+    log "${name} asset: ${url##*/}"
+    local tmp; tmp="$(mktemp -d)"
+    local arc="${tmp}/${url##*/}"
+    if ! curl -fSL -s -o "${arc}" "${url}"; then
+        log "WARN: ${name} download failed — ${name} unavailable"
+        rm -rf "${tmp}"; return 0
+    fi
+    mkdir -p "${tmp}/x"
+    # Trailing `|| true` keeps a failed extraction non-fatal under `set -e`.
+    case "${arc}" in
+        *.zip)          unzip -q -o "${arc}" -d "${tmp}/x" 2>/dev/null || true ;;
+        *.tar.gz|*.tgz) tar -xzf "${arc}" -C "${tmp}/x" 2>/dev/null || true ;;
+        *.gz)           gunzip -c "${arc}" > "${tmp}/x/${name}" 2>/dev/null || true ;;
+        *)              log "WARN: ${name}: unrecognised asset type ${arc##*/} — skipping"; rm -rf "${tmp}"; return 0 ;;
+    esac
+    # Pick the binary: prefer an exact-name match, else the first file whose
+    # name starts with the tool name (hayabusa ships versioned binary names).
+    local bin
+    bin="$(find "${tmp}/x" -type f -name "${name}" 2>/dev/null | head -n1)"
+    [[ -z "${bin}" ]] && bin="$(find "${tmp}/x" -type f -name "${name}*" 2>/dev/null | head -n1)" || true
+    if [[ -n "${bin}" ]]; then
+        sudo install -m 0755 "${bin}" "/usr/local/bin/${name}" \
+            && log "${name} installed at /usr/local/bin/${name}" \
+            || log "WARN: ${name}: could not install binary to /usr/local/bin"
+    else
+        log "WARN: ${name}: no binary found in asset — skipping"
+    fi
+    rm -rf "${tmp}"
+}
+
+if [[ ${with_optional} -eq 1 ]]; then
+    # capa + floss — FLARE Python tools, into EL's venv where the probe looks.
+    log "--with-optional: installing capa + floss into the venv"
+    "${EL_DIR}/.venv/bin/python" -m pip install --quiet flare-capa flare-floss \
+        || log "WARN: capa/floss pip install failed — malware_triage capability detection limited"
+
+    # memory-baseliner — probed at /opt/memory-baseliner/baseline.py.
+    if [[ -f /opt/memory-baseliner/baseline.py ]]; then
+        log "--with-optional: memory-baseliner already present — skipping"
+    else
+        log "--with-optional: cloning memory-baseliner"
+        sudo git clone --quiet --depth 1 \
+            https://github.com/csababarta/memory-baseliner.git /opt/memory-baseliner \
+            && log "memory-baseliner installed at /opt/memory-baseliner" \
+            || log "WARN: memory-baseliner clone failed — baseline-diff Findings skipped"
+    fi
+
+    if [[ ${skip_apt} -eq 0 ]]; then
+        # hayabusa + chainsaw — Rust release binaries; need unzip for hayabusa.
+        command -v unzip >/dev/null 2>&1 || sudo apt-get install -y -qq unzip || true
+        _install_release_binary hayabusa Yamato-Security/hayabusa 'lin(ux)?-?x64-?gnu.*\.zip'
+        _install_release_binary chainsaw WithSecureLabs/chainsaw   'x86_64-unknown-linux-gnu.*\.(tar\.gz|tgz)'
+
+        # zeek — from the official OpenSUSE Build Service repo (heavy; opt-in).
+        if command -v zeek >/dev/null 2>&1; then
+            log "--with-optional: zeek already present — skipping"
+        else
+            log "--with-optional: installing zeek from the official OBS apt repo"
+            . /etc/os-release 2>/dev/null || true
+            zeek_rel="${VERSION_ID:-24.04}"
+            zeek_repo="https://download.opensuse.org/repositories/security:/zeek/xUbuntu_${zeek_rel}"
+            if curl -fsSL "${zeek_repo}/Release.key" 2>/dev/null \
+                    | gpg --dearmor 2>/dev/null \
+                    | sudo tee /etc/apt/trusted.gpg.d/security_zeek.gpg >/dev/null; then
+                echo "deb ${zeek_repo}/ /" \
+                    | sudo tee /etc/apt/sources.list.d/security:zeek.list >/dev/null
+                if sudo apt-get update -qq && sudo apt-get install -y -qq zeek; then
+                    # Zeek installs under /opt/zeek/bin; expose on PATH.
+                    [[ -x /opt/zeek/bin/zeek ]] && sudo ln -sf /opt/zeek/bin/zeek /usr/local/bin/zeek || true
+                    log "zeek installed"
+                else
+                    log "WARN: zeek apt install failed — network_analyst falls back to scapy"
+                fi
+            else
+                log "WARN: could not add the zeek OBS repo key — skipping zeek (scapy still covers network analysis)"
+            fi
+        fi
+    else
+        log "--with-optional: --no-apt set — skipping hayabusa/chainsaw/zeek (need apt/network)"
+    fi
+fi
 
 # --- vol3 on PATH -----------------------------------------------------------
 # Volatility 3 is venv-resident (installed via pyproject above), so the bare
