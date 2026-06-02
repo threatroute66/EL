@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import shutil
 import subprocess
 from dataclasses import dataclass
@@ -163,6 +164,32 @@ def _vol_executable() -> str:
                     "install volatility3 in the venv via `pip install -e .`")
 
 
+def _symbol_cache_dir() -> str:
+    """A user-writable directory for vol3's auto-downloaded Windows PDB ISF
+    symbols.
+
+    vol3 writes each converted PDB into the FIRST writable entry of
+    `volatility3.symbols.__path__` (see download_pdb_isf in
+    framework/symbols/windows/pdbutil.py — it loops the search path and
+    breaks on the first dir it can write to). On the SANS SIFT root install
+    (`/opt/volatility3-*/volatility3/symbols`) that package dir is root-owned
+    and unwritable, so the download silently fails with "Cannot write
+    downloaded symbols", `windows.info` then reports no kernel, and Triage
+    misroutes the memory image to the carve-only pipeline.
+
+    Passing this dir via `-s` PREPENDS it to the search path
+    (cli/__init__.py: `volatility3.symbols.__path__ = [...] + SYMBOL_BASEPATHS`),
+    so downloads always land somewhere EL owns, independent of which `vol`
+    binary resolves (venv vs the root SIFT install) and surviving vol3
+    reinstalls. Reads still fall through to the package dirs, so any symbols
+    already shipped there are found. Honour EL_VOL_SYMBOLS for an override.
+    """
+    base = os.environ.get("EL_VOL_SYMBOLS") or os.path.join(
+        os.path.expanduser("~"), ".el", "volatility3-symbols")
+    os.makedirs(base, exist_ok=True)
+    return base
+
+
 def _vol_version() -> str:
     try:
         from volatility3.framework import constants
@@ -206,7 +233,8 @@ def run_plugin(
     stdout_path = out_dir / f"{safe}.{suffix}"
     stderr_path = out_dir / f"{safe}.stderr"
 
-    base = [_vol_executable(), "-q", "-r", "jsonl" if streaming else "json"]
+    base = [_vol_executable(), "-q", "-r", "jsonl" if streaming else "json",
+            "-s", _symbol_cache_dir()]
     if offline:
         base.append("--offline")
     # If --dump is in extra_args, plugins need -o <dir> to write dumped files to.
