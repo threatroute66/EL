@@ -1006,12 +1006,28 @@ def serve_cmd(
                 f"    http://{bind}:{port}/{n}/reports/case.html")
     console.print("[dim]Ctrl-C to stop[/dim]\n")
 
-    with socketserver.ThreadingTCPServer((bind, port), CaseHandler) as s:
-        s.allow_reuse_address = True
-        try:
-            s.serve_forever()
-        except KeyboardInterrupt:
-            console.print("\n[dim]server stopped[/dim]")
+    # allow_reuse_address (SO_REUSEADDR) must be set as a CLASS attribute:
+    # ThreadingTCPServer binds in __init__ (bind_and_activate defaults True),
+    # and server_bind() reads the flag during that bind. Setting it on the
+    # instance afterwards is too late — the socket is already bound — which is
+    # why a systemd auto-restart hit "Address already in use" on the previous
+    # instance's lingering TIME_WAIT socket and looped.
+    class _ReuseAddrServer(socketserver.ThreadingTCPServer):
+        allow_reuse_address = True
+        daemon_threads = True
+
+    try:
+        with _ReuseAddrServer((bind, port), CaseHandler) as s:
+            try:
+                s.serve_forever()
+            except KeyboardInterrupt:
+                console.print("\n[dim]server stopped[/dim]")
+    except OSError as exc:
+        console.print(
+            f"[red]could not bind {bind}:{port}[/red] — {exc}. "
+            "Another process may already be serving this port "
+            f"(check: ss -ltnp | grep {port}).")
+        raise typer.Exit(code=2)
 
 
 @app.command("timeline-memory")
