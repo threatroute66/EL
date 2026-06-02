@@ -585,6 +585,19 @@ log "upgrading pip"
 log "installing EL + Python deps from pyproject.toml"
 "${EL_DIR}/.venv/bin/pip" install --quiet -e "${EL_DIR}[dev]"
 
+# --- vol3 on PATH -----------------------------------------------------------
+# Volatility 3 is venv-resident (installed via pyproject above), so the bare
+# `vol` only works inside an activated venv. Drop a stable system entry point
+# `/usr/local/bin/vol3` so operators (and `el doctor`'s probe) can run vol3
+# from any shell the same way Vol2 was historically invoked — and so runbooks
+# can reference one path that does not drift. `el doctor` reports the resolved
+# target under volatility3's note.
+if [[ -x "${EL_DIR}/.venv/bin/vol" ]]; then
+    sudo ln -sf "${EL_DIR}/.venv/bin/vol" /usr/local/bin/vol3 \
+        && log "symlinked vol3 -> /usr/local/bin/vol3 (→ ${EL_DIR}/.venv/bin/vol)" \
+        || log "NOTE: could not symlink /usr/local/bin/vol3 (sudo?); use ${EL_DIR}/.venv/bin/vol"
+fi
+
 # --- el on PATH -------------------------------------------------------------
 # The venv entrypoint lives at .venv/bin/el; symlink it into ~/.local/bin so
 # operators can just type `el doctor` from anywhere. ~/.local/bin is on PATH

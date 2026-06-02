@@ -36,9 +36,20 @@ def _which_or_paths(name: str, candidates: list[str]) -> str | None:
 
 
 def probe_volatility3() -> ToolStatus:
-    """shutil.which respects PATH only — when EL is invoked via .venv/bin/el
-    WITHOUT venv activation, the venv's bin/ is NOT on PATH. Also probe the
-    bin directory next to the active Python interpreter.
+    """Resolve and report the SINGLE authoritative `vol` (Volatility 3) EL will
+    actually run, so `el doctor` is the source of truth for its path and the
+    docs never have to hard-code it.
+
+    Resolution order mirrors el.skills.vol3._vol_executable plus a stable
+    operator entry point:
+      1. `vol` on PATH (shutil.which),
+      2. the venv `vol` next to the active interpreter (EL invoked as
+         .venv/bin/el without venv activation — venv bin/ is NOT on PATH),
+      3. `/usr/local/bin/vol3`, the stable system symlink install.sh drops so
+         a bare `vol3 -f img windows.info` works from any shell the same way
+         operators expect `vol`/`vol.py` to.
+    The resolved absolute path is surfaced in `note` so it shows in the doctor
+    table — that is the value to put in any runbook, not a guessed /opt path.
     """
     import sys
     candidates: list[str] = []
@@ -48,6 +59,9 @@ def probe_volatility3() -> ToolStatus:
     venv_vol = Path(sys.executable).parent / "vol"
     if venv_vol.is_file() and str(venv_vol) not in candidates:
         candidates.append(str(venv_vol))
+    for extra in ("/usr/local/bin/vol3", "/usr/local/bin/vol"):
+        if Path(extra).is_file() and extra not in candidates:
+            candidates.append(extra)
     for c in candidates:
         rc, out, err = _run([c, "--help"])
         if rc == 0:
@@ -56,12 +70,17 @@ def probe_volatility3() -> ToolStatus:
                 ver = constants.PACKAGE_VERSION
             except Exception:
                 ver = "present"
-            return ToolStatus("volatility3", [c], ver, True)
+            return ToolStatus("volatility3", [c], ver, True,
+                              note=f"resolved: {Path(c).resolve()}")
+    # Legacy stand-alone checkouts on older SIFT builds (NOT present on this
+    # host — kept for portability). Modern installs are venv-resident; see note.
     for c in ("/opt/volatility3-2.20.0/vol.py", "/opt/volatility3/vol.py"):
         if Path(c).exists():
             rc, out, _ = _run(["python3", c, "--version"])
             if rc == 0:
-                return ToolStatus("volatility3", ["python3", c], out.splitlines()[0], True)
+                return ToolStatus("volatility3", ["python3", c],
+                                  out.splitlines()[0], True,
+                                  note=f"resolved: {c}")
     return ToolStatus("volatility3", None, None, False, "not installed; required for memory-image analysis")
 
 
