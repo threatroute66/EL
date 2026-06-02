@@ -789,9 +789,23 @@ def serve_cmd(
             exe=exe, root=Path(root), bind=bind, port=port))
 
     root_path = Path(root)
-    if not root_path.is_dir():
+    if root_path.exists() and not root_path.is_dir():
+        # A real misconfiguration (root points at a file) — surface it.
         console.print(f"[red]not a directory: {root_path}[/red]")
         raise typer.Exit(2)
+    if not root_path.exists():
+        # A fresh install has no cases yet, so the default root (/opt/EL/cases)
+        # doesn't exist. Don't crash-loop under systemd until the first
+        # investigation creates it — materialise an empty case root and serve
+        # an empty index. Cases appear here as they're investigated.
+        try:
+            root_path.mkdir(parents=True, exist_ok=True)
+            console.print(f"[dim]case root did not exist — created "
+                          f"{root_path}[/dim]")
+        except OSError as exc:
+            console.print(
+                f"[red]cannot create case root {root_path}: {exc}[/red]")
+            raise typer.Exit(2)
 
     # Quick per-case HTML index helps the analyst navigate
     index_cases = sorted(
