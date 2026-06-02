@@ -354,30 +354,56 @@ fi
 
 # --- MemProcFS installation phase ------------------------------------------
 # Install MemProcFS for memory-as-filesystem forensic triage (complements vol3)
+# Resolve the linux_x64 .tar.gz asset URL for a MemProcFS release from the
+# GitHub API. Hardcoding the asset filename is fragile: the name embeds both a
+# point-version (v5.17.6) and a build-date suffix (-20260426) that drift between
+# releases under the same tag, so a pinned filename silently 404s. Echoes the
+# resolved URL on success, nothing on failure.
+_memprocfs_asset_url() {
+    local ref="$1"   # "tags/v5.17" or "latest"
+    curl -fsSL "https://api.github.com/repos/ufrisk/MemProcFS/releases/${ref}" 2>/dev/null \
+        | grep -oE '"browser_download_url":[[:space:]]*"https://[^"]*linux_x64[^"]*\.tar\.gz"' \
+        | grep -oE 'https://[^"]+' \
+        | head -n1
+}
+
 install_memprocfs() {
     local memprocfs_dir="/opt/memprocfs"
-    local version="v5.17"
-    local file_version="v5.17.6-linux_x64-20260426"
-    local url="https://github.com/ufrisk/MemProcFS/releases/download/${version}/MemProcFS_files_and_binaries_${file_version}.tar.gz"
+    local tag="v5.17"   # pinned release tag; falls back to latest if the asset moved
 
     if [[ -x "${memprocfs_dir}/memprocfs" ]]; then
         log "MemProcFS already installed at ${memprocfs_dir} — skipping"
         return 0
     fi
 
-    log "installing MemProcFS ${version}"
+    log "installing MemProcFS (pinned ${tag}, asset resolved from GitHub API)"
+    local url
+    url="$(_memprocfs_asset_url "tags/${tag}")"
+    if [[ -z "${url}" ]]; then
+        log "MemProcFS ${tag} has no linux_x64 asset — falling back to latest release"
+        url="$(_memprocfs_asset_url "latest")"
+    fi
+    if [[ -z "${url}" ]]; then
+        log "WARN: could not resolve a MemProcFS linux_x64 asset from GitHub — memory-as-FS triage unavailable"
+        return 0
+    fi
+
+    log "MemProcFS asset: ${url##*/}"
     local temp_tar="/tmp/memprocfs.tar.gz"
-    if curl -L -s -o "${temp_tar}" "${url}"; then
-        if [[ -f "${temp_tar}" ]] && file "${temp_tar}" | grep -q "gzip"; then
+    # -f: fail (non-zero) on HTTP errors instead of saving the 404 page;
+    # -S: still surface curl errors under -s. gzip -t is a real integrity
+    # check, unlike `file | grep gzip` which only sniffs the magic bytes.
+    if curl -fSL -s -o "${temp_tar}" "${url}"; then
+        if gzip -t "${temp_tar}" 2>/dev/null; then
             sudo mkdir -p "${memprocfs_dir}"
-            sudo tar -xzf "${temp_tar}" -C "${memprocfs_dir}"
-            if [[ -x "${memprocfs_dir}/memprocfs" ]]; then
+            if sudo tar -xzf "${temp_tar}" -C "${memprocfs_dir}" \
+                    && [[ -x "${memprocfs_dir}/memprocfs" ]]; then
                 log "MemProcFS installed at ${memprocfs_dir}"
             else
                 log "WARN: MemProcFS extraction did not produce expected binary"
             fi
         else
-            log "WARN: downloaded MemProcFS tarball appears invalid"
+            log "WARN: downloaded MemProcFS tarball failed gzip integrity check — skipping"
         fi
         rm -f "${temp_tar}"
     else
