@@ -26,6 +26,12 @@
 #   ./install.sh --with-serve  # also install + enable the el serve
 #                              # systemd --user unit (case-report viewer
 #                              # auto-starts at login, survives reboots)
+#   ./install.sh --with-optional  # apt-install build-essential first, so the
+#                              # source-built tools (yaffs2utils, refsprogs,
+#                              # dwarf2json) compile instead of silently
+#                              # skipping when no C toolchain is present
+#
+# Flags compose: ./install.sh --with-optional --with-serve  # full install.
 
 set -euo pipefail
 
@@ -41,11 +47,13 @@ log() { echo "[el-install $(date -u +%FT%TZ)] $*"; }
 skip_apt=0
 only_doctor=0
 with_serve=0
+with_optional=0
 for arg in "$@"; do
     case "$arg" in
         --no-apt) skip_apt=1 ;;
         --doctor) only_doctor=1 ;;
         --with-serve) with_serve=1 ;;
+        --with-optional) with_optional=1 ;;
         --help|-h)
             grep '^#' "$0" | sed 's/^# \?//'
             exit 0
@@ -75,6 +83,25 @@ if [[ ${skip_apt} -eq 0 && -s "${APT_LIST}" ]]; then
     sudo apt-get install -y -qq $(grep -v '^#' "${APT_LIST}" | grep -v '^$' | tr '\n' ' ')
 else
     log "skipping apt phase"
+fi
+
+# --- optional: C toolchain for the source-built tools -----------------------
+# yaffs2utils, refsprogs and dwarf2json are compiled from source below, but
+# each stage is gated on `command -v gcc` and silently skips when no C
+# toolchain is present. --with-optional installs build-essential up front so a
+# single command yields the maximal install. apt-packages.txt already carries
+# the autotools/fuse build deps (autoconf, automake, libtool, libfuse-dev);
+# build-essential supplies the gcc/g++/make the gate actually checks for.
+if [[ ${with_optional} -eq 1 ]]; then
+    if [[ ${skip_apt} -eq 1 ]]; then
+        log "--with-optional needs apt but --no-apt was set; skipping build-essential"
+    elif command -v gcc >/dev/null 2>&1 && command -v make >/dev/null 2>&1; then
+        log "--with-optional: C toolchain already present — skipping build-essential"
+    else
+        log "--with-optional: installing build-essential (C toolchain for source builds)"
+        sudo apt-get install -y -qq build-essential \
+            || log "WARN: build-essential install failed — source-built tools may skip"
+    fi
 fi
 
 # --- yaffs2utils (source-built) ---------------------------------------------
