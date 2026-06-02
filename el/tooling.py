@@ -203,6 +203,27 @@ def probe_vendored_yara_rules() -> ToolStatus:
         True, f"{', '.join(p.name for p in packs)}{compile_note}")
 
 
+def probe_npx() -> ToolStatus:
+    """Node's npx — the launcher for the Playwright MCP server configured in
+    the checked-in .mcp.json (`npx @playwright/mcp@latest`). Without it on
+    PATH, Claude Code's MCP connect fails opaquely with ENOENT at spawn time,
+    so doctor surfaces it here as a missing optional rather than letting it
+    fail at run-time. apt's nodejs+npm provide it (see provisioning/
+    apt-packages.txt)."""
+    name = "npx (Playwright MCP)"
+    p = shutil.which("npx")
+    if not p:
+        return ToolStatus(
+            name, None, None, False,
+            "not installed; Playwright MCP (.mcp.json) won't launch — "
+            "`sudo apt-get install -y nodejs npm`")
+    rc, out, err = _run([p, "--version"])
+    ver = out or err or "present"
+    return ToolStatus(name, [p], f"node npx {ver}", True,
+                      "launches @playwright/mcp; first browser use: "
+                      "`npx playwright install chromium`")
+
+
 def survey() -> list[ToolStatus]:
     import sys
     capa_bin = str(Path(sys.executable).parent / "capa")
@@ -257,6 +278,7 @@ def survey() -> list[ToolStatus]:
         probe_timesketch(),
         probe_uac(),
         probe_weasyprint(),
+        probe_npx(),
     ]
 
 

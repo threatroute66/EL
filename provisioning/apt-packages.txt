@@ -20,3 +20,11 @@ golang-go
 # non-default interpreters (e.g. a deadsnakes python3.13).
 python3-venv
 python3-virtualenv
+# Node.js / npx — the checked-in .mcp.json launches the Playwright MCP server
+# via `npx @playwright/mcp@latest` (stdio). Without npx on PATH, Claude Code's
+# MCP connect fails with ENOENT on every freshly bootstrapped host. apt's
+# nodejs+npm put npx at /usr/bin/npx so the spawned MCP server inherits it
+# regardless of which shell launched Claude Code. (First Playwright use also
+# needs a browser: `npx playwright install chromium`.)
+nodejs
+npm
