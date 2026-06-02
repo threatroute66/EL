@@ -89,7 +89,7 @@ The charter declares the canonical invocations:
 
 | Tool | Charter says | EL skill wraps as |
 |---|---|---|
-| Volatility 3 | `python3 /opt/volatility3-2.20.0/vol.py` (and not `/usr/local/bin/vol.py` which is Vol2) | `el/skills/vol3.py` discovers via `_vol_executable`, falls back to venv-local install |
+| Volatility 3 | `vol3` (stable symlink → `/opt/EL/.venv/bin/vol`, v2.27.0; run `el doctor` for the resolved path) — NOT a standalone `/opt/volatility3-*/vol.py`, which does not exist on a venv install | `el/skills/vol3.py` discovers via `_vol_executable` (PATH `vol`, then the venv `vol` beside the active interpreter); `install.sh` drops the `vol3` symlink |
 | Sleuth Kit | `fls`, `icat`, `mactime`, `tsk_recover` (PATH) | `el/skills/sleuthkit.py` |
 | EWF tools | `ewfmount`, `ewfinfo`, `ewfverify` (PATH) | `el/skills/sleuthkit.py:ewfmount` (with `-X allow_other`) |
 | Plaso | `log2timeline.py`, `psort.py`, `pinfo.py` (GIFT PPA) | `el/skills/plaso.py` |

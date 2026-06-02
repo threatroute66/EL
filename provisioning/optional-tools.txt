@@ -27,7 +27,9 @@
 #   https://ericzimmerman.github.io/
 
 # --- Volatility 3 system install (alternative to pip) ------------------------
-# EL ships vol3 as a Python dependency installed into its venv. The
-# Protocol SIFT global CLAUDE.md describes a system install at
-# /opt/volatility3-2.20.0/vol.py — that path is OPTIONAL, EL probes both
-# locations and prefers whichever it finds. Do not install both.
+# EL ships vol3 as a Python dependency installed into its venv and exposes a
+# stable `vol3` command via /usr/local/bin/vol3 -> .venv/bin/vol (install.sh).
+# `el doctor` prints the resolved path. Older Protocol SIFT charters referenced
+# a standalone system install at /opt/volatility3-*/vol.py; that is OPTIONAL and
+# not present on a venv install — EL probes PATH + the venv and prefers
+# whichever it finds. Do not install both.
