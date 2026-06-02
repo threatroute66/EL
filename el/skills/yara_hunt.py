@@ -95,6 +95,35 @@ def _yara_version() -> str:
         return "present"
 
 
+def _drop_rule_file_hits(raw: str, rules_path: Path) -> str:
+    """Strip hits whose target file is a YARA rule file from raw yara/yr
+    output. A hit line is ``RULE_NAME <space> /path/to/file``; the
+    match-detail lines that follow it start with ``0x`` (offset) or ``$``
+    (string id). When a hit's file is a .yar/.yara rule (or the rules file
+    we just scanned with), drop the hit line AND its trailing detail lines.
+    Keeps the saved hits file and the structured result consistent and
+    free of rule self-matches."""
+    rules_name = rules_path.name
+    out: list[str] = []
+    skipping = False
+    for line in raw.splitlines():
+        s = line.strip()
+        if s.startswith("0x") or s.startswith("$"):
+            if not skipping:
+                out.append(line)
+            continue
+        parts = s.split(maxsplit=1)
+        if len(parts) == 2:
+            filepath = parts[1]
+            low = filepath.lower()
+            if low.endswith((".yar", ".yara")) or Path(filepath).name == rules_name:
+                skipping = True
+                continue
+        skipping = False
+        out.append(line)
+    return "\n".join(out) + ("\n" if out else "")
+
+
 def scan_paths(rules_path: Path, target: Path, out_dir: Path,
                recursive: bool = True, show_strings: bool = True,
                threads: int = 4, timeout: int = 1800,
@@ -139,6 +168,14 @@ def scan_paths(rules_path: Path, target: Path, out_dir: Path,
 
     raw = proc.stdout or ""
     stderr_path.write_text(proc.stderr or "")
+    # Self-match guard: EL appends its generated IOC rules to case_iocs.yar
+    # and scans the case `analysis/` tree, which CONTAINS that .yar file.
+    # Every rule's string literals live verbatim in the rule body, so any
+    # rule trivially matches its own definition file (this is how
+    # EL_Lumma_Stealer's `$name="LummaC2"` produced a phantom Lumma hit on
+    # case_iocs.yar). Rule files are EL artifacts, never evidence — drop
+    # hits whose target is a .yar/.yara file (or the rules file itself).
+    raw = _drop_rule_file_hits(raw, rules_path)
     hits_path.write_text(raw)
 
     rule_to_files: dict[str, list[str]] = {}
@@ -181,8 +218,14 @@ rule EL_Lumma_Stealer {
         $act2  = "act=recive_message" ascii wide nocase
         $act3  = "act=life" ascii wide nocase
     condition:
-        $ua or $name or $act1 or $act2 or $act3 or
-        ($c2api and ($tok or $log))
+        // $ua (TeslaBrowser/5.5) is a Lumma-specific UA -> standalone.
+        // Everything else must be corroborated: the build string alone
+        // ("LummaC2" appears in threat-intel/report text) or a single
+        // generic action param is NOT enough on real evidence.
+        $ua or
+        ($c2api and ($tok or $log)) or
+        ($name and ($c2api or $act1 or $act2 or $act3 or $log)) or
+        2 of ($act1, $act2, $act3, $log)
 }
 '''
 
