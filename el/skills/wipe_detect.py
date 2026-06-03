@@ -143,6 +143,18 @@ def is_high_value(relpath: str) -> bool:
     return any(re.search(p, relpath, re.I) for p in HIGH_VALUE_TARGETS)
 
 
+def target_priority(relpath: str) -> int:
+    """Rank a high-value path by its position in HIGH_VALUE_TARGETS (which is
+    ordered most-important first: mail caches → registry → logs → … → browser
+    DBs / shellbags). Lower = more important; non-matches sort last. Callers
+    that cap how many files they metadata-probe sort by this so a wiped OST is
+    never crowded out by hundreds of .sqlite / .lnk rows."""
+    for i, p in enumerate(HIGH_VALUE_TARGETS):
+        if re.search(p, relpath, re.I):
+            return i
+    return len(HIGH_VALUE_TARGETS)
+
+
 def classify(rec: IstatRecord, content_zero: bool | None,
              relpath: str = "", inode: str = "") -> WipeVerdict:
     """Deterministically classify a file's content state.
@@ -243,6 +255,7 @@ __all__ = [
     "WipeVerdict",
     "parse_istat",
     "is_high_value",
+    "target_priority",
     "classify",
     "verdict_as_evidence",
 ]

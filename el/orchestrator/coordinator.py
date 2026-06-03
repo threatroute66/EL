@@ -674,6 +674,14 @@ class Coordinator:
         if ctx.shared.get("partitions"):
             from el.agents.recovery import RecoveryAgent
             self._run_agent(RecoveryAgent(), ctx)
+            # Targeted, VSS-first recovery of a *specific* high-value artifact
+            # wiped in place (Outlook OST/PST, registry hive, EVTX, browser
+            # DB). Self-gating: returns silently when no high-value artifact on
+            # disk is zero-wiped. Distinct from RecoveryAgent's broad carve —
+            # this one validates the wipe from MFT init_size and pulls the
+            # newest pre-wipe shadow copy (header-checked) when one survives.
+            from el.agents.artifact_recovery import ArtifactRecoveryAgent
+            self._run_agent(ArtifactRecoveryAgent(), ctx)
 
         self._go(State.CORRELATE)
         self._run_agent(CorrelatorAgent(), ctx)

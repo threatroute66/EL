@@ -1108,3 +1108,97 @@ def tsk_recover(image: Path, out_subdir: Path, mode: str = "alloc",
     args += [str(image), str(out_subdir)]
     out_subdir.mkdir(parents=True, exist_ok=True)
     return _run("tsk_recover", image, args, out_subdir.parent, f"tsk_recover_{mode}", timeout)
+
+
+def _inode_arg(inode: str | int) -> str:
+    """Normalise an inode token. fls bodyfiles carry the full
+    ``<entry>-<type>-<id>`` address (e.g. ``124086-128-4``); TSK tools
+    accept that verbatim, so we pass it through — preserving the
+    attribute id matters for files with multiple $DATA streams (ADS)."""
+    return str(inode).strip()
+
+
+def istat(image: Path, inode: str | int, out_dir: Path,
+          offset: int | None = None, label: str | None = None,
+          timeout: int = 120) -> TskRun:
+    """Dump an MFT entry's metadata (``istat``). Output is captured to disk so
+    it can ground a Finding's EvidenceItem. ``offset`` is the partition start
+    sector when ``image`` is a whole-disk stream."""
+    inode_s = _inode_arg(inode)
+    args: list[str] = []
+    if offset is not None:
+        args += ["-o", str(offset)]
+    args += [str(image), inode_s]
+    lbl = label or f"istat_{inode_s.replace('-', '_')}"
+    return _run("istat", image, args, out_dir, lbl, timeout)
+
+
+def icat_extract(image: Path, inode: str | int, out_path: Path,
+                 offset: int | None = None, timeout: int = 900) -> int:
+    """Extract a file's content stream (``icat``) to ``out_path``. Streams to
+    disk so multi-GB recoveries stay bounded in memory. Returns the number of
+    bytes written. Raises SleuthkitError on tool failure."""
+    inode_s = _inode_arg(inode)
+    cmd = [_which("icat")]
+    if offset is not None:
+        cmd += ["-o", str(offset)]
+    cmd += [str(image), inode_s]
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    written = 0
+    try:
+        with out_path.open("wb") as fh:
+            proc = subprocess.run(cmd, stdout=fh, stderr=subprocess.PIPE,
+                                  timeout=timeout)
+    except subprocess.TimeoutExpired as e:
+        raise SleuthkitError(f"icat timeout after {timeout}s") from e
+    if proc.returncode != 0:
+        raise SleuthkitError(
+            f"icat failed (rc={proc.returncode}) for inode {inode_s}: "
+            f"{(proc.stderr or b'').decode('utf-8', 'replace')[:200]}")
+    try:
+        written = out_path.stat().st_size
+    except OSError:
+        written = 0
+    return written
+
+
+def content_is_zero(image: Path, inode: str | int, offset: int | None = None,
+                    max_bytes: int = 64 * 1024 * 1024,
+                    timeout: int = 600) -> bool | None:
+    """Stream ``icat`` for an inode and report whether every byte read (up to
+    ``max_bytes``) is zero. Returns True (all-zero), False (real data found),
+    or None when icat could not run. Reads via a pipe so a wiped multi-GB
+    file is judged without writing it to disk — the cheap detection probe
+    behind wipe_detect.classify()."""
+    inode_s = _inode_arg(inode)
+    cmd = [_which("icat")]
+    if offset is not None:
+        cmd += ["-o", str(offset)]
+    cmd += [str(image), inode_s]
+    read = 0
+    try:
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE,
+                                stderr=subprocess.DEVNULL)
+    except OSError:
+        return None
+    try:
+        assert proc.stdout is not None
+        while read < max_bytes:
+            buf = proc.stdout.read(min(1 << 20, max_bytes - read))
+            if not buf:
+                break
+            read += len(buf)
+            if buf.count(0) != len(buf):
+                return False          # a non-zero byte ⇒ real content
+    finally:
+        try:
+            proc.stdout.close()  # type: ignore[union-attr]
+        except OSError:
+            pass
+        try:
+            proc.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+    if read == 0:
+        return None                   # nothing came back — can't judge
+    return True
