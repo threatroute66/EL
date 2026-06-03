@@ -2,6 +2,8 @@
 
 <p align="center">
   <img src="docs/EL.png" alt="EL — Edmond Locard DFIR orchestrator" width="640">
+  <br>
+  <sub><em>AI-generated image.</em></sub>
 </p>
 
 A multi-agent DFIR orchestrator for the SANS SIFT Workstation, built for
