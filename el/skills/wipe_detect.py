@@ -65,6 +65,10 @@ class IstatRecord:
     data_size: int | None = None
     init_size: int | None = None
     names: list[str] = field(default_factory=list)
+    # True when $STANDARD_INFORMATION flags mark this a cloud Files-On-Demand
+    # placeholder (Reparse Point / Offline) — content lives in the cloud and was
+    # never downloaded, so an all-zero read is NOT a wipe.
+    is_placeholder: bool = False
 
 
 @dataclass
@@ -97,6 +101,9 @@ class WipeVerdict:
 
 _ALLOC_RE = re.compile(r"^(Not\s+)?Allocated File\b", re.M | re.I)
 _NAME_RE = re.compile(r"^\s*Name:\s*(.+?)\s*$", re.M)
+# $STANDARD_INFORMATION "Flags:" line; "Reparse Point" / "Offline" mark a
+# OneDrive/iCloud Files-On-Demand placeholder (a known all-zero false positive).
+_FLAGS_RE = re.compile(r"^Flags:\s*(.+)$", re.M | re.I)
 # $DATA attribute line, e.g.:
 #   Type: $DATA (128-4)   Name: N/A   Non-Resident   size: 33497088  init_size: 24973312
 _DATA_RE = re.compile(
@@ -115,6 +122,12 @@ def parse_istat(text: str) -> IstatRecord:
     alloc_m = _ALLOC_RE.search(text)
     if alloc_m:
         rec.allocated = alloc_m.group(1) is None  # "Not " prefix ⇒ deleted
+
+    for fm in _FLAGS_RE.finditer(text):
+        flags = fm.group(1).lower()
+        if "reparse point" in flags or "offline" in flags:
+            rec.is_placeholder = True
+            break
 
     best_size = -1
     for m in _DATA_RE.finditer(text):
@@ -184,7 +197,20 @@ def classify(rec: IstatRecord, content_zero: bool | None,
                  ("T1485", "Data Destruction"),
                  ("T1070", "Indicator Removal")]
 
+    # Cloud Files-On-Demand placeholder (OneDrive/iCloud): Reparse Point +
+    # Offline, content never downloaded → reads all-zero but is NOT a wipe.
+    # Guard before the wipe check to avoid the false positive (e.g. an
+    # online-only iCloudDrive\EXFIL.pst flagged as wiped_in_place).
+    if rec.is_placeholder and content_zero is True:
+        return WipeVerdict(
+            status="cloud_placeholder", confidence="insufficient",
+            reason=("Reparse Point / Offline flags — a cloud Files-On-Demand "
+                    "placeholder whose content was never downloaded locally; "
+                    "all-zero read is expected, not a wipe."),
+            **base)
+
     if (rec.allocated and rec.non_resident and content_zero is True
+            and not rec.is_placeholder
             and rec.init_size and rec.init_size >= MIN_WIPED_INIT_BYTES):
         return WipeVerdict(
             status="wiped_in_place", confidence="high",

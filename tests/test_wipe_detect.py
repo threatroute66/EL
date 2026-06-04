@@ -134,3 +134,33 @@ def test_verdict_evidence_satisfies_contract():
     ev = verdict_as_evidence(v, image="/cases/x/disk.raw")
     assert len(ev.output_sha256) == 64
     assert ev.extracted_facts["status"] == "wiped_in_place"
+
+
+# iCloud/OneDrive Files-On-Demand placeholder: Reparse Point + Offline + all-zero
+PLACEHOLDER_ISTAT = """\
+Allocated File
+$STANDARD_INFORMATION Attribute Values:
+Flags: Archive, Sparse, Reparse Point, Offline
+$FILE_NAME Attribute Values:
+Name: EXFIL.pst
+Attributes:
+Type: $DATA (128-1)   Name: N/A   Non-Resident, Sparse   size: 16778240  init_size: 16778240
+Type: $REPARSE_POINT (192-3)   Name: N/A   Resident   size: 208
+"""
+
+
+def test_cloud_placeholder_not_flagged_as_wipe():
+    """Regression: an online-only iCloud/OneDrive placeholder reads all-zero with
+    init_size>0 but is NOT a wipe (rocba-r2 iCloudDrive\\EXFIL.pst false positive)."""
+    rec = parse_istat(PLACEHOLDER_ISTAT)
+    assert rec.is_placeholder is True
+    v = classify(rec, content_zero=True, relpath="iCloudDrive/EXFIL.pst")
+    assert v.status == "cloud_placeholder"
+    assert not v.is_wipe
+
+
+def test_real_wipe_still_flagged_when_not_placeholder():
+    # the genuine OST wipe has no reparse/offline flags → still wiped_in_place
+    rec = parse_istat(WIPED_OST_ISTAT)
+    assert rec.is_placeholder is False
+    assert classify(rec, content_zero=True, relpath="x.ost").status == "wiped_in_place"

@@ -65,3 +65,31 @@ sdelete destroyed additional evidence; the `@outlook.com` mailbox is recoverable
 only server-side (Microsoft, via the recovered `login.live.com` credential or
 legal process). EL's ACH leader (espionage) reflects memory injection/auth-log
 patterns that are a separate thread from the insider-theft conclusion.
+
+## Re-run discoveries (2026-06-04)
+
+A fresh re-run (`rocba-r2`) with EL's new `artifact_recovery` agent surfaced both
+new evidence and three code bugs (now fixed) the original run never exercised:
+
+**New artifacts (allocated, non-resident, init_size>0, all-zero):**
+| Artifact | init_size | Verdict |
+|---|---|---|
+| `...\Outlook\fred.rocba@outlook.com.ost` | 24,973,312 | **wiped (high)** — no reparse/offline flags; real in-place wipe (the known OST) |
+| `...\winevt\Logs\TerminalServices-RemoteConnectionManager%4Operational.evtx` | — | **wiped (high)** — RDP-connection log, NTFS-compressed, all-zero → anti-forensic erasure of remote-access tracks |
+| `...\winevt\Logs\Storsvc%4Diagnostic.evtx` | — | **wiped (high)** — storage-service log, same shape |
+| `Users\fredr\iCloudDrive\EXFIL.pst` | 16,778,240 | **NOT a wipe — false positive.** istat shows `Reparse Point + Offline` (iCloud Files-On-Demand placeholder, never downloaded → reads all-zero). Notable only that an "EXFIL.pst" *exists* online-only in his iCloud; the content is server-side, recoverable via the iCloud account. |
+
+For the genuine wipes, VSS recovery is attempted automatically but all snapshots
+are post-wipe (the wipe predates the earliest shadow) → the agent emits the honest
+"VSS exhausted → carve pivot", not a fabricated recovery. The **wiped RDP +
+storage event logs** are a new anti-forensic finding (Fred erased remote-access /
+storage tracks alongside the sdelete + OST wipe).
+
+**Bugs the re-run surfaced (all fixed + tested):**
+1. `artifact_recovery` was gated on `ctx.shared['partitions']`, empty for
+   single-volume (no-partition-table) c-drive images → it never ran on exactly
+   this disk class. Fixed: disk_forensicator synthesises a whole-image partition.
+2. `vss_open` reused `elvss_<pid>` for the dm device across calls → "Device or
+   resource busy" on the 2nd+ wiped artifact. Fixed: unique per-call tag.
+3. `wipe_detect` flagged the iCloud `Reparse Point/Offline` placeholder as wiped.
+   Fixed: cloud Files-On-Demand placeholders are excluded.

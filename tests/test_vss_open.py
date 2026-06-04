@@ -86,3 +86,12 @@ def test_unrelated_error_not_treated_as_truncation():
     # a genuine "no shadows" or tooling error must NOT trigger the overlay
     assert not _is_backup_header_error("No Volume Shadow Snapshots found.")
     assert not _is_backup_header_error("vshadowinfo not found on PATH")
+
+
+def test_vss_tag_is_unique_per_call():
+    """dm device + pad file names must differ across vss_open() calls in one
+    process — reusing elvss_<pid> caused 'Device or resource busy' when an
+    agent recovered several wiped artifacts in a row."""
+    from el.skills.vss_diff import _next_vss_tag
+    tags = {_next_vss_tag() for _ in range(5)}
+    assert len(tags) == 5            # all distinct

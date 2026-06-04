@@ -399,6 +399,16 @@ class DiskForensicatorAgent(Agent):
                         label="whole-image-off0")
                     if extracted:
                         ctx.shared["artifacts_dir"] = str(extracted)
+                        # Single-volume image (no partition table) — synthesize a
+                        # whole-image "partition" at offset 0 and stash the disk
+                        # path so the recovery pass (gated on `partitions`) runs.
+                        # Logical c-drive E01s (FTK/ewf) have no partition table,
+                        # and that is exactly where wiped-artifact recovery matters
+                        # (e.g. the rocba OST wipe), which otherwise never fired.
+                        ctx.shared.setdefault("raw_input_path", str(ctx.input_path))
+                        ctx.shared.setdefault("partitions", [
+                            {"slot": "0", "start_sector": 0,
+                             "description": "whole-image (no partition table)"}])
                 else:
                     out.append(self.emit(ctx, Finding(
                         case_id=ctx.case_id, agent=self.name, confidence="insufficient",

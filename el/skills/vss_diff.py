@@ -447,6 +447,19 @@ class VssVolume:
     _pad_path: Path | None = None
 
 
+# Monotonic per-process counter so concurrent / sequential vss_open() calls in
+# one process each get a unique dm device + pad file. Using only os.getpid()
+# collided when an agent recovered several wiped artifacts in a row ("Device or
+# resource busy" on the 2nd+ create, even after vss_close).
+_VSS_SEQ = 0
+
+
+def _next_vss_tag() -> str:
+    global _VSS_SEQ
+    _VSS_SEQ += 1
+    return f"{os.getpid()}_{_VSS_SEQ}"
+
+
 def _is_backup_header_error(msg: str) -> bool:
     m = msg.lower()
     return any(frag in m for frag in _BACKUP_HEADER_ERRORS)
@@ -501,7 +514,8 @@ def vss_open(raw_image: Path, work_dir: Path, offset_bytes: int = 0,
                        "VBR offset — not a truncation; not repairing")
 
     work_dir.mkdir(parents=True, exist_ok=True)
-    pad_path = work_dir / f"vss_pad_{os.getpid()}.img"
+    tag = _next_vss_tag()
+    pad_path = work_dir / f"vss_pad_{tag}.img"
     # zero pad with a copy of the primary VBR at the backup offset
     with pad_path.open("wb") as p:
         p.truncate(plan.pad_sectors_512 * 512)
@@ -509,7 +523,7 @@ def vss_open(raw_image: Path, work_dir: Path, offset_bytes: int = 0,
         p.write(vbr)
 
     loops: list[str] = []
-    dm_name = f"elvss_{os.getpid()}"
+    dm_name = f"elvss_{tag}"
     try:
         loop_main = _losetup_ro(raw_image, timeout)
         loops.append(loop_main)
