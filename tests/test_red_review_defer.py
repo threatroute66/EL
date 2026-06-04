@@ -236,3 +236,40 @@ def test_headless_failure_falls_back_to_red_review_request(tmp_path, monkeypatch
 
     assert out and "deferred-llm" in out[0].claim
     assert (case_dir / "reports" / _REQUEST_FILENAME).is_file()
+
+
+def test_headless_timeout_scales_with_finding_count(monkeypatch):
+    """The single-call challenger's runtime scales with the number of
+    findings, so its headless timeout must too — a large set (the
+    M57-Jean 222-finding case timed out at the old fixed 240s) gets a
+    proportionally longer budget, capped at 15 min."""
+    from el.agents import red_reviewer as rr
+
+    captured = {}
+
+    def _fake_run_headless(prompt, model, timeout=None):
+        captured["timeout"] = timeout
+        return None, {}        # force None so we only probe the timeout arg
+
+    monkeypatch.setattr(rr._llm_defer, "run_headless_claude", _fake_run_headless)
+
+    def _mk(n):
+        return [Finding(case_id="t", agent="a", claim=f"c{i}",
+                        confidence="high",
+                        evidence=[EvidenceItem(tool="x", version="1",
+                                  command="x", output_sha256="0"*64,
+                                  output_path="/tmp/x")])
+                for i in range(n)]
+
+    # small set → floor
+    rr._llm_challenge_headless(_mk(3))
+    assert captured["timeout"] == rr._HEADLESS_FLOOR_S
+
+    # M57-Jean-sized set → scaled above the floor
+    rr._llm_challenge_headless(_mk(222))
+    assert captured["timeout"] == min(900, int(rr._HEADLESS_PER_FINDING_S * 222))
+    assert captured["timeout"] > rr._HEADLESS_FLOOR_S
+
+    # huge set → capped at 15 min
+    rr._llm_challenge_headless(_mk(5000))
+    assert captured["timeout"] == 900

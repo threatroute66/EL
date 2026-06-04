@@ -40,6 +40,11 @@ RED_REVIEW_DEFER_ENV = "EL_RED_REVIEW_DEFER"
 # headless context (cron/CI) into in-process `claude -p` self-fulfilment.
 # A detached run (EL_DETACHED=1) triggers headless without needing this.
 RED_REVIEW_HEADLESS_ENV = "EL_RED_REVIEW_HEADLESS"
+# Headless-challenger timeout scaling: floor + per-finding budget, capped
+# at 15 min inside run() below. Overridable for tuning without a code change.
+_HEADLESS_FLOOR_S = int(os.environ.get("EL_RED_REVIEW_HEADLESS_FLOOR_S", "240"))
+_HEADLESS_PER_FINDING_S = float(
+    os.environ.get("EL_RED_REVIEW_HEADLESS_PER_FINDING_S", "3"))
 _REQUEST_FILENAME = "_red_review_request.json"
 _VERDICTS_FILENAME = "_red_review_verdicts.json"
 _APPLIED_FILENAME = "_red_review_applied.json"
@@ -167,7 +172,16 @@ def _llm_challenge_headless(reviewable: list[Finding], audit=None
         + "\n\nRespond with ONLY the JSON array of verdicts described "
           "above — no prose, no code fence."
     )
-    text, usage = _llm_defer.run_headless_claude(prompt, CHALLENGER_MODEL)
+    # The challenger judges every reviewable finding in one call, so its
+    # output (one verdict per finding) scales with the set size — a large
+    # case (e.g. 222 findings on M57-Jean) needs far longer than the brief's
+    # single-paragraph default of 240s. Scale the timeout with the payload,
+    # capped at 15 min; a set too large to finish in the cap falls back to
+    # the request-file deferral rather than blocking the pipeline forever.
+    timeout = min(900, max(_HEADLESS_FLOOR_S,
+                           _HEADLESS_PER_FINDING_S * len(reviewable)))
+    text, usage = _llm_defer.run_headless_claude(
+        prompt, CHALLENGER_MODEL, timeout=timeout)
     if text is None:
         return None
     results = _parse_review_array(text)
