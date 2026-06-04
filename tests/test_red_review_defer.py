@@ -238,6 +238,47 @@ def test_headless_failure_falls_back_to_red_review_request(tmp_path, monkeypatch
     assert (case_dir / "reports" / _REQUEST_FILENAME).is_file()
 
 
+def test_large_set_skips_headless_and_defers(tmp_path, monkeypatch):
+    """Headless `claude -p` is ~10s/verdict, so above _HEADLESS_MAX the run
+    must NOT attempt it (M57-Jean's 222 findings would take ~40 min) — it
+    defers instead. The always-on rule challenger still covers every
+    finding; the headless CLI is never invoked."""
+    from el import llm_defer as ld
+    from el.agents.red_reviewer import _HEADLESS_MAX
+    case_dir = _mk_case(tmp_path, monkeypatch, case_id="rr-big-t")
+    # Seed more reviewable findings than the cap
+    for i in range(_HEADLESS_MAX + 5):
+        ledger_insert(case_dir, Finding(
+            case_id="rr-big-t", agent="disk_forensicator",
+            claim=f"artifact record {i}", confidence="low",
+            evidence=[EvidenceItem(tool="fls", version="4.12",
+                      command="fls -r image.E01", output_sha256="0"*64,
+                      output_path="/tmp/fls.txt")]))
+    _no_key(monkeypatch)
+    monkeypatch.setenv("EL_DETACHED", "1")
+    monkeypatch.setenv("CLAUDECODE", "1")
+
+    invoked = {"n": 0}
+
+    def _fake(*a, **k):
+        invoked["n"] += 1
+        class _P:
+            returncode = 0; stdout = "[]"; stderr = ""
+        return _P()
+
+    monkeypatch.setattr(ld, "headless_cli_path", lambda: "/fake/bin/claude")
+    monkeypatch.setattr(ld.subprocess, "run", _fake)
+
+    ctx = AgentContext(case_id="rr-big-t", case_dir=case_dir,
+                       input_path=case_dir, manifest={})
+    out = RedReviewerAgent().run(ctx)
+
+    # Headless was skipped (set too large) → deferred, CLI never called
+    assert invoked["n"] == 0
+    assert out and "deferred-llm" in out[0].claim
+    assert (case_dir / "reports" / _REQUEST_FILENAME).is_file()
+
+
 def _mk_findings(n):
     return [Finding(case_id="t", agent="a", claim=f"c{i}",
                     confidence="high",
@@ -247,12 +288,12 @@ def _mk_findings(n):
             for i in range(n)]
 
 
-def test_headless_chunks_large_finding_sets(monkeypatch):
-    """A single call over a large set never completes (M57-Jean's 222
-    findings timed out even at 900s), so the headless challenger batches
-    into _HEADLESS_CHUNK-sized calls and merges. Verify a 222-finding set
-    is split into ceil(222/chunk) bounded calls, each at the per-batch
-    floor timeout, and every verdict is merged back."""
+def test_headless_chunks_into_bounded_batches(monkeypatch):
+    """A single call over many findings never completes (M57-Jean's 222
+    timed out even at 900s), so the headless challenger batches into
+    _HEADLESS_CHUNK-sized calls and merges. Verify the set is split into
+    ceil(n/chunk) bounded calls, each at the per-batch floor timeout, and
+    every verdict is merged back."""
     from el.agents import red_reviewer as rr
     import math
 
@@ -273,15 +314,16 @@ def test_headless_chunks_large_finding_sets(monkeypatch):
 
     monkeypatch.setattr(rr._llm_defer, "run_headless_claude", _fake_run_headless)
 
-    findings = _mk_findings(222)
+    n = rr._HEADLESS_MAX                # a set at the cap
+    findings = _mk_findings(n)
     result = rr._llm_challenge_headless(findings)
 
     chunk = rr._HEADLESS_CHUNK
-    assert len(batch_sizes) == math.ceil(222 / chunk)       # chunked, not one call
+    assert len(batch_sizes) == math.ceil(n / chunk)         # chunked, not one call
     assert max(batch_sizes) <= chunk                         # every batch bounded
-    assert sum(batch_sizes) == 222
+    assert sum(batch_sizes) == n
     assert all(t == rr._HEADLESS_FLOOR_S for t in timeouts)  # per-batch floor timeout
-    assert result is not None and len(result) == 222         # all verdicts merged
+    assert result is not None and len(result) == n          # all verdicts merged
 
 
 def test_headless_partial_batch_failure_keeps_coverage(monkeypatch):

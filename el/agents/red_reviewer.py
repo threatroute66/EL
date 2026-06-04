@@ -40,12 +40,18 @@ RED_REVIEW_DEFER_ENV = "EL_RED_REVIEW_DEFER"
 # headless context (cron/CI) into in-process `claude -p` self-fulfilment.
 # A detached run (EL_DETACHED=1) triggers headless without needing this.
 RED_REVIEW_HEADLESS_ENV = "EL_RED_REVIEW_HEADLESS"
-# Headless challenger is chunked: a single call over a large finding set
-# never completes (M57-Jean's 222 findings timed out even at 900s), so we
-# batch into _HEADLESS_CHUNK-sized calls — each as fast as the brief — and
-# merge. _HEADLESS_FLOOR_S is the per-batch timeout. Both env-overridable.
-_HEADLESS_CHUNK = int(os.environ.get("EL_RED_REVIEW_HEADLESS_CHUNK", "20"))
-_HEADLESS_FLOOR_S = int(os.environ.get("EL_RED_REVIEW_HEADLESS_FLOOR_S", "240"))
+# Headless challenger economics: `claude -p` is the full agentic CLI and
+# costs ~10s per verdict, so it is only practical for SMALL finding sets.
+# Measured on M57-Jean: a single call over 222 findings never returns (timed
+# out at 900s); even chunked it took 41 min with ~40% of 20-finding batches
+# exceeding 240s. So we (a) only attempt headless when the set is at or below
+# _HEADLESS_MAX (else defer — the rule challenger still covers every finding,
+# and the LLM verdicts merge later if a session fulfils the request), and
+# (b) within the cap, chunk into small _HEADLESS_CHUNK batches with a
+# generous per-batch timeout so each batch reliably completes. All env-tunable.
+_HEADLESS_MAX = int(os.environ.get("EL_RED_REVIEW_HEADLESS_MAX", "40"))
+_HEADLESS_CHUNK = int(os.environ.get("EL_RED_REVIEW_HEADLESS_CHUNK", "10"))
+_HEADLESS_FLOOR_S = int(os.environ.get("EL_RED_REVIEW_HEADLESS_FLOOR_S", "300"))
 _REQUEST_FILENAME = "_red_review_request.json"
 _VERDICTS_FILENAME = "_red_review_verdicts.json"
 _APPLIED_FILENAME = "_red_review_applied.json"
@@ -392,8 +398,18 @@ class RedReviewerAgent(Agent):
         headless = False
         if (llm_results is None and not api_key
                 and _llm_defer.should_use_headless_cli(RED_REVIEW_HEADLESS_ENV)):
-            llm_results = _llm_challenge_headless(reviewable, audit=audit)
-            headless = llm_results is not None
+            # Headless `claude -p` is only economical for small sets (~10s
+            # per verdict). Above _HEADLESS_MAX, skip it and defer instead —
+            # the rule challenger still covers every finding now, and the LLM
+            # verdicts merge later if a session fulfils the request file.
+            if len(reviewable) <= _HEADLESS_MAX:
+                llm_results = _llm_challenge_headless(reviewable, audit=audit)
+                headless = llm_results is not None
+            else:
+                audit.info(
+                    "red_review_headless_skipped", component="red_reviewer",
+                    reason="set_too_large_for_agentic_cli",
+                    findings=len(reviewable), cap=_HEADLESS_MAX)
 
         deferred = False
         if (llm_results is None and not api_key
