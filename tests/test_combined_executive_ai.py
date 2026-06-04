@@ -31,6 +31,7 @@ from el.reporting.combined_executive_ai import (
     CombinedExecutiveBrief,
     DEFER_ENV,
     SCHEMA_VERSION,
+    _CACHE_FILENAME,
     _REQUEST_FILENAME,
     _compute_cache_key,
     _read_cache,
@@ -381,3 +382,64 @@ def test_build_context_attack_technique_top_sorted_by_findings():
     # Highest-findings technique first
     assert ctx["attack_technique_top"][0][0] == "T2"
     assert ctx["attack_technique_union_size"] == 3
+
+
+# ---------------------------------------------------------------------------
+# Path 2.5 — headless Claude Code CLI self-fulfilment (detached bundle)
+# ---------------------------------------------------------------------------
+
+def test_detached_bundle_self_fulfils_via_headless_cli(tmp_path, monkeypatch):
+    """A detached multi-host bundle (EL_DETACHED=1, no API key, claude CLI
+    present) must generate the combined brief in-process, not orphan a
+    request file."""
+    from el import llm_defer as ld
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.setenv("EL_DETACHED", "1")
+    monkeypatch.setenv("CLAUDECODE", "1")   # rides along in the unit env
+
+    out = json.dumps({"is_error": False, "result": json.dumps(_full_brief()),
+                      "usage": {"input_tokens": 99, "output_tokens": 42}})
+
+    class _Proc:
+        returncode = 0
+        stdout = out
+        stderr = ""
+
+    monkeypatch.setattr(ld, "headless_cli_path", lambda: "/fake/bin/claude")
+    monkeypatch.setattr(ld.subprocess, "run",
+                        lambda *a, **k: _Proc())
+
+    slices = [_StubSlice("a", leading_hyp="H_X", leading_score=10),
+              _StubSlice("b", leading_hyp="H_Y", leading_score=5)]
+    result = synthesize_combined_executive_ai(
+        bundle_name="my-bundle", slices=slices, combined_dir=tmp_path,
+    )
+    assert result is not None
+    brief, meta = result
+    assert meta["transport"] == "claude_cli_headless"
+    assert (tmp_path / _CACHE_FILENAME).exists()
+    assert not (tmp_path / _REQUEST_FILENAME).exists()
+
+
+def test_detached_bundle_headless_failure_falls_back(tmp_path, monkeypatch):
+    """Headless CLI failure must fall back to the request file — the
+    combined brief is transported, never lost."""
+    from el import llm_defer as ld
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.setenv("EL_DETACHED", "1")
+    monkeypatch.setenv("CLAUDECODE", "1")
+
+    class _Proc:
+        returncode = 1
+        stdout = ""
+        stderr = "boom"
+
+    monkeypatch.setattr(ld, "headless_cli_path", lambda: "/fake/bin/claude")
+    monkeypatch.setattr(ld.subprocess, "run", lambda *a, **k: _Proc())
+
+    slices = [_StubSlice("a")]
+    result = synthesize_combined_executive_ai(
+        bundle_name="b", slices=slices, combined_dir=tmp_path,
+    )
+    assert result is None
+    assert (tmp_path / _REQUEST_FILENAME).exists()

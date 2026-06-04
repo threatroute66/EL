@@ -31,6 +31,7 @@ from el.reporting.executive_ai import (
     SCHEMA_VERSION,
     SECTION_AI_CHIP,
     _CACHE_FILENAME,
+    _HEADLESS_OPT_IN_ENV,
     _REQUEST_FILENAME,
     _compute_cache_key,
     _findings_for_prompt,
@@ -689,3 +690,190 @@ def test_renderer_falls_back_when_brief_rejected(tmp_path, monkeypatch):
     assert DISCLAIMER_LABEL not in html
     assert SECTION_AI_CHIP not in html
     assert "<section class='ai-section'>" not in html
+
+
+# ---------------------------------------------------------------------------
+# Path 2.5 — headless Claude Code CLI fulfilment (detached / no live session)
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def stub_claude_cli(monkeypatch):
+    """Stub the headless `claude -p` subprocess so no real CLI runs.
+
+    Pretends `claude` is installed and returns a `--output-format json`
+    envelope wrapping a valid ExecutiveBrief. Records the argv + stdin of
+    each invocation so tests can assert on them. Re-bind ``calls['stdout']``
+    to simulate failures."""
+    from el import llm_defer as ld
+
+    calls: list[dict] = []
+    state = {"returncode": 0,
+             "stdout": json.dumps({
+                 "is_error": False,
+                 "result": _valid_brief_json(),
+                 "usage": {"input_tokens": 1234, "output_tokens": 567},
+             })}
+
+    monkeypatch.setattr(ld, "headless_cli_path", lambda: "/fake/bin/claude")
+
+    class _Proc:
+        def __init__(self, rc, out):
+            self.returncode = rc
+            self.stdout = out
+            self.stderr = ""
+
+    def _fake_run(argv, input=None, **kw):
+        calls.append({"argv": argv, "input": input})
+        return _Proc(state["returncode"], state["stdout"])
+
+    monkeypatch.setattr(ld.subprocess, "run", _fake_run)
+    return {"calls": calls, "state": state}
+
+
+def test_detached_run_self_fulfils_via_headless_cli(case_dir, stub_claude_cli, monkeypatch):
+    """A detached run (EL_DETACHED=1) with no API key and the claude CLI
+    present must generate the brief in-process — NOT leave a request file
+    for an absent assistant."""
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.setenv("EL_DETACHED", "1")
+    # CLAUDECODE rides along in the detached unit env — must not change posture
+    monkeypatch.setenv("CLAUDECODE", "1")
+
+    nr = _nr()
+    findings = [_f(claim=f"x-{i}") for i in range(3)]
+    result = synthesize_executive_ai(nr, findings, case_dir)
+
+    assert result is not None, "headless CLI path must return a brief"
+    brief, meta = result
+    assert meta["transport"] == "claude_cli_headless"
+    assert meta["cache"] == "miss"
+    assert meta["input_tokens"] == 1234 and meta["output_tokens"] == 567
+    # Cache written, NO request file left behind
+    assert (case_dir / "reports" / _CACHE_FILENAME).exists()
+    assert not (case_dir / "reports" / _REQUEST_FILENAME).exists()
+    # The cached brief round-trips on the next render as a cache hit
+    again = synthesize_executive_ai(nr, findings, case_dir)
+    assert again is not None and again[1]["cache"] == "hit"
+    # Only one CLI invocation (second render hit cache)
+    assert len(stub_claude_cli["calls"]) == 1
+    argv = stub_claude_cli["calls"][0]["argv"]
+    assert argv[0] == "/fake/bin/claude" and "-p" in argv
+    assert "--output-format" in argv and "json" in argv
+    # Prompt + context arrive via stdin (ARG_MAX-safe), not argv
+    assert "CASE CONTEXT" in stub_claude_cli["calls"][0]["input"]
+
+
+def test_headless_self_fulfil_clears_stale_request_file(case_dir, stub_claude_cli, monkeypatch):
+    """A request file left by a prior detach (before this backend existed)
+    is superseded when headless self-fulfils — it must be removed so the
+    el-ai-brief skill doesn't redundantly re-process a satisfied request."""
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.setenv("EL_DETACHED", "1")
+    monkeypatch.setenv("CLAUDECODE", "1")
+    # Pre-seed a stale request file
+    stale = case_dir / "reports" / _REQUEST_FILENAME
+    stale.write_text('{"stale": true}')
+
+    nr = _nr()
+    findings = [_f(claim=f"x-{i}") for i in range(3)]
+    result = synthesize_executive_ai(nr, findings, case_dir)
+
+    assert result is not None and result[1]["transport"] == "claude_cli_headless"
+    assert not stale.exists(), "stale request file must be cleared on self-fulfil"
+
+
+def test_headless_failure_falls_back_to_request_file(case_dir, stub_claude_cli, monkeypatch):
+    """If the headless CLI errors (non-zero / unparseable), the brief is
+    never lost — EL falls through to the request-file deferral so an
+    out-of-band responder can still fulfil it."""
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.setenv("EL_DETACHED", "1")
+    monkeypatch.setenv("CLAUDECODE", "1")
+    stub_claude_cli["state"]["returncode"] = 1   # simulate CLI failure
+
+    nr = _nr()
+    findings = [_f(claim=f"x-{i}") for i in range(3)]
+    result = synthesize_executive_ai(nr, findings, case_dir)
+
+    assert result is None
+    assert not (case_dir / "reports" / _CACHE_FILENAME).exists()
+    assert (case_dir / "reports" / _REQUEST_FILENAME).exists(), \
+        "headless failure must fall back to the request file"
+
+
+def test_headless_error_envelope_falls_back(case_dir, stub_claude_cli, monkeypatch):
+    """An `is_error:true` envelope (rc=0 but the model/CLI reported an
+    error) is treated as a failure → request-file fallback."""
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.setenv("EL_DETACHED", "1")
+    monkeypatch.setenv("CLAUDECODE", "1")   # rides along in the detached unit
+    stub_claude_cli["state"]["stdout"] = json.dumps(
+        {"is_error": True, "result": ""})
+
+    nr = _nr()
+    findings = [_f() for _ in range(3)]
+    assert synthesize_executive_ai(nr, findings, case_dir) is None
+    assert (case_dir / "reports" / _REQUEST_FILENAME).exists()
+
+
+def test_interactive_session_prefers_skill_over_headless(case_dir, stub_claude_cli, monkeypatch):
+    """An ATTACHED Claude Code session (CLAUDECODE=1 but NOT EL_DETACHED)
+    must NOT spawn a nested headless process — the el-ai-brief skill
+    fulfils the request file in the same session. Headless is reserved
+    for runs with no live assistant."""
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.delenv("EL_DETACHED", raising=False)
+    monkeypatch.delenv(_HEADLESS_OPT_IN_ENV, raising=False)
+    monkeypatch.setenv("CLAUDECODE", "1")
+
+    nr = _nr()
+    findings = [_f() for _ in range(3)]
+    result = synthesize_executive_ai(nr, findings, case_dir)
+
+    assert result is None                       # request-file path
+    assert len(stub_claude_cli["calls"]) == 0   # headless NOT invoked
+    assert (case_dir / "reports" / _REQUEST_FILENAME).exists()
+
+
+def test_explicit_headless_opt_in_without_detach(case_dir, stub_claude_cli, monkeypatch):
+    """EL_AI_BRIEF_HEADLESS=1 opts a non-detached headless context (cron,
+    CI) into self-fulfilment even without EL_DETACHED."""
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.delenv("EL_DETACHED", raising=False)
+    monkeypatch.setenv(_HEADLESS_OPT_IN_ENV, "1")
+
+    nr = _nr()
+    findings = [_f() for _ in range(3)]
+    result = synthesize_executive_ai(nr, findings, case_dir)
+
+    assert result is not None
+    assert result[1]["transport"] == "claude_cli_headless"
+    assert len(stub_claude_cli["calls"]) == 1
+
+
+def test_headless_not_used_when_cli_absent(case_dir, monkeypatch):
+    """No claude binary → no headless path; fall back to the request file
+    (when the Claude Code path is otherwise enabled)."""
+    from el import llm_defer as ld
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.setenv("EL_DETACHED", "1")
+    monkeypatch.setenv("CLAUDECODE", "1")
+    monkeypatch.setattr(ld, "headless_cli_path", lambda: None)
+
+    nr = _nr()
+    findings = [_f() for _ in range(3)]
+    assert synthesize_executive_ai(nr, findings, case_dir) is None
+    assert (case_dir / "reports" / _REQUEST_FILENAME).exists()
+
+
+def test_headless_not_used_when_api_key_present(case_dir, stub_claude_cli,
+                                                 stub_anthropic, monkeypatch):
+    """With an API key, the direct SDK path wins — headless is never
+    invoked even under EL_DETACHED."""
+    monkeypatch.setenv("EL_DETACHED", "1")
+    nr = _nr()
+    findings = [_f() for _ in range(3)]
+    result = synthesize_executive_ai(nr, findings, case_dir)
+    assert result is not None
+    assert result[1].get("transport") != "claude_cli_headless"
+    assert len(stub_claude_cli["calls"]) == 0

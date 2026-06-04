@@ -61,8 +61,14 @@ from pydantic import BaseModel, Field, ValidationError
 SCHEMA_VERSION = 1
 _CACHE_FILENAME = "combined_executive_ai_brief.json"
 _REQUEST_FILENAME = "_combined_ai_brief_request.json"
+from el import llm_defer as _llm_defer
+
 _DEFAULT_MODEL = os.environ.get("EL_AI_SUMMARY_MODEL", "claude-sonnet-4-6")
 DEFER_ENV = "EL_AI_BRIEF_DEFER"
+# Brief-specific headless opt-in on top of the global EL_AI_HEADLESS /
+# EL_DETACHED gate in el.llm_defer. A detached multi-host bundle (the
+# common case for combined reports) self-fulfils via `claude -p`.
+_HEADLESS_OPT_IN_ENV = "EL_COMBINED_BRIEF_HEADLESS"
 # Generous slack for 6 sections × N hosts of context.
 _MAX_TOKENS = 4500
 
@@ -389,6 +395,49 @@ def build_context(
 
 # ----- Public entry point ---------------------------------------------------
 
+def _should_use_headless_cli() -> bool:
+    """Shared gate (el.llm_defer) plus this call-site's opt-in env."""
+    return _llm_defer.should_use_headless_cli(_HEADLESS_OPT_IN_ENV)
+
+
+def _generate_via_claude_cli(
+    context: dict, combined_dir: Path, cache_path: Path,
+    cache_key: str, model: str | None,
+) -> tuple[CombinedExecutiveBrief, dict] | None:
+    """Self-fulfil the combined brief headlessly via `claude -p` (no API
+    key, no live session). Returns (brief, metadata) on success, else None
+    so the caller falls back to the request-file deferral."""
+    chosen = model or _DEFAULT_MODEL
+    prompt = (
+        _SYSTEM_PROMPT
+        + "\n\n--- CROSS-HOST CONTEXT (JSON) ---\n"
+        + json.dumps(context)
+        + "\n\nRespond with ONLY the JSON object described above — no "
+          "prose, no code fence."
+    )
+    text, usage = _llm_defer.run_headless_claude(prompt, chosen)
+    if text is None:
+        return None
+    brief = _parse_brief(text)
+    if brief is None:
+        return None
+    _write_cache(cache_path, cache_key, brief, chosen)
+    # Self-fulfilment supersedes any deferred request file left on disk.
+    stale_request = combined_dir / _REQUEST_FILENAME
+    if stale_request.exists():
+        try:
+            stale_request.unlink()
+        except OSError:
+            pass
+    return brief, {
+        "model": chosen, "cache": "miss",
+        "transport": "claude_cli_headless",
+        "cache_key": cache_key, "cache_path": str(cache_path),
+        "input_tokens": usage.get("input_tokens"),
+        "output_tokens": usage.get("output_tokens"),
+    }
+
+
 def synthesize_combined_executive_ai(
     bundle_name: str,
     slices: list,
@@ -436,6 +485,14 @@ def synthesize_combined_executive_ai(
 
     api_key = os.environ.get("ANTHROPIC_API_KEY")
     if not api_key:
+        # Path 2.5: detached multi-host bundle with no live assistant →
+        # self-fulfil headlessly via `claude -p` rather than orphan a
+        # request file. Falls through to the request file on any failure.
+        if _should_use_headless_cli():
+            result = _generate_via_claude_cli(
+                context, Path(combined_dir), cache_path, desired_key, model)
+            if result is not None:
+                return result
         if _claude_code_path_enabled():
             _write_request_file(Path(combined_dir), desired_key,
                                  context, cache_path)

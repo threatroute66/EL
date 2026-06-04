@@ -96,6 +96,15 @@ CLAUDE_CODE_ENV = "CLAUDECODE"
 # slack so a verbose case doesn't truncate mid-table-row.
 _MAX_TOKENS = 4000
 
+# Headless Claude Code CLI fulfilment (Path 2.5). A detached/background run
+# has no live assistant to fulfil a deferred request, so the request file
+# would otherwise sit forever. When the `claude` binary is present we shell
+# out to it (`claude -p`, one-shot, uses the operator's Claude Code auth —
+# no API key needed) and generate the brief in-process. The gating +
+# subprocess plumbing live in el.llm_defer (shared with the combined brief);
+# this call-site only adds a brief-specific opt-in env on top of the global.
+_HEADLESS_OPT_IN_ENV = "EL_AI_BRIEF_HEADLESS"
+
 
 # ----- ExecutiveBrief schema ------------------------------------------------
 
@@ -380,6 +389,73 @@ def _parse_brief(text: str) -> ExecutiveBrief | None:
     return brief
 
 
+# ----- Headless Claude Code CLI fulfilment (Path 2.5) -----------------------
+
+def _should_use_headless_cli() -> bool:
+    """Shared gate (el.llm_defer) plus this call-site's brief-specific
+    opt-in env. Fires only for runs with no live assistant — detached
+    (``EL_DETACHED=1``) or an explicit headless opt-in."""
+    return _llm_defer.should_use_headless_cli(_HEADLESS_OPT_IN_ENV)
+
+
+def _generate_via_claude_cli(
+    context: dict, reports_dir: Path, cache_path: Path,
+    cache_key: str, case_id: str, model: str | None,
+) -> tuple[ExecutiveBrief, dict] | None:
+    """Generate the brief headlessly via `claude -p` (no API key, no live
+    session). On success writes the cache envelope and returns
+    (brief, metadata); returns None on any failure so the caller falls
+    back to the request-file deferral — the brief is never lost, only
+    transported differently."""
+    chosen = model or _DEFAULT_MODEL
+    # The CLI has no separate system-prompt channel in -p mode, so fold
+    # the system prompt + JSON context into a single stdin payload.
+    prompt = (
+        _SYSTEM_PROMPT
+        + "\n\n--- CASE CONTEXT (JSON) ---\n"
+        + json.dumps(context)
+        + "\n\nRespond with ONLY the JSON object described above — no "
+          "prose, no code fence."
+    )
+    text, usage = _llm_defer.run_headless_claude(prompt, chosen)
+    if text is None:
+        return None
+    brief = _parse_brief(text)
+    if brief is None:
+        return None
+
+    in_tok = usage.get("input_tokens")
+    out_tok = usage.get("output_tokens")
+    try:
+        from el.audit import AuditLog
+        AuditLog(reports_dir.parent, case_id).info(
+            "llm_call", component="executive_ai",
+            model=chosen, transport="claude_cli_headless",
+            input_tokens=in_tok, output_tokens=out_tok)
+    except Exception:
+        pass
+
+    _write_cache(cache_path, cache_key, brief, chosen)
+    # Self-fulfilment supersedes any deferred request file (e.g. one left
+    # by a prior detach before this backend existed) — drop it so the
+    # el-ai-brief skill doesn't redundantly re-process a satisfied request.
+    stale_request = reports_dir / _REQUEST_FILENAME
+    if stale_request.exists():
+        try:
+            stale_request.unlink()
+        except OSError:
+            pass
+    return brief, {
+        "model": chosen,
+        "cache": "miss",
+        "transport": "claude_cli_headless",
+        "cache_key": cache_key,
+        "cache_path": str(cache_path),
+        "input_tokens": in_tok,
+        "output_tokens": out_tok,
+    }
+
+
 # ----- Public entry point ---------------------------------------------------
 
 def synthesize_executive_ai(
@@ -393,7 +469,7 @@ def synthesize_executive_ai(
     """Produce a non-expert-grade executive brief. Returns
     (brief, metadata) or None.
 
-    Three auth paths, in order of preference:
+    Auth paths, in order of preference:
 
       1. **Cache hit** — if reports/executive_ai_brief.json already
          carries the matching cache key, return it (skips network + LLM).
@@ -402,6 +478,15 @@ def synthesize_executive_ai(
 
       2. **Direct API** — if ``ANTHROPIC_API_KEY`` is set and the
          ``anthropic`` SDK is importable, call the API directly.
+
+      2.5. **Headless Claude Code CLI** — no API key, but the run has no
+         live assistant to fulfil a deferred request (a detached run,
+         ``EL_DETACHED=1``, or explicit ``EL_AI_BRIEF_HEADLESS=1``) AND
+         the ``claude`` binary is installed. EL shells out to
+         ``claude -p`` to generate the brief in-process (uses the
+         operator's Claude Code auth, no API key) and writes the cache
+         directly — so detached runs produce a complete AI brief with no
+         manual follow-up. On any failure it falls through to path 3.
 
       3. **Claude Code skill fulfilment** — if there's no API key but
          EL is running inside a Claude Code session (CLAUDECODE=1,
@@ -477,6 +562,19 @@ def synthesize_executive_ai(
     # digest on THIS pass; the AI brief lands on the next render once
     # the skill has populated executive_ai_brief.json.
     if not api_key:
+        # Path 2.5: a detached/background run (EL_DETACHED=1) propagates
+        # CLAUDECODE in its unit env, so it looks like a Claude Code
+        # session and would defer — but no live assistant is attached to
+        # fulfil the request file. Self-fulfil it headlessly via
+        # `claude -p` instead, so detached runs get a complete AI brief
+        # with no manual follow-up. On any failure, fall through to the
+        # request-file deferral (the brief is transported, never lost).
+        if _should_use_headless_cli():
+            result = _generate_via_claude_cli(
+                context, reports_dir, cache_path, desired_key,
+                nr.case_id, model)
+            if result is not None:
+                return result
         if _claude_code_path_enabled():
             _write_request_file(reports_dir, desired_key, context, cache_path)
         return None
