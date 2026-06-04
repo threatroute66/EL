@@ -166,6 +166,14 @@ class MemoryForensicatorAgent(Agent):
                     claim=f"{plugin}: {e}",
                 )))
 
+        # Windows symbol-mismatch recovery — runs BEFORE the analyzers so a
+        # healed pslist feeds the process-context analysis below. When psscan
+        # found processes but pslist did not, the kernel ISF didn't resolve;
+        # try to heal (pdbscan + ISF refetch + retry) and re-run the symbol-
+        # dependent plugins, else flag the case degraded and document honestly.
+        if family == "windows":
+            out.extend(self._recover_symbols_if_degraded(ctx, analysis, runs))
+
         if family == "windows" and "windows.pslist.PsList" in runs:
             out.extend(self._analyze_pslist_windows(ctx, runs["windows.pslist.PsList"]))
         if family == "windows" and {"windows.pslist.PsList", "windows.psscan.PsScan"} <= runs.keys():
@@ -383,6 +391,92 @@ class MemoryForensicatorAgent(Agent):
                           f"present in suspect image but absent from baseline — review {r.output_csv.name}",
                     evidence=[ev], hypotheses_supported=[hyp],
                 )))
+        return out
+
+    # Symbol-dependent plugins worth re-running once symbols are healed — the
+    # high-value process-context set (full re-run of every plugin is wasteful).
+    _RECOVER_PLUGINS: list[tuple[str, list[str] | None]] = [
+        ("windows.pstree.PsTree", None),
+        ("windows.cmdline.CmdLine", None),
+        ("windows.malfind.Malfind", ["--dump"]),
+    ]
+
+    def _recover_symbols_if_degraded(self, ctx: AgentContext, analysis,
+                                     runs: dict) -> list[Finding]:
+        """When the image is symbol-degraded (psscan found processes but pslist
+        did not), attempt recovery. On heal, swap in the populated pslist and
+        re-run the process-context plugins. On failure, set ctx.shared
+        ['mem_degraded'] and emit an honest finding distinguishing an
+        unrecoverable smear from a fixable symbol-coverage gap."""
+        out: list[Finding] = []
+        psl = runs.get("windows.pslist.PsList")
+        pss = runs.get("windows.psscan.PsScan")
+        if psl is None or pss is None:
+            return out
+        if not vol3.windows_symbol_degraded(psl.row_count, pss.row_count):
+            return out
+
+        rec, healed_pslist = vol3.recover_windows_symbols(ctx.input_path, analysis)
+
+        if rec.status == "healed" and healed_pslist is not None:
+            runs["windows.pslist.PsList"] = healed_pslist
+            out.append(self.emit(ctx, Finding(
+                case_id=ctx.case_id, agent=self.name, confidence="high",
+                claim=(f"Vol3 process list RECOVERED: pslist was empty "
+                       f"(psscan had {pss.row_count}), but a retry returned "
+                       f"{healed_pslist.row_count} rows — process-context plugins "
+                       f"re-enabled."),
+                evidence=[healed_pslist.as_evidence()],
+            )))
+            for plugin, extra in self._RECOVER_PLUGINS:
+                try:
+                    r = vol3.run_plugin(ctx.input_path, plugin, analysis,
+                                        extra_args=extra, timeout=900,
+                                        streaming=plugin in STREAMING_PLUGINS)
+                    runs[plugin] = r
+                    if r.rc == 0 and r.row_count > 0:
+                        out.append(self.emit(ctx, Finding(
+                            case_id=ctx.case_id, agent=self.name, confidence="high",
+                            claim=f"{plugin}: {r.row_count} row(s) parsed (post-recovery)",
+                            evidence=[r.as_evidence()],
+                        )))
+                except vol3.Vol3Error:
+                    pass
+            return out
+
+        # Not healed — flag the case degraded and document the cause + recovery
+        # honestly so the analyst knows exactly what's available, never a silent
+        # "0 rows".
+        ctx.shared["mem_degraded"] = rec.status
+        if rec.status == "scanner_fallback":
+            # symbols are fine; the list-walk failed — psscan IS the source.
+            ctx.shared["process_source"] = "psscan"
+            claim = (f"Memory list-walk DEGRADED but process context RECOVERED: "
+                     f"vol3 loaded the kernel + symbols (GUID {rec.pdb_guid or '?'}) "
+                     f"yet the EPROCESS pslist walk returned 0 — a structure/"
+                     f"list-head problem in this capture, not missing symbols. "
+                     f"The pool-tag scanner psscan recovered {pss.row_count} "
+                     f"process(es) and is used as the source; netscan/modscan/"
+                     f"mftscan + threat_hunter's raw-YARA sweep also apply. "
+                     f"(Hidden-process diff can't run without a live pslist.)")
+        elif rec.status == "symbols_missing":
+            claim = (f"Memory image DEGRADED — kernel located (GUID "
+                     f"{rec.pdb_guid or '?'}) but ISF symbols did not resolve "
+                     "(offline run / PDB not fetchable), so the process list is "
+                     "empty. Fix: pre-seed the matching ISF (EL_VOL_SYMBOLS) or "
+                     f"re-run online. Meanwhile psscan ({pss.row_count}) + netscan "
+                     "+ raw-YARA carried the evidence.")
+        else:  # smear
+            claim = ("Memory image DEGRADED — no kernel/KDBG locatable "
+                     "(non-atomic / smeared acquisition). Symbol-walking plugins "
+                     "are unavailable; the recoverable evidence is the pool-tag "
+                     f"scanners (psscan={pss.row_count}, netscan/modscan/mftscan) "
+                     "and threat_hunter's raw-YARA sweep. Re-acquire memory "
+                     "atomically to recover process context.")
+        out.append(self.emit(ctx, Finding(
+            case_id=ctx.case_id, agent=self.name, confidence="insufficient",
+            claim=claim,
+        )))
         return out
 
     def _diff_hidden_processes(self, ctx: AgentContext, pslist: vol3.PluginRun,

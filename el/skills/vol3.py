@@ -310,6 +310,139 @@ def run_plugin(
     )
 
 
+# ---------------------------------------------------------------------------
+# Windows symbol-mismatch detection + recovery
+# ---------------------------------------------------------------------------
+#
+# vol3 walks the kernel's EPROCESS list (pslist/pstree/cmdline/dlllist/handles/
+# svcscan/malfind) only when the exact kernel PDB→ISF symbol table is present.
+# EL relies on vol3 auto-downloading that PDB from Microsoft; when the run is
+# offline, the PDB is unavailable, or the acquisition is "smeared" (no locatable
+# KDBG), those list-walkers return 0 rows while the symbol-FREE pool-tag
+# scanners (psscan/netscan/modscan/mftscan/filescan) still work. That asymmetry
+# IS the fingerprint — and it splits the two root causes:
+#   * kernel locatable (pdbscan finds a kernel PDB GUID) but symbols absent
+#     → coverage failure, often healable by re-fetching the ISF.
+#   * kernel NOT locatable → acquisition smear; no symbols will ever resolve,
+#     raw-carve / scanner output is the only recourse.
+
+
+import re as _re
+
+
+@dataclass
+class SymbolRecovery:
+    """Diagnosis + outcome of a degraded-Windows-image recovery attempt.
+
+    ``status`` is one of:
+      * ``"healed"``           — a pslist retry returned rows (transient/
+                                 download failure recovered).
+      * ``"scanner_fallback"`` — kernel + symbols ARE loaded (windows.info
+                                 succeeds) but the EPROCESS list-walk is empty;
+                                 a structure/list-head problem in this capture.
+                                 The pool-tag scanner (psscan) is the process
+                                 source — process context IS recoverable.
+      * ``"symbols_missing"``  — kernel located but the ISF symbols did not
+                                 resolve (offline / PDB not fetchable). Fixable
+                                 by pre-seeding the ISF or running online.
+      * ``"smear"``            — no locatable kernel (non-atomic acquisition).
+                                 Scanner / raw-carve output is the only recourse.
+    """
+    status: str
+    kernel_found: bool
+    pdb_guid: str | None
+    detail: str
+
+    @property
+    def healed(self) -> bool:
+        return self.status == "healed"
+
+
+def windows_symbol_degraded(pslist_row_count: int, psscan_row_count: int) -> bool:
+    """The Windows symbol/list-walk-mismatch signature: the pool-tag scanner
+    found processes but the symbol-walking list returned none. Pure."""
+    return pslist_row_count == 0 and psscan_row_count > 0
+
+
+# GUID (32 hex) embedded in vol3's ISF path: .../ntkrnlmp.pdb/<GUID>-<age>.json.xz
+_ISF_GUID_RE = _re.compile(r"\.pdb/([0-9A-Fa-f]{32,33})", _re.I)
+
+
+def parse_windows_info(rows: list[dict]) -> tuple[str | None, str | None]:
+    """From windows.info.Info rows, return (kernel_base, pdb_guid). A non-None
+    kernel_base means vol3 located the kernel + loaded symbols. Pure."""
+    kb = None
+    guid = None
+    for r in rows:
+        var = str(r.get("Variable") or r.get("variable") or "").strip()
+        val = str(r.get("Value") or r.get("value") or "")
+        if var.lower() in ("kernel base", "kernelbase"):
+            kb = val or kb
+        if "symbols" in var.lower():
+            m = _ISF_GUID_RE.search(val)
+            if m:
+                guid = m.group(1)
+    return kb, guid
+
+
+_SYMBOL_MISSING_MARKERS = ("unable to locate symbols", "isf", "symbol table",
+                           "could not find the symbols")
+
+
+def recover_windows_symbols(image: str | Path, out_dir: str | Path,
+                            offline: bool = False,
+                            timeout: int = 300) -> tuple[SymbolRecovery, PluginRun | None]:
+    """Diagnose + best-effort recover a symbol/list-walk-degraded Windows image.
+
+    1. Retry ``windows.pslist`` once — recovers transient / download failures.
+    2. If still empty, run ``windows.info`` (cheap, symbol-aware). A populated
+       Kernel Base means symbols loaded and it's a *list-walk* failure
+       (``scanner_fallback`` — psscan is the source). No kernel base ⇒ either a
+       missing-ISF coverage gap (stderr names it) or an acquisition smear.
+
+    Returns ``(SymbolRecovery, healed_pslist_run | None)``. Never raises."""
+    try:
+        retry = run_plugin(image, "windows.pslist.PsList", out_dir,
+                           offline=offline, timeout=timeout)
+    except Vol3Error:
+        retry = None
+    if retry is not None and retry.rc == 0 and retry.row_count > 0:
+        return SymbolRecovery("healed", True, None,
+                              f"pslist retry recovered {retry.row_count} rows"), retry
+
+    try:
+        info = run_plugin(image, "windows.info.Info", out_dir,
+                          offline=offline, timeout=timeout)
+    except Vol3Error as e:
+        return SymbolRecovery("smear", False, None,
+                              f"windows.info failed to run: {e}"), None
+
+    kb, guid = (parse_windows_info(info.rows) if info.rc == 0 else (None, None))
+    if kb:
+        return SymbolRecovery(
+            "scanner_fallback", True, guid,
+            f"kernel + symbols loaded (GUID {guid or '?'}) but the EPROCESS "
+            "list-walk returned 0 — a structure/list-head problem in this "
+            "capture, NOT missing symbols. The pool-tag scanner (psscan) "
+            "recovered the process set and is the process source."), None
+
+    err = ""
+    try:
+        err = info.stderr_path.read_text(errors="ignore")
+    except Exception:
+        pass
+    if any(m in err.lower() for m in _SYMBOL_MISSING_MARKERS):
+        gm = _re.search(r"\b([0-9A-Fa-f]{32,33})\b", err)
+        return SymbolRecovery(
+            "symbols_missing", True, gm.group(1) if gm else None,
+            "kernel located but ISF symbols did not resolve (offline run / PDB "
+            "not fetchable). Pre-seed the matching ISF or re-run online."), None
+    return SymbolRecovery(
+        "smear", False, None,
+        "no locatable kernel (windows.info found none) — non-atomic / smeared "
+        "acquisition; symbol-walking plugins are unrecoverable."), None
+
+
 def detect_os(image: str | Path, out_dir: str | Path) -> tuple[str | None, PluginRun]:
     """Best-effort OS family detection by trying banner plugins.
 
