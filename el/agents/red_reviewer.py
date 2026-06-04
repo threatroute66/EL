@@ -51,7 +51,10 @@ RED_REVIEW_HEADLESS_ENV = "EL_RED_REVIEW_HEADLESS"
 # generous per-batch timeout so each batch reliably completes. All env-tunable.
 _HEADLESS_MAX = int(os.environ.get("EL_RED_REVIEW_HEADLESS_MAX", "40"))
 _HEADLESS_CHUNK = int(os.environ.get("EL_RED_REVIEW_HEADLESS_CHUNK", "10"))
-_HEADLESS_FLOOR_S = int(os.environ.get("EL_RED_REVIEW_HEADLESS_FLOOR_S", "300"))
+# 360s per batch: a 10-finding batch was measured at 89–233s (high variance),
+# so 300s left a thin margin that one slow batch could trip into a spurious
+# fallback. 360s gives ~55% headroom over the observed worst case.
+_HEADLESS_FLOOR_S = int(os.environ.get("EL_RED_REVIEW_HEADLESS_FLOOR_S", "360"))
 _REQUEST_FILENAME = "_red_review_request.json"
 _VERDICTS_FILENAME = "_red_review_verdicts.json"
 _APPLIED_FILENAME = "_red_review_applied.json"
