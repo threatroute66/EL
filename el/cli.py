@@ -753,10 +753,15 @@ RestartSec=5
 # Loopback-only by default, but defense-in-depth: no new privileges,
 # read-only access everywhere, no temp-dir isolation needed because
 # http.server only reads --root.
+# The '-' prefix tolerates a not-yet-existing root: ProtectSystem=strict
+# makes the whole fs read-only inside the sandbox, so the service can
+# never create its own root — the installer pre-creates it instead. On a
+# fresh install (no cases yet) a bare ReadOnlyPaths= on a missing path
+# degrades the mount namespace and every request 404s.
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
-ReadOnlyPaths={root}
+ReadOnlyPaths=-{root}
 ProtectHome=read-only
 
 [Install]
@@ -770,6 +775,16 @@ def _install_serve_service(exe: Path, root: Path, bind: str, port: int) -> int:
     import os
     import shutil
     import subprocess
+    # Pre-create the case root HERE, outside the unit's sandbox. The unit
+    # runs with ProtectSystem=strict (fs read-only), so serve_cmd's own
+    # missing-root fallback cannot fire inside the service — on a fresh
+    # install (no investigations yet) the server would come up with a
+    # broken namespace and 404 every request.
+    try:
+        root.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        console.print(f"[red]cannot create case root {root}: {exc}[/red]")
+        return 2
     unit_dir = Path.home() / ".config" / "systemd" / "user"
     unit_dir.mkdir(parents=True, exist_ok=True)
     unit_path = unit_dir / "el-serve.service"
@@ -781,9 +796,14 @@ def _install_serve_service(exe: Path, root: Path, bind: str, port: int) -> int:
             f"enable. Run `systemctl --user enable --now el-serve.service` "
             f"manually.[/yellow]")
         return 0
+    # enable (not enable --now) + explicit restart: `enable --now` is a
+    # no-op for an already-running service, so a re-install would leave
+    # the old process serving with the previous unit/code. restart starts
+    # a stopped service and bounces a running one — both paths converge.
     for cmd in (
         ["systemctl", "--user", "daemon-reload"],
-        ["systemctl", "--user", "enable", "--now", "el-serve.service"],
+        ["systemctl", "--user", "enable", "el-serve.service"],
+        ["systemctl", "--user", "restart", "el-serve.service"],
     ):
         r = subprocess.run(cmd, capture_output=True, text=True)
         if r.returncode != 0:
