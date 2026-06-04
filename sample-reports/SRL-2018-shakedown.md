@@ -457,9 +457,33 @@ to `~/.el/knowledge.sqlite` under `srl-2018-apt`. The account lookups surfaced
 org) and `tdungan@` in the 2026-04 per-host run — exactly the Layer-3 signal the
 knowledge store exists to provide.
 
+## Attribution — HIDDEN COBRA (DPRK / Lazarus)
+
+The bundle's YARA sweep matched exactly **one** family rule across all 28 devices,
+on exactly **two** hosts — the Domain Controller and `elf`:
+
+| Host | Match offset | Rule |
+|---|---|---|
+| Domain Controller (`dc-mem`) | `0x80d02d05` | `NK_SSL_PROXY` |
+| `elf` (`elf-mem`, 172.16.5.21) | `0x735e9511` | `NK_SSL_PROXY` |
+
+Same hardcoded strings at both. The rule is US-CERT's (Code Analysis Team,
+2018/01/09) for the **HIDDEN COBRA SSL proxy** — US-CERT **MAR-10135536-G** /
+*North Korean Malicious Cyber Activity*. The proxy landing on the **domain core +
+a management-subnet pivot** is a concrete **DPRK / Lazarus attribution
+indicator** — stronger than the generic `H_APT_ESPIONAGE` leader.
+
+_Honest limits:_ both captures are degraded (vol3 symbol mismatch on `elf`,
+acquisition smear on `dc`), so the strings are confirmed but **not bound to a
+PID**. Carving around both offsets did **not** recover the proxy's config (listen
+port / upstream C2) — the only nearby external string on the DC was an *adjacent*
+Defender-signature artifact for a commodity downloader (`158.69.133.17:8220`,
+`Flafisi`), which is therefore **not** added as an intrusion IOC. See
+`cases/srl-2018-apt/analysis/attribution.md`.
+
 ## Analyst notes on disk
 
 `cases/srl-2018-apt/analysis/pivot_map.md` (host→IP map, pivot edges, patient-zero
-trace, cleared-log recovery) and `…/perimeter_from_memory.md` (VPN/firewall
-software inventory + the VPN ingress mapping) carry the full working with
-reproducible commands.
+trace, cleared-log recovery), `…/perimeter_from_memory.md` (VPN/firewall software
+inventory + VPN ingress + account mapping), and `…/attribution.md` (HIDDEN COBRA
+YARA hits) carry the full working with reproducible commands.
