@@ -238,38 +238,83 @@ def test_headless_failure_falls_back_to_red_review_request(tmp_path, monkeypatch
     assert (case_dir / "reports" / _REQUEST_FILENAME).is_file()
 
 
-def test_headless_timeout_scales_with_finding_count(monkeypatch):
-    """The single-call challenger's runtime scales with the number of
-    findings, so its headless timeout must too — a large set (the
-    M57-Jean 222-finding case timed out at the old fixed 240s) gets a
-    proportionally longer budget, capped at 15 min."""
-    from el.agents import red_reviewer as rr
+def _mk_findings(n):
+    return [Finding(case_id="t", agent="a", claim=f"c{i}",
+                    confidence="high",
+                    evidence=[EvidenceItem(tool="x", version="1",
+                              command="x", output_sha256="0"*64,
+                              output_path="/tmp/x")])
+            for i in range(n)]
 
-    captured = {}
+
+def test_headless_chunks_large_finding_sets(monkeypatch):
+    """A single call over a large set never completes (M57-Jean's 222
+    findings timed out even at 900s), so the headless challenger batches
+    into _HEADLESS_CHUNK-sized calls and merges. Verify a 222-finding set
+    is split into ceil(222/chunk) bounded calls, each at the per-batch
+    floor timeout, and every verdict is merged back."""
+    from el.agents import red_reviewer as rr
+    import math
+
+    batch_sizes = []
+    timeouts = []
 
     def _fake_run_headless(prompt, model, timeout=None):
-        captured["timeout"] = timeout
-        return None, {}        # force None so we only probe the timeout arg
+        timeouts.append(timeout)
+        # Echo back one verdict per finding_id embedded in the prompt
+        import json as _json
+        payload = _json.loads(prompt.split("--- FINDINGS TO CHALLENGE (JSON) ---\n", 1)[1]
+                              .rsplit("\n\nRespond", 1)[0])
+        batch_sizes.append(len(payload))
+        verdicts = [{"finding_id": f["finding_id"], "status": "passed",
+                     "challenger_notes": "ok", "disconfirming_checklist": []}
+                    for f in payload]
+        return _json.dumps(verdicts), {"input_tokens": 1, "output_tokens": 1}
 
     monkeypatch.setattr(rr._llm_defer, "run_headless_claude", _fake_run_headless)
 
-    def _mk(n):
-        return [Finding(case_id="t", agent="a", claim=f"c{i}",
-                        confidence="high",
-                        evidence=[EvidenceItem(tool="x", version="1",
-                                  command="x", output_sha256="0"*64,
-                                  output_path="/tmp/x")])
-                for i in range(n)]
+    findings = _mk_findings(222)
+    result = rr._llm_challenge_headless(findings)
 
-    # small set → floor
-    rr._llm_challenge_headless(_mk(3))
-    assert captured["timeout"] == rr._HEADLESS_FLOOR_S
+    chunk = rr._HEADLESS_CHUNK
+    assert len(batch_sizes) == math.ceil(222 / chunk)       # chunked, not one call
+    assert max(batch_sizes) <= chunk                         # every batch bounded
+    assert sum(batch_sizes) == 222
+    assert all(t == rr._HEADLESS_FLOOR_S for t in timeouts)  # per-batch floor timeout
+    assert result is not None and len(result) == 222         # all verdicts merged
 
-    # M57-Jean-sized set → scaled above the floor
-    rr._llm_challenge_headless(_mk(222))
-    assert captured["timeout"] == min(900, int(rr._HEADLESS_PER_FINDING_S * 222))
-    assert captured["timeout"] > rr._HEADLESS_FLOOR_S
 
-    # huge set → capped at 15 min
-    rr._llm_challenge_headless(_mk(5000))
-    assert captured["timeout"] == 900
+def test_headless_partial_batch_failure_keeps_coverage(monkeypatch):
+    """If some batches fail, the successful ones still merge (the caller's
+    merge loop tolerates partial coverage) — only an all-batches-fail set
+    returns None to trigger the request-file fallback."""
+    from el.agents import red_reviewer as rr
+    import json as _json
+
+    calls = {"n": 0}
+
+    def _fake_run_headless(prompt, model, timeout=None):
+        calls["n"] += 1
+        if calls["n"] == 2:                 # second batch fails
+            return None, {}
+        payload = _json.loads(prompt.split("--- FINDINGS TO CHALLENGE (JSON) ---\n", 1)[1]
+                              .rsplit("\n\nRespond", 1)[0])
+        verdicts = [{"finding_id": f["finding_id"], "status": "challenged",
+                     "challenger_notes": "n", "disconfirming_checklist": []}
+                    for f in payload]
+        return _json.dumps(verdicts), {}
+
+    monkeypatch.setattr(rr._llm_defer, "run_headless_claude", _fake_run_headless)
+
+    findings = _mk_findings(rr._HEADLESS_CHUNK * 3)   # exactly 3 batches
+    result = rr._llm_challenge_headless(findings)
+    assert result is not None
+    # 2 of 3 batches succeeded → partial coverage, not None
+    assert len(result) == rr._HEADLESS_CHUNK * 2
+
+
+def test_headless_all_batches_fail_returns_none(monkeypatch):
+    from el.agents import red_reviewer as rr
+    monkeypatch.setattr(rr._llm_defer, "run_headless_claude",
+                        lambda *a, **k: (None, {}))
+    assert rr._llm_challenge_headless(_mk_findings(50)) is None

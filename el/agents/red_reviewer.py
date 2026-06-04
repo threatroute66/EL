@@ -40,11 +40,12 @@ RED_REVIEW_DEFER_ENV = "EL_RED_REVIEW_DEFER"
 # headless context (cron/CI) into in-process `claude -p` self-fulfilment.
 # A detached run (EL_DETACHED=1) triggers headless without needing this.
 RED_REVIEW_HEADLESS_ENV = "EL_RED_REVIEW_HEADLESS"
-# Headless-challenger timeout scaling: floor + per-finding budget, capped
-# at 15 min inside run() below. Overridable for tuning without a code change.
+# Headless challenger is chunked: a single call over a large finding set
+# never completes (M57-Jean's 222 findings timed out even at 900s), so we
+# batch into _HEADLESS_CHUNK-sized calls — each as fast as the brief — and
+# merge. _HEADLESS_FLOOR_S is the per-batch timeout. Both env-overridable.
+_HEADLESS_CHUNK = int(os.environ.get("EL_RED_REVIEW_HEADLESS_CHUNK", "20"))
 _HEADLESS_FLOOR_S = int(os.environ.get("EL_RED_REVIEW_HEADLESS_FLOOR_S", "240"))
-_HEADLESS_PER_FINDING_S = float(
-    os.environ.get("EL_RED_REVIEW_HEADLESS_PER_FINDING_S", "3"))
 _REQUEST_FILENAME = "_red_review_request.json"
 _VERDICTS_FILENAME = "_red_review_verdicts.json"
 _APPLIED_FILENAME = "_red_review_applied.json"
@@ -159,43 +160,65 @@ def _parse_review_array(text: str) -> dict[str, _ChallengeResult] | None:
     return out
 
 
+def _challenge_chunk_headless(
+    chunk: list[Finding],
+) -> tuple[dict[str, _ChallengeResult] | None, dict]:
+    """Headless `claude -p` challenge for ONE small batch of findings.
+    Returns (verdicts, usage) or (None, {}) on failure."""
+    prompt = (
+        SYSTEM
+        + "\n\n--- FINDINGS TO CHALLENGE (JSON) ---\n"
+        + json.dumps(_review_payload(chunk))
+        + "\n\nRespond with ONLY the JSON array of verdicts described "
+          "above — no prose, no code fence."
+    )
+    # Each batch is bounded (≈ _HEADLESS_CHUNK findings), so a fixed floor
+    # timeout is ample — the per-batch output is small, like the brief.
+    text, usage = _llm_defer.run_headless_claude(
+        prompt, CHALLENGER_MODEL, timeout=_HEADLESS_FLOOR_S)
+    if text is None:
+        return None, {}
+    return _parse_review_array(text), usage
+
+
 def _llm_challenge_headless(reviewable: list[Finding], audit=None
                             ) -> dict[str, _ChallengeResult] | None:
     """Run the LLM challenger headlessly via `claude -p` — no API key, no
     live session. Used by a detached/background run so its adversarial
-    review is as strong as an attached run's. Returns None on any failure
-    so the caller falls back to the request-file deferral."""
-    prompt = (
-        SYSTEM
-        + "\n\n--- FINDINGS TO CHALLENGE (JSON) ---\n"
-        + json.dumps(_review_payload(reviewable))
-        + "\n\nRespond with ONLY the JSON array of verdicts described "
-          "above — no prose, no code fence."
-    )
-    # The challenger judges every reviewable finding in one call, so its
-    # output (one verdict per finding) scales with the set size — a large
-    # case (e.g. 222 findings on M57-Jean) needs far longer than the brief's
-    # single-paragraph default of 240s. Scale the timeout with the payload,
-    # capped at 15 min; a set too large to finish in the cap falls back to
-    # the request-file deferral rather than blocking the pipeline forever.
-    timeout = min(900, max(_HEADLESS_FLOOR_S,
-                           _HEADLESS_PER_FINDING_S * len(reviewable)))
-    text, usage = _llm_defer.run_headless_claude(
-        prompt, CHALLENGER_MODEL, timeout=timeout)
-    if text is None:
-        return None
-    results = _parse_review_array(text)
-    if results is None:
+    review is as strong as an attached run's.
+
+    The challenger emits one verdict per finding, so a single call over a
+    large set (M57-Jean: 222 findings, a 226 KB prompt) does not complete
+    even at a 15-minute timeout. Instead we CHUNK into small batches — each
+    batch is as fast as the brief — and merge the verdicts. Best-effort:
+    findings in batches that fail keep their rule-based review (the caller's
+    merge loop tolerates partial coverage). Returns None only when EVERY
+    batch failed, so the caller falls back to the request-file deferral."""
+    chunks = [reviewable[i:i + _HEADLESS_CHUNK]
+              for i in range(0, len(reviewable), _HEADLESS_CHUNK)]
+    merged: dict[str, _ChallengeResult] = {}
+    in_tok = out_tok = 0
+    failed_batches = 0
+    for chunk in chunks:
+        verdicts, usage = _challenge_chunk_headless(chunk)
+        if verdicts is None:
+            failed_batches += 1
+            continue
+        merged.update(verdicts)
+        in_tok += usage.get("input_tokens") or 0
+        out_tok += usage.get("output_tokens") or 0
+    if not merged:
         return None
     if audit is not None:
         audit.info(
             "llm_call", component="red_reviewer", model=CHALLENGER_MODEL,
             transport="claude_cli_headless",
-            input_tokens=usage.get("input_tokens"),
-            output_tokens=usage.get("output_tokens"),
+            input_tokens=in_tok, output_tokens=out_tok,
             findings_reviewed=len(reviewable),
+            batches=len(chunks), failed_batches=failed_batches,
+            verdicts_returned=len(merged),
         )
-    return results
+    return merged
 
 
 def _review_cache_key(case_id: str, reviewable: list[Finding]) -> str:
