@@ -41,3 +41,19 @@ exploit. Initial access was the spearphishing **link** (see pivot_map.md).
 - Resolve/scan the phishing link `sinasolutions.com.au/.../Ruth_mourns_..pdf`
   and the blog dead-drops against threat intel.
 - The 10.3.16.5 attacker jump host and 10.3.58.9 SMB target were not imaged.
+
+## Precise stolen files (attachments inside the EXFIL messages)
+
+| File | Size | What |
+|---|---|---|
+| Agents-List-CLASSIFIED-TOP-SECRET.zip | 1.0 MB | classified personnel roster |
+| CC-Backstopped-Accounts.xlsx | 10 KB | covert/backstopped financial accounts |
+| Credit-Card-Numbers-For-Research.xlsx | 28 KB | credit-card numbers |
+| 2011-W2.zip | 68 KB | employee W-2 tax/PII |
+| Metal Alloy List Research.xlsx | 69 KB | the Vibranium/alloy R&D |
+| Researched Sub-Atomic Particles.xlsx | 13 KB | physics research |
+| The Shield Background and Ongoing Research.docx | 20 KB | SHIELD R&D background |
+| Dossier - Dr Myron MacLain.docx | 142 KB | dossier on the vibranium-alloy scientist |
+
+→ The theft is precise and devastating: TOP-SECRET personnel + financial PII
+(CC numbers, W-2s) + the core super-material R&D (alloys, sub-atomic particles).

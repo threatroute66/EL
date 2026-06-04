@@ -53,3 +53,13 @@ internal phish to nromanoff — making it the staging/pivot host whether reached
 first by phish or used as the collection point. Exact first-execution is muddied
 by 2011-era (legitimate, host-build) service installs vs the 2012 attacker
 activity; the clean attacker window is 2012-03 onward.
+
+## Credential-theft tooling — CONFIRMED (mimikatz)
+
+Pulled `sekurlsa.dll` off disk from **tdungan (XP, /WINDOWS/system32)** and
+**nromanoff (Win7-32, /Windows/System32)** — **identical binary**,
+MD5 `67504a0c2c2bf47efccdab5ca981ad7d` (229,360 B, PE32 DLL). Confirmed mimikatz:
+strings `http://blog.gentilkiwi.com/mimikatz`, author `Benjamin Delpy`, exports
+`getLogonPasswords` / `getWDigest`. Same binary on two hosts = one operator
+deploying the same LSASS credential-dumper across the network (run via
+`rundll32 sekurlsa.dll getLogonPasswords`, the 2012 standalone technique).
