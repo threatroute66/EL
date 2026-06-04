@@ -8,7 +8,7 @@ from pathlib import Path
 
 from el.agents.artifact_recovery import (
     ArtifactRecoveryAgent, Candidate, parse_bodyfile_targets,
-    expected_magic, header_matches,
+    expected_magic, header_matches, find_log_entry, select_pre_clearing,
 )
 from el.agents.base import AgentContext
 from el.schemas.finding import EvidenceItem
@@ -161,3 +161,137 @@ def test_wiped_ost_vss_exhausted_emits_carve_pivot(tmp_path, monkeypatch):
     assert any("Carve pivot" in f.claim and f.confidence == "insufficient"
                for f in findings)
     assert not any("RECOVERED" in f.claim for f in findings)
+
+
+# --- cleared-log recovery --------------------------------------------------
+
+# fls -m bodyfile rows incl. size (field 7): a CLEARED (small) Security.evtx
+_LOG_BODYFILE = (
+    "0|/Windows/System32/winevt/Logs/Security.evtx|41832-128-2|"
+    "r/rrwxrwxrwx|0|0|1118208|1|1|1|1\n"
+    "0|/Windows/System32/winevt/Logs/System.evtx|41833-128-2|"
+    "r/rrwxrwxrwx|0|0|2097152|1|1|1|1\n"
+)
+
+
+def test_find_log_entry_reads_inode_and_size():
+    ent = find_log_entry(_LOG_BODYFILE, "winevt/Logs/Security.evtx")
+    assert ent is not None
+    relpath, inode, size = ent
+    assert relpath.endswith("Security.evtx")
+    assert inode == "41832-128-2"
+    assert size == 1118208            # the cleared (small) live size
+    assert find_log_entry(_LOG_BODYFILE, "winevt/Logs/Nope.evtx") is None
+
+
+def test_select_pre_clearing_picks_newest_substantially_larger():
+    live = 1118208
+    # snapshots 11-14 are post-clearing (~live); 9-10 are pre-clearing (large)
+    snaps = [(14, 1118208), (13, 1120000), (12, 1118208),
+             (11, 1118208), (10, 19992576), (9, 19000000)]
+    assert select_pre_clearing(live, snaps) == 10        # newest large one
+    # all near-live (no clearing recoverable) → None
+    assert select_pre_clearing(live, [(14, 1118208), (13, 1200000)]) is None
+    # a small delta above ratio but under the absolute floor → None
+    assert select_pre_clearing(live, [(14, int(live * 1.6))]) is None  # +0.6MB < 4MB
+
+
+def _cleared_log_ctx(tmp_path):
+    case_dir = tmp_path / "case"
+    (case_dir / "analysis" / "disk_forensicator").mkdir(parents=True)
+    (case_dir / "analysis" / "disk_forensicator" / "fls.txt").write_text(_LOG_BODYFILE)
+    raw = tmp_path / "dc.raw"; raw.write_bytes(b"\x00" * 512)
+    return AgentContext(
+        case_id="srl", case_dir=case_dir, input_path=raw, manifest={},
+        shared={"partitions": [{"start_sector": 0}], "sector_size": 512,
+                "raw_input_path": str(raw)})
+
+
+def _istat_text(size, nonres=True):
+    res = "Non-Resident" if nonres else "Resident"
+    return (f"Allocated File\nType: $DATA (128-2)   Name: N/A   {res}   "
+            f"size: {size}  init_size: {size}\n")
+
+
+def test_recover_cleared_log_from_pre_clearing_shadow(tmp_path, monkeypatch):
+    """The fix: a cleared Security.evtx is recovered from the newest pre-clearing
+    shadow copy, EVTX-validated, as a high-confidence finding."""
+    import el.agents.artifact_recovery as ar
+    from el.skills import vss_diff
+
+    class Snap:
+        def __init__(self, n): self.number = n; self.creation_utc = f"2018-09-{n:02d}T16:00Z"
+    class Vol:
+        device = Path("/dev/mapper/x"); repaired = False
+        snapshots = [Snap(n) for n in (9, 10, 11, 12, 13, 14)]
+
+    def fake_vshadowmount(device, mount_dir, **k):
+        mount_dir.mkdir(parents=True, exist_ok=True)
+        for n in (9, 10, 11, 12, 13, 14):
+            (mount_dir / f"vss{n}").write_bytes(b"")
+
+    # istat: snapshots 9 & 10 hold the large pre-clearing log; 11-14 are cleared
+    def fake_istat(image, inode, out_dir, offset=None, label=None, timeout=120):
+        Path(out_dir).mkdir(parents=True, exist_ok=True)
+        n = int(str(image).rsplit("vss", 1)[-1]) if "vss" in str(image) else 0
+        size = 19992576 if n in (9, 10) else 1118208
+        p = Path(out_dir) / f"{label or 'istat'}.txt"; p.write_text(_istat_text(size))
+        class R: stdout_path = p
+        return R()
+
+    def fake_icat(dev, inode, dest, offset=None, timeout=900):
+        Path(dest).parent.mkdir(parents=True, exist_ok=True)
+        Path(dest).write_bytes(b"ElfFile\x00" + b"\x11" * 4096)   # valid EVTX magic
+        return 19992576
+
+    monkeypatch.setattr(vss_diff, "vss_open", lambda *a, **k: Vol())
+    monkeypatch.setattr(vss_diff, "vss_close", lambda *a, **k: None)
+    monkeypatch.setattr(vss_diff, "vshadowmount", fake_vshadowmount)
+    monkeypatch.setattr(vss_diff, "fusermount_unmount", lambda *a, **k: None)
+    monkeypatch.setattr(ar.sk, "istat", fake_istat)
+    monkeypatch.setattr(ar.sk, "icat_extract", fake_icat)
+
+    ctx = _cleared_log_ctx(tmp_path)
+    agent = ArtifactRecoveryAgent()
+    out = agent._recover_cleared_logs(ctx, Path(str(ctx.input_path)), 512,
+                                      ctx.case_dir / "analysis" / "artifact_recovery")
+    recs = [f for f in out if f.confidence == "high" and "RECOVERED cleared event log" in f.claim]
+    assert recs, [f.claim for f in out]
+    # newest pre-clearing copy is snapshot #10
+    assert any("snapshot #10" in f.claim for f in recs)
+    assert any("H_LOG_CLEARED" in f.hypotheses_supported for f in recs)
+
+
+def test_cleared_log_insufficient_when_no_pre_clearing_shadow(tmp_path, monkeypatch):
+    """Honest gap: clearing predates the shadow set (all snapshots ~ live size)
+    → insufficient, not a fabricated recovery."""
+    import el.agents.artifact_recovery as ar
+    from el.skills import vss_diff
+
+    class Snap:
+        def __init__(self, n): self.number = n; self.creation_utc = f"t{n}"
+    class Vol:
+        device = Path("/dev/mapper/x"); repaired = False
+        snapshots = [Snap(n) for n in (12, 13, 14)]
+
+    def fake_vshadowmount(device, mount_dir, **k):
+        mount_dir.mkdir(parents=True, exist_ok=True)
+        for n in (12, 13, 14): (mount_dir / f"vss{n}").write_bytes(b"")
+
+    def fake_istat(image, inode, out_dir, offset=None, label=None, timeout=120):
+        Path(out_dir).mkdir(parents=True, exist_ok=True)
+        p = Path(out_dir) / f"{label or 'istat'}.txt"; p.write_text(_istat_text(1118208))
+        class R: stdout_path = p
+        return R()
+
+    monkeypatch.setattr(vss_diff, "vss_open", lambda *a, **k: Vol())
+    monkeypatch.setattr(vss_diff, "vss_close", lambda *a, **k: None)
+    monkeypatch.setattr(vss_diff, "vshadowmount", fake_vshadowmount)
+    monkeypatch.setattr(vss_diff, "fusermount_unmount", lambda *a, **k: None)
+    monkeypatch.setattr(ar.sk, "istat", fake_istat)
+
+    ctx = _cleared_log_ctx(tmp_path)
+    out = ArtifactRecoveryAgent()._recover_cleared_logs(
+        ctx, Path(str(ctx.input_path)), 512, ctx.case_dir / "analysis" / "artifact_recovery")
+    assert out and all(f.confidence == "insufficient" for f in out)
+    assert not any("RECOVERED" in f.claim for f in out)

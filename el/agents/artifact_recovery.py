@@ -132,6 +132,57 @@ def _offset_from_bodyfile_name(name: str) -> int:
     return int(m.group(1)) if m else 0
 
 
+# --- cleared-log recovery ---------------------------------------------------
+
+# Event logs whose clearing (EID 1102 / wevtutil cl) is forensically
+# load-bearing and recoverable from a pre-clearing shadow copy. Matched as a
+# path suffix (case-insensitive). Security is the prime target; System/App
+# carry service-install + crash evidence the attacker may also have cleared.
+CLEARED_LOG_TARGETS = (
+    "winevt/Logs/Security.evtx",
+    "winevt/Logs/System.evtx",
+)
+# A shadow copy of the log must exceed the (cleared) live log by both a ratio
+# and an absolute margin before we treat it as a recoverable pre-clearing copy
+# — guards against normal log growth looking like a clearing.
+_CLEARED_RATIO = 1.5
+_CLEARED_MIN_DELTA = 4 * 1024 * 1024
+# Tokens that mean "a Windows event log was cleared" in a ledger claim.
+_CLEARING_TOKENS = ("security_log_cleared", "log cleared", "eid 1102",
+                    "1102", "audit log cleared")
+
+# fls -m bodyfile w/ size: MD5|path|inode|mode|uid|gid|SIZE|atime|mtime|...
+_BODYFILE_SIZE_RE = re.compile(
+    r"^[^|]*\|([^|]+)\|([0-9]+-[0-9]+-[0-9]+)\|[^|]*\|[^|]*\|[^|]*\|([0-9]+)\|")
+
+
+def find_log_entry(bodyfile_text: str, target_suffix: str):
+    """Return (relpath, inode, size) for the first bodyfile row whose path ends
+    with ``target_suffix`` (a cleared-log path), else None. Used to read the
+    live (cleared) log's inode + size without extracting it."""
+    t = target_suffix.replace("\\", "/").lower()
+    for line in bodyfile_text.splitlines():
+        m = _BODYFILE_SIZE_RE.match(line)
+        if not m:
+            continue
+        relpath = m.group(1)
+        if relpath.replace("\\", "/").lower().endswith(t) and "($FILE_NAME)" not in relpath:
+            return (relpath, m.group(2), int(m.group(3)))
+    return None
+
+
+def select_pre_clearing(live_size: int, snaps,
+                        ratio: float = _CLEARED_RATIO,
+                        min_delta: int = _CLEARED_MIN_DELTA):
+    """Given the (cleared) live-log size and a list of (snapshot_number, size),
+    return the NEWEST snapshot_number whose log is substantially larger than
+    live — the latest pre-clearing copy — or None when no snapshot qualifies."""
+    for num, size in sorted(snaps, key=lambda x: -x[0]):
+        if size >= live_size * ratio and (size - live_size) >= min_delta:
+            return num
+    return None
+
+
 # ---------------------------------------------------------------------------
 # Agent
 # ---------------------------------------------------------------------------
@@ -146,8 +197,11 @@ class ArtifactRecoveryAgent(Agent):
             return out                      # disk-only; silent on non-disk cases
 
         candidates = self._collect_candidates(ctx)
-        if not candidates:
-            return out                      # no high-value artifacts on disk
+        log_clearing = self._log_clearing_detected(ctx)
+        # Run when there's an in-place wipe to chase OR a cleared event log to
+        # recover from a shadow copy. Either is enough to justify mounting.
+        if not candidates and not log_clearing:
+            return out
 
         sector_size = int(ctx.shared.get("sector_size") or 512)
         raw_input = Path(ctx.shared.get("raw_input_path") or ctx.input_path)
@@ -181,6 +235,13 @@ class ArtifactRecoveryAgent(Agent):
                 out.extend(recovered)
                 if not any(f.confidence == "high" for f in recovered):
                     out.append(self._carve_pivot(ctx, raw_image, cand))
+            # Cleared event logs are NOT zeroed in place (a cleared log is a
+            # fresh, smaller, valid EVTX), so wipe_detect classifies them
+            # 'intact' and the loop above skips them. Recover them from the
+            # newest pre-clearing shadow copy instead.
+            if log_clearing:
+                out.extend(self._recover_cleared_logs(
+                    ctx, raw_image, sector_size, analysis))
         finally:
             if mount_point is not None:
                 try:
@@ -392,6 +453,150 @@ class ArtifactRecoveryAgent(Agent):
                    f"bulk_extractor over the raw stream + the bundle's memory "
                    f"image for cached pages / message fragments.")))
 
+    # -- cleared event-log recovery ------------------------------------------
+
+    def _log_clearing_detected(self, ctx: AgentContext) -> bool:
+        """True when the ledger carries an event-log-clearing signal (EID 1102,
+        emitted by lateral_movement_analyst). This is the trigger for cleared-
+        log recovery — a cleared log is valid+small, so wipe_detect never fires
+        on it."""
+        from el.evidence.ledger import list_findings
+        for f in list_findings(ctx.case_dir, case_id=ctx.case_id):
+            if (f.confidence or "") == "insufficient":
+                continue
+            c = (f.claim or "").lower()
+            if any(tok in c for tok in _CLEARING_TOKENS):
+                return True
+        return False
+
+    def _recover_cleared_logs(self, ctx: AgentContext, raw_image: Path,
+                              sector_size: int, analysis: Path) -> list[Finding]:
+        """Recover a cleared Windows event log from the newest pre-clearing
+        shadow copy. The cleared live log is a fresh, smaller, valid EVTX; a
+        shadow copy taken before the clearing still holds the full log. We read
+        the live log's inode+size from disk_forensicator's bodyfile, then walk
+        the shadow copies (newest first) sizing the SAME inode via istat — and
+        recover the latest copy that is substantially larger (the pre-clearing
+        log)."""
+        from el.skills import vss_diff
+        out: list[Finding] = []
+        df_dir = ctx.case_dir / "analysis" / "disk_forensicator"
+        bodies: dict[int, str] = {}
+        for b in sorted(df_dir.glob("fls*.txt")):
+            try:
+                bodies[_offset_from_bodyfile_name(b.name)] = b.read_text(errors="replace")
+            except OSError:
+                continue
+        if not bodies:
+            return out
+        recovery_dir = ctx.case_dir / "exports" / "recovery" / "artifact_recovery"
+        recovery_dir.mkdir(parents=True, exist_ok=True)
+        work = analysis / "vss_work_logs"
+        vss_root = Path("/tmp/el-mounts") / f"{ctx.case_id}-artrec-clrlog"
+
+        for offset_sectors, text in bodies.items():
+            targets = []
+            for suffix in CLEARED_LOG_TARGETS:
+                ent = find_log_entry(text, suffix)
+                if ent:
+                    targets.append((suffix, *ent))   # (suffix, relpath, inode, live_size)
+            if not targets:
+                continue
+            try:
+                vol = vss_diff.vss_open(
+                    raw_image, work, offset_bytes=offset_sectors * sector_size)
+            except vss_diff.VssError as e:
+                out.append(self.emit(ctx, Finding(
+                    case_id=ctx.case_id, agent=self.name, confidence="insufficient",
+                    claim=f"Cleared-log recovery unavailable (VSS): {e}")))
+                continue
+            try:
+                if not vol.snapshots:
+                    out.append(self.emit(ctx, Finding(
+                        case_id=ctx.case_id, agent=self.name, confidence="insufficient",
+                        claim=("Event log(s) were cleared but no Volume Shadow "
+                               "Copies survive to recover a pre-clearing copy."))))
+                    continue
+                try:
+                    vss_diff.vshadowmount(vol.device, vss_root, offset_bytes=0,
+                                          timeout=60)
+                except vss_diff.VssError as e:
+                    out.append(self.emit(ctx, Finding(
+                        case_id=ctx.case_id, agent=self.name, confidence="insufficient",
+                        claim=f"Cleared-log recovery: vshadowmount failed: {e}")))
+                    continue
+                for suffix, relpath, live_inode, live_size in targets:
+                    out.extend(self._recover_one_cleared_log(
+                        ctx, vss_root, vol.snapshots, suffix, relpath,
+                        live_inode, live_size, recovery_dir))
+            finally:
+                vss_diff.fusermount_unmount(vss_root)
+                vss_diff.vss_close(vol)
+        return out
+
+    def _recover_one_cleared_log(self, ctx, vss_root, snapshots, suffix,
+                                 relpath, live_inode, live_size, recovery_dir):
+        out: list[Finding] = []
+        basename = relpath.replace("\\", "/").rstrip("/").split("/")[-1]
+        sizes: list[tuple[int, int]] = []   # (snapshot_number, log_size)
+        # The system-file inode is stable across snapshots, so size it via istat
+        # on the same inode (fast) — no full fls walk per snapshot.
+        for snap in sorted(snapshots, key=lambda s: s.number, reverse=True):
+            dev = vss_root / f"vss{snap.number}"
+            if not dev.exists():
+                continue
+            try:
+                run = sk.istat(dev, live_inode, recovery_dir.parent,
+                               label=f"istat_snap{snap.number}_{basename}")
+            except sk.SleuthkitError:
+                continue
+            rec = wipe_detect.parse_istat(run.stdout_path.read_text(errors="replace"))
+            if rec.data_size:
+                sizes.append((snap.number, rec.data_size))
+
+        pick = select_pre_clearing(live_size, sizes)
+        if pick is None:
+            out.append(self.emit(ctx, Finding(
+                case_id=ctx.case_id, agent=self.name, confidence="insufficient",
+                claim=(f"`{relpath}` was cleared (live {live_size} bytes) but no "
+                       f"shadow copy holds a substantially larger pre-clearing "
+                       f"copy ({len(sizes)} snapshot(s) checked) — clearing "
+                       f"predates the shadow set, or the log genuinely grew."))))
+            return out
+
+        snap = next(s for s in snapshots if s.number == pick)
+        dest = recovery_dir / f"snap{pick}_{basename}"
+        try:
+            n = sk.icat_extract(vss_root / f"vss{pick}", live_inode, dest)
+        except sk.SleuthkitError as e:
+            return [self.emit(ctx, Finding(
+                case_id=ctx.case_id, agent=self.name, confidence="insufficient",
+                claim=f"Cleared-log recovery: icat failed for `{relpath}`: {e}"))]
+        head = dest.read_bytes()[:8] if dest.is_file() else b""
+        if head[:7] != b"ElfFile":   # EVTX magic — guards against inode reuse
+            return [self.emit(ctx, Finding(
+                case_id=ctx.case_id, agent=self.name, confidence="insufficient",
+                claim=(f"Cleared-log recovery: snapshot #{pick} copy of "
+                       f"`{relpath}` failed EVTX header validation.")))]
+        sha = hashlib.sha256(dest.read_bytes()).hexdigest()
+        out.append(self.emit(ctx, Finding(
+            case_id=ctx.case_id, agent=self.name, confidence="high",
+            claim=(f"RECOVERED cleared event log `{relpath}` from VSS snapshot "
+                   f"#{pick} ({snap.creation_utc}) — pre-clearing copy {n} bytes "
+                   f"vs cleared live {live_size} bytes (+{n - live_size}). "
+                   f"EVTX-validated; written to {dest}. sha256={sha}. Parse with "
+                   f"EvtxECmd to recover the destroyed records."),
+            evidence=[wipe_detect.EvidenceItem(
+                tool="libvshadow+sleuthkit", version="vss_open+icat",
+                command=(f"vss_open | vshadowmount | istat/icat vss{pick} "
+                         f"{live_inode}"),
+                output_sha256=sha, output_path=str(dest),
+                extracted_facts={"snapshot": pick, "snapshot_utc": snap.creation_utc,
+                                 "recovered_bytes": n, "cleared_live_bytes": live_size,
+                                 "relpath": relpath})],
+            hypotheses_supported=["H_ANTI_FORENSICS", "H_LOG_CLEARED"])))
+        return out
+
 
 __all__ = [
     "ArtifactRecoveryAgent",
@@ -399,4 +604,7 @@ __all__ = [
     "parse_bodyfile_targets",
     "expected_magic",
     "header_matches",
+    "CLEARED_LOG_TARGETS",
+    "find_log_entry",
+    "select_pre_clearing",
 ]

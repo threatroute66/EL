@@ -85,6 +85,20 @@ def test_triggers_present_ignores_non_disk_findings():
     assert _triggers_present(fs) == []
 
 
+def test_triggers_present_accepts_lateral_movement_cleared_log():
+    """Regression for the SRL-2018 bug: the EID-1102 'security_log_cleared'
+    signal is emitted by lateral_movement_analyst (it parses the event logs),
+    not disk_forensicator. The trigger gate must accept it, or cleared-log
+    recovery never starts."""
+    fs = [
+        Finding(case_id="c", agent="lateral_movement_analyst",
+                claim="Lateral movement [anti_forensic/security_log_cleared] "
+                      "Security audit log CLEARED (EID 1102) x1.",
+                confidence="high", evidence=[_ev()]),
+    ]
+    assert len(_triggers_present(fs)) == 1
+
+
 def test_triggers_present_ignores_insufficient():
     fs = [
         Finding(case_id="c", agent="disk_forensicator",

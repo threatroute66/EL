@@ -38,9 +38,14 @@ from el.evidence.ledger import list_findings
 from el.schemas.finding import Finding
 
 
-# Substring tokens we look for in disk_forensicator claim text. Match
-# against the lowercased claim — these are the canonical detector
-# pattern_id strings emitted by el.skills.disk_anomaly.
+# Substring tokens we look for in detector claim text. Match against the
+# lowercased claim — these are canonical detector pattern_id strings. Most
+# come from el.skills.disk_anomaly (via disk_forensicator), but the
+# EID-1102 "security_log_cleared" signal is emitted by lateral_movement_analyst
+# (it parses the Windows event logs), so the producer set below must include
+# both — otherwise a cleared-log case never triggers recovery (the exact bug
+# the SRL-2018 run hit: clearing detected by lateral_movement_analyst, but the
+# trigger gate only accepted disk_forensicator → RecoveryAgent silently no-op'd).
 _TRIGGERS = (
     "macb_timestomp_skew",
     "system_binary_zero_size",
@@ -48,6 +53,9 @@ _TRIGGERS = (
     "security_log_cleared",
     "vssadmin_delete_shadows",
 )
+
+# Agents whose findings are trusted to carry the anti-forensic trigger tokens.
+_TRIGGER_AGENTS = ("disk_forensicator", "lateral_movement_analyst")
 
 
 # Curated bulk_extractor scanner set. The default-on set blows up
@@ -93,7 +101,7 @@ def _triggers_present(findings: list[Finding]) -> list[Finding]:
     the trigger pattern tokens. These become the corroboration anchors."""
     hits: list[Finding] = []
     for f in findings:
-        if (f.agent or "") != "disk_forensicator":
+        if (f.agent or "") not in _TRIGGER_AGENTS:
             continue
         if f.confidence == "insufficient":
             continue
