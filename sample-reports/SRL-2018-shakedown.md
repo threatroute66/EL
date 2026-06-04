@@ -479,11 +479,11 @@ PID**. Carving around both offsets did **not** recover the proxy's config (liste
 port / upstream C2) — the only nearby external string on the DC was an *adjacent*
 Defender-signature artifact for a commodity downloader (`158.69.133.17:8220`,
 `Flafisi`), which is therefore **not** added as an intrusion IOC. See
-`cases/srl-2018-apt/analysis/attribution.md`.
+`srl-2018/attribution.md`.
 
 ## Analyst notes on disk
 
-`cases/srl-2018-apt/analysis/pivot_map.md` (host→IP map, pivot edges, patient-zero
+`srl-2018/pivot_map.md` (host→IP map, pivot edges, patient-zero
 trace, cleared-log recovery), `…/perimeter_from_memory.md` (VPN/firewall software
 inventory + VPN ingress + account mapping), and `…/attribution.md` (HIDDEN COBRA
 YARA hits) carry the full working with reproducible commands.
