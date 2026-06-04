@@ -35,6 +35,11 @@ CHALLENGER_MODEL = os.environ.get("EL_RED_MODEL", "claude-opus-4-7")
 # lands on the next `el report`. The always-on rule challenger still runs
 # now so the pipeline never blocks waiting on the deferred verdicts.
 RED_REVIEW_DEFER_ENV = "EL_RED_REVIEW_DEFER"
+# Distinct from the defer env: the defer flag means "hand off to an
+# out-of-band responder via a request file"; this opts a non-detached
+# headless context (cron/CI) into in-process `claude -p` self-fulfilment.
+# A detached run (EL_DETACHED=1) triggers headless without needing this.
+RED_REVIEW_HEADLESS_ENV = "EL_RED_REVIEW_HEADLESS"
 _REQUEST_FILENAME = "_red_review_request.json"
 _VERDICTS_FILENAME = "_red_review_verdicts.json"
 _APPLIED_FILENAME = "_red_review_applied.json"
@@ -121,12 +126,21 @@ def _llm_challenge(reviewable: list[Finding],
                 findings_reviewed=len(reviewable),
             )
         text = "".join(b.text for b in msg.content if getattr(b, "type", "") == "text")
+    except Exception:
+        return None
+    return _parse_review_array(text)
+
+
+def _parse_review_array(text: str) -> dict[str, _ChallengeResult] | None:
+    """Parse the challenger's JSON verdict array into per-finding results.
+    Shared by the SDK path and the headless `claude -p` path. Returns None
+    on any parse failure so the caller degrades to rule-only."""
+    try:
         start = text.index("[")
         end = text.rindex("]") + 1
         reviews = json.loads(text[start:end])
-    except Exception:
+    except (ValueError, json.JSONDecodeError):
         return None
-
     out: dict[str, _ChallengeResult] = {}
     for r in reviews:
         fid = r.get("finding_id")
@@ -138,6 +152,36 @@ def _llm_challenge(reviewable: list[Finding],
             checklist=list(r.get("disconfirming_checklist", [])),
         )
     return out
+
+
+def _llm_challenge_headless(reviewable: list[Finding], audit=None
+                            ) -> dict[str, _ChallengeResult] | None:
+    """Run the LLM challenger headlessly via `claude -p` — no API key, no
+    live session. Used by a detached/background run so its adversarial
+    review is as strong as an attached run's. Returns None on any failure
+    so the caller falls back to the request-file deferral."""
+    prompt = (
+        SYSTEM
+        + "\n\n--- FINDINGS TO CHALLENGE (JSON) ---\n"
+        + json.dumps(_review_payload(reviewable))
+        + "\n\nRespond with ONLY the JSON array of verdicts described "
+          "above — no prose, no code fence."
+    )
+    text, usage = _llm_defer.run_headless_claude(prompt, CHALLENGER_MODEL)
+    if text is None:
+        return None
+    results = _parse_review_array(text)
+    if results is None:
+        return None
+    if audit is not None:
+        audit.info(
+            "llm_call", component="red_reviewer", model=CHALLENGER_MODEL,
+            transport="claude_cli_headless",
+            input_tokens=usage.get("input_tokens"),
+            output_tokens=usage.get("output_tokens"),
+            findings_reviewed=len(reviewable),
+        )
+    return results
 
 
 def _review_cache_key(case_id: str, reviewable: list[Finding]) -> str:
@@ -298,11 +342,22 @@ class RedReviewerAgent(Agent):
         api_key = os.environ.get("ANTHROPIC_API_KEY")
         llm_results = _llm_challenge(reviewable, audit=audit) if api_key else None
 
-        # No API key, but a Claude model IS available (we're inside a Claude
-        # Code session, or the operator opted in): defer the LLM challenger
-        # to the el-red-review skill instead of silently skipping it. The
-        # rule challenger below still runs now so the pipeline proceeds; the
-        # deferred verdicts merge on the next `el report`.
+        # No API key, but a Claude model IS available. Two transports:
+        #   * Detached/background run (no live assistant): self-fulfil the
+        #     LLM challenge in-process via headless `claude -p`, so a
+        #     detached run's adversarial review is as strong as an attached
+        #     one's — no orphaned request file.
+        #   * Attached Claude Code session: defer to the el-red-review skill
+        #     (the orchestrating assistant fulfils it without a nested
+        #     headless process); deferred verdicts merge on the next report.
+        # Either way the rule challenger below still runs now so the
+        # pipeline proceeds regardless.
+        headless = False
+        if (llm_results is None and not api_key
+                and _llm_defer.should_use_headless_cli(RED_REVIEW_HEADLESS_ENV)):
+            llm_results = _llm_challenge_headless(reviewable, audit=audit)
+            headless = llm_results is not None
+
         deferred = False
         if (llm_results is None and not api_key
                 and _llm_defer.claude_code_path_enabled(RED_REVIEW_DEFER_ENV)):
@@ -333,7 +388,7 @@ class RedReviewerAgent(Agent):
                 unresolved += 1
 
         if llm_results is not None:
-            mode = "rule+llm"
+            mode = "rule+llm-headless" if headless else "rule+llm"
         elif deferred:
             mode = "rule+deferred-llm"
         else:

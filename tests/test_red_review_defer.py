@@ -152,3 +152,87 @@ def test_apply_noop_without_verdicts(tmp_path, monkeypatch):
     case_dir = _mk_case(tmp_path, monkeypatch, case_id="rr-empty-t")
     res = apply_deferred_red_review(case_dir, "rr-empty-t")
     assert res["applied"] == 0 and res["reason"] == "no_verdicts"
+
+
+# ---------------------------------------------------------------------------
+# Headless self-fulfilment — a detached run runs the LLM challenger in-process
+# via `claude -p` instead of orphaning a request file.
+# ---------------------------------------------------------------------------
+
+def _stub_headless(monkeypatch, verdicts):
+    """Stub el.llm_defer's headless backend to return `verdicts` (a list of
+    per-finding verdict dicts) wrapped in the `claude -p --output-format json`
+    envelope. Returns the recorded calls list."""
+    from el import llm_defer as ld
+    calls = []
+    envelope = json.dumps({"is_error": False,
+                           "result": json.dumps(verdicts),
+                           "usage": {"input_tokens": 50, "output_tokens": 20}})
+
+    class _Proc:
+        returncode = 0
+        stdout = envelope
+        stderr = ""
+
+    def _fake(argv, input=None, **kw):
+        calls.append({"argv": argv, "input": input})
+        return _Proc()
+
+    monkeypatch.setattr(ld, "headless_cli_path", lambda: "/fake/bin/claude")
+    monkeypatch.setattr(ld.subprocess, "run", _fake)
+    return calls
+
+
+def test_detached_run_self_fulfils_red_review_headless(tmp_path, monkeypatch):
+    case_dir = _mk_case(tmp_path, monkeypatch, case_id="rr-headless-t")
+    f = _seed_reviewable(case_dir, "rr-headless-t")
+    _no_key(monkeypatch)
+    monkeypatch.setenv("EL_DETACHED", "1")
+    monkeypatch.setenv("CLAUDECODE", "1")   # rides along in the unit env
+    calls = _stub_headless(monkeypatch, [{
+        "finding_id": f.finding_id,
+        "status": "challenged",
+        "challenger_notes": "Temp-dir executables are common for installers.",
+        "disconfirming_checklist": ["Check digital signature", "Check parent process"],
+    }])
+
+    ctx = AgentContext(case_id="rr-headless-t", case_dir=case_dir,
+                       input_path=case_dir, manifest={})
+    out = RedReviewerAgent().run(ctx)
+
+    # LLM challenger ran in-process — mode reflects the headless transport
+    assert out and "rule+llm-headless" in out[0].claim
+    # No orphaned request file (self-fulfilled, not deferred)
+    assert not (case_dir / "reports" / _REQUEST_FILENAME).exists()
+    # The headless CLI was actually invoked
+    assert len(calls) == 1
+    # The LLM verdict merged into the finding's red_review
+    reviewed = [x for x in list_findings(case_dir, case_id="rr-headless-t")
+                if x.agent == "disk_forensicator"][0]
+    assert reviewed.red_review.status in ("challenged", "unresolved")
+
+
+def test_headless_failure_falls_back_to_red_review_request(tmp_path, monkeypatch):
+    """If the headless challenger fails, the run falls back to the
+    request-file deferral — the LLM review is transported, never skipped."""
+    from el import llm_defer as ld
+    case_dir = _mk_case(tmp_path, monkeypatch, case_id="rr-hfail-t")
+    _seed_reviewable(case_dir, "rr-hfail-t")
+    _no_key(monkeypatch)
+    monkeypatch.setenv("EL_DETACHED", "1")
+    monkeypatch.setenv("CLAUDECODE", "1")
+
+    class _Proc:
+        returncode = 1
+        stdout = ""
+        stderr = "boom"
+
+    monkeypatch.setattr(ld, "headless_cli_path", lambda: "/fake/bin/claude")
+    monkeypatch.setattr(ld.subprocess, "run", lambda *a, **k: _Proc())
+
+    ctx = AgentContext(case_id="rr-hfail-t", case_dir=case_dir,
+                       input_path=case_dir, manifest={})
+    out = RedReviewerAgent().run(ctx)
+
+    assert out and "deferred-llm" in out[0].claim
+    assert (case_dir / "reports" / _REQUEST_FILENAME).is_file()
