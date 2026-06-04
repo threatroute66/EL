@@ -1,7 +1,20 @@
 # SRL-2018 Hackathon Shakedown — Writeup
 
 _EL run against the Stark Research Labs "Compromised Enterprise Network"
-2018 hackathon dataset (SANS SRL-2018). Written 2026-04-21._
+2018 hackathon dataset (SANS SRL-2018). Started 2026-04-21; latest chapter
+2026-06-04._
+
+> **Reading guide.** This is a living document with two eras:
+> 1. **2026-04-21 / 04-27 (immediately below)** — the original
+>    *detector-calibration* shakedown: per-host ACH leaders, the PRs each
+>    evidence gap forced, and combined-report stitching. Read this for how
+>    EL's detectors matured.
+> 2. **2026-06-03/04** — the first *forensic* pass: the whole enterprise as
+>    ONE `investigate-bundle`, yielding the actual attack narrative
+>    (ingress → pivot → impact), recovery of cleared logs from VSS, and the
+>    perimeter/VPN ingress reconstruction. Read that chapter for *what
+>    happened*. Where the two disagree, the June chapter is authoritative
+>    (richer cross-host correlation + new recovery capabilities).
 
 ## Summary
 
@@ -282,3 +295,171 @@ disk hosts.
 - Commits on `origin/main`: PR-B through PR-G, AGPL, README,
   shakedown writeup (this file), and the 2026-04-27 sweep
   (`de3a6fd` → `e193134`).
+
+---
+
+# 2026-06-03/04 — full single-bundle investigation + ingress reconstruction
+
+The 2026-04 work proved EL's *detectors* on this dataset host-by-host. This
+chapter is the first time the dataset was run as a **single multi-host case** and
+worked as a *forensic* investigation — recovering the attack story end to end,
+including evidence the attacker destroyed.
+
+## Run shape
+
+```
+el investigate-bundle srl-2018-apt \
+  -d dc-disk:… -d file-disk:… -d rd01-disk:… -d rd02-disk:… \
+  -d wkstn01-disk:… -d wkstn05-disk:… -d ftp-disk:… \
+  -d <21 memory devices …>            # 28 devices, ~195 GiB
+```
+
+- **28 devices** (7 disk E01 + 21 memory), auto-detached `systemd --user` unit.
+- **~6.3 h wall / 6h11m CPU, 23 GB peak RAM**, all devices completed.
+- **4,965 findings** (high=907, medium=533, low=3,329, insufficient=196).
+- **Leading hypothesis: H_APT_ESPIONAGE (score 1016)**, runner-up
+  H_LATERAL_MOVEMENT (393) — consistent with the per-host 04-21/04-27 verdicts,
+  now summed across the union with cross-host correlation.
+
+## Detected ATT&CK chain
+
+Initial Access `T1566.001` (**later refuted — see Patient zero**) → Execution
+`T1053.005`/`T1059.001`/`T1059.003` → Persistence `T1543.003` → Priv-Esc
+`T1055`/`T1055.012` → Defense Evasion `T1070.001`/`T1218`/`T1218.011` →
+Credential Access `T1003`/`T1003.001` → Lateral Movement `T1021.002` → C2
+`T1071`/`T1571`.
+
+## Host → IP map (recovered from memory netscan local addresses)
+
+| Subnet | Hosts |
+|---|---|
+| `172.16.5.x` (IT/security mgmt) | **admin .26** (attacker jump host + network-mgmt box) · hunt .25 · av .20 · elf .21 |
+| `172.16.4.x` (servers) | file .5 · mail .6 · sp(SharePoint) .7 · **.10 = internal C2 hub `:8080`** (unimaged) |
+| `172.16.6.x` | rd01–rd06 = .11–.16 |
+| `172.16.7.x` | wkstn-01–06 = .11–.16 |
+| `172.16.10.x` (DMZ) | FTP .12 · DNS .11 · SMTP relay .10 |
+| `192.168.30.0/24` | **SoftEther VPN client pool** (gw .1; .10 = foothold, .21 = dominant client) |
+
+(Resolves the 04-21 doc's open item — `sp` = `172.16.4.7`; the `:22233` it noted
+is SharePoint's own high port.)
+
+## Pivot sequence (time-ordered, from inbound-RDP/PSRemoting source IPs)
+
+1. **2018-04-20→25** — earliest attacker footprints (service installs on DC,
+   file, FTP). Entry already achieved; pre-this evidence destroyed (below).
+2. **2018-05-23/24** — **admin (172.16.5.26)** RDP → **DC**, **file server**
+   (first interactive compromise: `Administrator` then `rsydow-a`).
+3. **2018-06-25** — admin → **DMZ FTP**.
+4. **2018-06-27 / 07-02** — VPN client **192.168.30.10** RDP → **wkstn-05 / -01**.
+5. **2018-08-15+** — mass **PowerShell-Remoting** wave across servers/workstations.
+6. **2018-08-31** — **PowerSploit** C2; estate-wide beacon to **172.16.4.10:8080**
+   (incl. the security team's own `hunt` box).
+7. **2018-09-06/07** — **Security event logs CLEARED** on multiple hosts.
+
+Attacker operated with **stolen IT-admin accounts** (`rsydow-a`, `cbarton-a`,
+built-in `Administrator`); credential-dumping tooling (`PWDumpX`, `PsExec`)
+staged under `C:\Windows\Temp\perfmon\` on the FTP host.
+
+## Patient zero — phishing REFUTED; ingress was the VPN
+
+The 04-21 chain auto-mapped `T1566.001` (phishing) from a spoofed-From finding.
+Deeper analysis refutes it:
+- The flagged "phishing" is **pharmaceutical spam** (spoofed display name, no
+  attachment). No malicious mail attachment or **Office-macro detonation** exists
+  on any of the 28 hosts.
+- **Servers were compromised before workstations** (DC/file/FTP 04-20→25;
+  workstations 05-07→08) — the reverse of a phishing pattern.
+- The internal credential brute-force against the FTP came **entirely from
+  already-compromised internal hosts** (file, admin, wkstn-05, hunt) — lateral,
+  not ingress.
+
+**The real ingress is the VPN** (next two sections).
+
+## Recovering the cleared logs (built + shipped this session)
+
+The attacker cleared `Security.evtx`; EL detected it (VSS-diff: "live FS smaller
+than shadow, Δ=16/146 MB") but had no auto-recovery. Fixed this session
+(commit `9fe7d44`): a cleared-log signal now triggers targeted VSS recovery.
+
+- **File server:** recovered `Security.evtx` from a pre-clearing shadow
+  (`vss_open` → newest pre-clearing snapshot → `icat` → EVTX-validated):
+  **~21 MB / 32,053 records spanning 2018-03-14 → 09-05** vs the cleared **2.1 MB**
+  live log. First file-server interactive compromise (was destroyed, now
+  recovered): **2018-05-23 23:44, `Administrator` via RDP from 172.16.5.26**.
+- **DC:** shadow copies exist (Aug 25 → Sep 7) but the DC's Security log rotates
+  ~every 1.5 days (high volume), so its April–July auth records are gone
+  everywhere. Recovered window confirms clean stolen-cred domain-admin access
+  (`rsydow-a` from the jump host, **zero 4625** = no brute force).
+
+New capabilities behind this (committed + tested): `vss_open` (backup-VBR overlay
+so libvshadow opens truncated/partition-short E01s — `0af98a7`), `wipe_detect`
+(MFT in-place-wipe detector — `0af98a7`), `ArtifactRecoveryAgent` (VSS-first
+recovery of wiped artifacts — `a70456a`), and the cleared-log recovery + trigger
+fix (`9fe7d44`).
+
+## Perimeter / VPN reconstructed from host memory
+
+`admin` (172.16.5.26) is the network-management host; its RAM captured a live SSH
+session by `rsydow-a` into **`base-fw`** — the Linux perimeter firewall/VPN
+gateway (NOT imaged), exposing its config + logs:
+- **SoftEther VPN** server (`/opt/vpnserver/`, SSTP, "SRL Remote Access VPN" HUB,
+  SecureNAT DHCP), **iptables**, **Squid proxy** (`base-proxy`), **NetFlow**
+  (`nfcapd`), a **Security Onion / Snort IDS** (`site-onion-sensor1`), and
+  **Splunk** forwarding to external `155.6.3.6:9997`.
+- `hunt` (172.16.5.25) runs **FreeRADIUS** (VPN AAA) + holds Panorama /
+  SmartConsole / AnyConnect / GlobalProtect.
+- DMZ FTP (`172.16.10.12`) under constant external attack on 09-06 — incl. a Tor
+  exit (`185.100.87.245`) and masscan-signature scanners.
+
+## VPN client → real external IP + account (the ingress origin)
+
+`admin` RAM held `rsydow-a`'s `grep 192.168.30.10/.21 vpn_2018081X.log` output —
+the SoftEther session lines. SoftEther names each session `SID-<USERNAME>-[SSTP]-n`,
+so the same scrollback gives the **account** alongside the real source IP:
+
+| VPN account | Pool IP | Real external IP | Provider | Date |
+|---|---|---|---|---|
+| **MHILL** | **192.168.30.10** (workstation-RDP foothold) | **45.56.154.163 / 45.56.154.8** | **Linode VPS** (attacker infra) | 2018-08-05/06 |
+| TDUNGAN | 192.168.30.10 (foothold) | 173.76.103.142 | Verizon FiOS | 2018-08-02 |
+| RSYDOW (×12 sessions) | **192.168.30.21** | 166.170.51.64 / .44.25 / .47.120 | AT&T cellular | 2018-08-08→13 |
+
+The decisive line: SecureNAT DHCP `192.168.30.10 ← 45.56.154.163`, allocated to
+`SID-MHILL-[SSTP]-134`. **Maria Hill's corporate VPN credential, used from a
+Linode VPS to obtain the foothold IP, is the clearest attacker-infrastructure
+indicator.** `RSYDOW` is the IT admin (the same `rsydow-a` whose creds drove the
+internal lateral movement); his cellular sessions look like legitimate remote
+admin, but the account was also abused internally. `TDUNGAN` (Verizon) on the
+same foothold IP is ambiguous.
+
+End-to-end: **`mhill`/`tdungan` VPN creds → SoftEther VPN (from Linode
+`45.56.154.x`) → internal `192.168.30.10` → RDP → stolen admin creds (`rsydow-a`,
+`cbarton-a`) → jump host `172.16.5.26` → DC / file / FTP.**
+
+_Honest limits:_ these sessions are 2018-08-02→13 (the days `rsydow-a` grepped);
+the *first* `192.168.30.10` session (workstation RDP began 06-27) is not in the
+captured scrollback — it lives in `base-fw`'s full `vpn_2018*.log`. The usernames
+came from SoftEther session IDs in `admin` RAM; `hunt`'s memory held only the
+FreeRADIUS *dictionary* files, not resident auth records.
+
+## New IOCs registered to the cross-case store
+
+**IPs** — `45.56.154.163`, `45.56.154.8`, `173.76.103.142`, `166.170.51.64`,
+`166.170.44.25`, `166.170.47.120` (VPN ingress) + `185.100.87.245` (Tor exit on
+FTP). All "no prior observations" (first sighting).
+
+**Compromised remote-access accounts** — `mhill@`, `tdungan@`,
+`rsydow@stark-research-labs.com` (the VPN credentials used to reach the foothold;
+`rsydow` also abused internally as `rsydow-a`).
+
+Both sets added to `cases/srl-2018-apt/iocs.json` and `record_iocs()`-registered
+to `~/.el/knowledge.sqlite` under `srl-2018-apt`. The account lookups surfaced
+**cross-case overlap** — `mhill@` recurs in the `rocba` case (same simulated SRL
+org) and `tdungan@` in the 2026-04 per-host run — exactly the Layer-3 signal the
+knowledge store exists to provide.
+
+## Analyst notes on disk
+
+`cases/srl-2018-apt/analysis/pivot_map.md` (host→IP map, pivot edges, patient-zero
+trace, cleared-log recovery) and `…/perimeter_from_memory.md` (VPN/firewall
+software inventory + the VPN ingress mapping) carry the full working with
+reproducible commands.
