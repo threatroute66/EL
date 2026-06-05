@@ -371,7 +371,10 @@ def test_cli_serve_install_service_writes_unit(tmp_path, monkeypatch):
     assert "ExecStart=" in content
     assert "--port 9090" in content
     assert "--bind 127.0.0.1" in content
-    assert "ReadOnlyPaths=/opt/EL/cases" in content
+    # '-' prefix: systemd skips the path if absent (fresh install with no
+    # cases dir yet) rather than refusing to start the unit (added in
+    # ccb1843; this assertion had lagged the template).
+    assert "ReadOnlyPaths=-/opt/EL/cases" in content
     assert "NoNewPrivileges=true" in content
     # systemctl daemon-reload + enable --now were called
     assert any("daemon-reload" in c for c in calls)
