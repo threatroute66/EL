@@ -44,6 +44,13 @@ def test_seal_archive_creates_tar_gz(tmp_path):
     assert m["archive_path"].endswith(".tar.gz")
     assert Path(m["archive_path"]).exists()
     assert m["archive_sha256"]
+    # The ON-DISK seal.json must also record the archive it produced
+    # (re-written after archiving) — chain-of-custody, not just the
+    # returned dict.
+    on_disk = json.loads((case / "seal.json").read_text())
+    assert on_disk["archive_path"] == m["archive_path"]
+    assert on_disk["archive_sha256"] == m["archive_sha256"]
+    assert on_disk["archive_size"] == m["archive_size"]
 
 
 def test_verify_seal_detects_drift(tmp_path):

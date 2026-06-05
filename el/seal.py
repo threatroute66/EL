@@ -129,6 +129,11 @@ def seal_case(case_dir: Path, case_id: str,
         "files": files,
     }
 
+    # Write seal.json now so the version captured INSIDE the archive is
+    # self-consistent (it can't reference its own archive). After archiving,
+    # we re-write it on disk with the archive path/sha256/size filled in so
+    # the on-disk manifest records exactly which archive it produced — a
+    # chain-of-custody fact the pre-archive copy structurally can't hold.
     seal_path = case_dir / SEAL_NAME
     seal_path.write_text(json.dumps(manifest, indent=2, sort_keys=True))
 
@@ -152,6 +157,9 @@ def seal_case(case_dir: Path, case_id: str,
             tar.add(case_dir, arcname=case_id, filter=_tar_filter)
         manifest["archive_path"] = str(archive_path)
         manifest["archive_sha256"], manifest["archive_size"] = _sha256(archive_path)
+        # Re-write the on-disk seal.json so it records the archive it
+        # produced (the copy inside the archive necessarily predates it).
+        seal_path.write_text(json.dumps(manifest, indent=2, sort_keys=True))
 
     return manifest
 
