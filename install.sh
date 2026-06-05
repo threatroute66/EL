@@ -356,8 +356,12 @@ install_uac() {
         # Download latest UAC release
         local uac_tarball="${temp_dir}/uac.tar.gz"
         if curl -L -o "$uac_tarball" "https://api.github.com/repos/tclahr/uac/tarball/v3.3.0"; then
-            cd "$temp_dir" && tar -xf "$uac_tarball" >/dev/null 2>&1
-            local extracted_dir=$(find . -maxdepth 1 -type d -name "tclahr-uac-*" | head -1)
+            # NB: no `cd` here — a bare `cd "$temp_dir"` followed by the
+            # `rm -rf "$temp_dir"` below deletes the script's own CWD, which
+            # broke every later getcwd() consumer (git clone, pip) on a
+            # fresh install. Use tar -C + absolute paths instead.
+            tar -xf "$uac_tarball" -C "$temp_dir" >/dev/null 2>&1
+            local extracted_dir=$(find "$temp_dir" -maxdepth 1 -type d -name "tclahr-uac-*" | head -1)
 
             if [[ -n "$extracted_dir" && -f "$extracted_dir/uac" ]]; then
                 sudo mv "$extracted_dir" "$uac_dir"
