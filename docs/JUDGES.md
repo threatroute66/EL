@@ -31,7 +31,7 @@ cd /opt/EL
 # 2. Health check — every tool EL needs, schema validates, Kùzu importable
 .venv/bin/el doctor
 
-# 3. Full test suite (2,258 tests, ~7 minutes wall-clock)
+# 3. Full test suite (3,255 tests, ~11 minutes wall-clock)
 make test
 
 # 4. Just the explicit bypass-attempt suite (~0.2 s)
@@ -80,7 +80,7 @@ xdg-open http://localhost:8089/m57-jean-judge/reports/executive.html
 
 **Expected verdict (locks against my own results — your run should reproduce these)**
 
-- **Leading hypothesis:** `H_BEC_ACCOUNT_TAKEOVER` score 57, gap `+42` over runner-up `H_ANTI_FORENSICS` 15. *(See the [M57-Jean row in the accuracy report](accuracy_report.md#m57-jean-nps--digitalcorpora--bec--pretexting-exfil) for the comparison vs two public human writeups. A later run captured in `capability-gap-analysis.md` records `gap +44 over H_INSIDER_EMAIL_EXFIL 13` after additional detection improvements — both numbers are post-fix; your run on current `main` should match one of them depending on the corpus state of `~/.el/knowledge.sqlite` at the time.)*
+- **Leading hypothesis:** `H_BEC_ACCOUNT_TAKEOVER`, currently score 51, gap `+38` over runner-up `H_INSIDER_EMAIL_EXFIL` 13 on `main`. *(See the [M57-Jean row in the accuracy report](accuracy_report.md#m57-jean-nps--digitalcorpora--bec--pretexting-exfil) for the comparison vs two public human writeups.)* **What to lock against is the *ranking + the canonical answer* (BEC/pretext leads, by a wide gap), not the exact score:** the ACH score drifts with the `~/.el/knowledge.sqlite` corpus state — rarity-bucketing demotes IOCs as more cases accrue (earlier runs scored 57). A fresh run should reproduce the leader and a large gap, ±a few points on the absolute number.
 - **Two inbound phishing findings** by `email_forensicator` — display-name (`Alison`) vs SMTP-address mismatch, plus two reply-chain precursor findings tying the inbound pretext emails to outbound "RE:" replies.
 - **Attachment named inline:** `1_m57biz.xls (291840 B)` in the narrative.
 - **Anti-forensics signal:** 15 zero-size + 15 zero-timestamp Windows system binaries + 15 MACB-timestomp-skew findings (mass-wiped `auditusr.exe`, `pdh.dll`, `ciadmin.dll`, …).
@@ -128,7 +128,7 @@ If the sha256 of step 4 doesn't match step 3, EL has produced a hallucinated cla
 |---|---|
 | **Autonomous Execution Quality** — does the agent reason about next steps, handle failures, self-correct in real time? | [README § Self-correction](../README.md#self-correction) names seven within-run primitives with the case that surfaced each. [accuracy_report.md § Self-correction sequences](accuracy_report.md#self-correction-sequences-during-real-case-work) walks four end-to-end loops where insufficient-finding → code fix → test-locked. The M57 run above demonstrates the mmls→fls fallback and `EvidenceTimeKey` extension paths in action. |
 | **IR Accuracy** — findings correct, hallucinations flagged, confirmed vs inferred distinguished | Per-finding `confidence` field (`high`/`medium`/`low`/`insufficient`); `insufficient` is a first-class output meaning EL couldn't extract, NOT that nothing happened. M57-Jean leading hypothesis is the canonical scenario answer where [two public human writeups missed](accuracy_report.md#m57-jean-nps--digitalcorpora--bec--pretexting-exfil). 90+ FP regression tests in `tests/test_ioc_*.py` + `test_*_fp_*.py`. |
-| **Breadth and Depth** — how much case data, depth on fewer beats shallow on many | [README § Architecture](../README.md#architecture) lists 29 specialist agents covering Windows + Linux + macOS + iOS + Android disk + memory, plus network (pcap/Zeek/Suricata), cloud (AWS/Azure/M365/GCP), email (PST/OST/MBOX), browser (Hindsight). [accuracy_report.md § Validated real-case results](accuracy_report.md#validated-real-case-results) lists every corpus EL has been exercised on end-to-end (M57-Jean, GMU LoneWolf, nromanoff/Lone Wolf, SRL-2018 36-case sweep, BelkaCTF mobile + macOS + Linux, ~2000 malware-traffic pcaps). |
+| **Breadth and Depth** — how much case data, depth on fewer beats shallow on many | [README § Architecture](../README.md#architecture) lists 34 specialist agents covering Windows + Linux + macOS + iOS + Android disk + memory, plus network (pcap/Zeek/Suricata), cloud (AWS/Azure/M365/GCP), email (PST/OST/MBOX), browser (Hindsight), and multi-host bundles (`investigate-bundle` → per-host + cross-host combined dashboard). [accuracy_report.md § Validated real-case results](accuracy_report.md#validated-real-case-results) lists every corpus EL has been exercised on end-to-end (M57-Jean, GMU LoneWolf, nromanoff/Lone Wolf, SRL-2018 36-case sweep, BelkaCTF mobile + macOS + Linux, ~2000 malware-traffic pcaps). |
 | **Constraint Implementation** — architectural vs prompt-based, tested for bypass | `tests/test_security_boundaries.py` — 36 named bypass-attempt tests across 7 architectural boundaries (Pydantic schema, state-machine transitions, ACH exclusion, read-only-evidence chmod-strip, summary length cap, default red_review status, Confidence Literal type). Each test is named after the bypass attempt; if any starts passing the wrong direction the boundary regressed. LLM is advisory-only — [README § The contract](../README.md#the-contract) + [accuracy_report.md § Hallucination posture](accuracy_report.md#hallucination-posture--why-el-cannot-invent-a-claim). |
 | **Audit Trail Quality** — can a finding be traced back to the specific tool execution? | The sha256 round-trip above. Every Finding has `evidence[].output_sha256` + `evidence[].output_path` + `evidence[].command`. The case's `reports/traceability_matrix.md` is a single Markdown table of every (finding_id → command → output → sha256) row. `reports/execution_log.jsonl` carries timestamps + agent attribution per tool invocation. Sealed archive at `cases/_archives/<case>-<TS>.tar.gz` has a merkle root over the whole case dir; `el seal-verify <case>` re-hashes to confirm no drift. |
 | **Usability and Documentation** — can another practitioner deploy and build on this? | `install.sh` is idempotent, runs on a fresh SIFT, ships under 30 minutes including dependency installation. `el doctor` reports every tool's presence + version + path so missing optional tools are visible. Per-case `CLAUDE.md` briefing is auto-generated at intake. [README § Install](../README.md#install) has the host-requirements table; [README § Usage](../README.md#usage) has every CLI invocation. The [capability-gap-analysis.md](capability-gap-analysis.md) is a working roadmap, not a marketing doc — items are explicitly tracked as shipped / partial / not-yet. |
@@ -148,14 +148,14 @@ If the sha256 of step 4 doesn't match step 3, EL has produced a hallucinated cla
 ```
 /opt/EL/
 ├── el/
-│   ├── agents/             29 specialist agents — one per evidence kind
+│   ├── agents/             34 specialist agents — one per evidence kind
 │   ├── skills/             Subprocess wrappers around vetted CLI tools
 │   ├── orchestrator/       Coordinator state machine
-│   ├── intel/              Hypotheses (25+), ACH engine, MITRE map
+│   ├── intel/              Hypotheses (33), ACH engine, MITRE map
 │   ├── schemas/            Pydantic Finding contract (the enforcement)
 │   ├── reporting/          report.md + case.html + executive HTML/PDF + STIX
 │   └── cli.py              `el` typer entrypoint
-├── tests/                  2,258 tests — run via `make test` (~7 min)
+├── tests/                  3,255 tests — run via `make test` (~11 min)
 │   ├── test_security_boundaries.py     Find Evil bypass-test artifact
 │   ├── test_finding_contract.py        Pydantic schema enforcement
 │   └── test_ioc_*.py / test_*_fp_*.py  90+ false-positive regression locks

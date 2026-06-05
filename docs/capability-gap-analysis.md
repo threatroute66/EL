@@ -364,7 +364,8 @@ rows as evidence lands and a case completes end-to-end._
 | FileVault (CoreStorage legacy) | **not supported** | Pre-APFS macOS 10.12 images |
 | btrfs / xfs / zfs | **not supported** — extractor assumes ext* | Fedora / openSUSE / Proxmox disk images |
 | exFAT | untested — fls may be limited | SD-card / external-drive images |
-| ~~E01 multi-part (`.E01 .E02 .E03`)~~ ✅ | Validated end-to-end on the M57-Jean image (`nps-2008-jean.E01 + .E02`, 3 GB split across two parts). `libewf` transparently presents the multi-part set as a single ewf1 stream. `m57-jean-r7` completed final_state=done with H_BEC_ACCOUNT_TAKEOVER score 57. | — |
+| ~~E01 multi-part (`.E01 .E02 .E03`)~~ ✅ | Validated end-to-end on the M57-Jean image (`nps-2008-jean.E01 + .E02`, 3 GB split across two parts). `libewf` transparently presents the multi-part set as a single ewf1 stream. `m57-jean-r7` completed final_state=done with H_BEC_ACCOUNT_TAKEOVER score 57 (51 on current `main` — corpus-dependent; ranking stable). | — |
+| ~~Split-raw (`.001 .002 …` dd / FTK Imager)~~ ✅ | TSK spans segments natively, but the kernel/ntfs-3g mount + `bulk_extractor` only see the first segment — so `disk_forensicator` bridges all segments into one stream via `affuse` (`sk.is_split_raw` → `affuse_mount`) before the walk, restoring NTFS artifact extraction (→ full windows_artifact chain + graph population) and full-disk carving. Validated on the 3-host 2019 Narcos corpus (30 GB ÷ 21 segments per host): per-host graphs 0 → ~177 nodes, leader score 36 → 79. `el doctor` probes `affuse`. | 2019 Narcos (digitalcorpora) |
 | L01 logical evidence container | untested — `LVF` magic recognised but no reader path | EnCase logical exports |
 | AFF4 | **not supported** | Volatility project example datasets |
 | Ex01 (EWF v2) | untested — magic recognised, reader path unverified | Modern FTK + Tableau exports |
@@ -517,7 +518,11 @@ instead of declaring the vector unreconstructible.
 
 All four gaps closed; validated end-to-end. Final ACH leader
 **H_BEC_ACCOUNT_TAKEOVER score 57 (gap +44 over runner-up
-H_INSIDER_EMAIL_EXFIL 13)** — up from score 30 pre-fix. Closures
+H_INSIDER_EMAIL_EXFIL 13)** — up from score 30 pre-fix _(this was the
+m57-jean-r7 run; current `main` scores 51, gap +38 over the same
+runner-up — the absolute score drifts with the `~/.el/knowledge.sqlite`
+corpus as rarity-bucketing demotes recurring IOCs; the ranking holds)_.
+Closures
 land in commits `450da13` + `dbb0868` + `c77cb43` + `7850e51`:
 
 | Gap | How it fires now |

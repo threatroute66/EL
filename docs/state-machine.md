@@ -21,7 +21,7 @@ stateDiagram-v2
     [*] --> INTAKE
     INTAKE: <b>INTAKE</b><br/>hash evidence<br/>write manifest<br/>init ledger + graph
     TRIAGE: <b>TRIAGE</b><br/>magic bytes +<br/>directory shape<br/>set evidence_kind
-    HYPOTHESIS_GEN: <b>HYPOTHESIS_GEN</b><br/>seed 25 case-level<br/>hypotheses with<br/>uniform priors
+    HYPOTHESIS_GEN: <b>HYPOTHESIS_GEN</b><br/>seed 33 case-level<br/>hypotheses with<br/>uniform priors
     PARALLEL_INVESTIGATE: <b>PARALLEL_INVESTIGATE</b><br/>dispatch specialist<br/>agents per<br/>evidence_kind
     CORRELATE: <b>CORRELATE</b><br/>cross-agent graph<br/>queries on the<br/>per-case Kùzu DB
     ADVERSARIAL_REVIEW: <b>ADVERSARIAL_REVIEW</b><br/>rule-based +<br/>LLM challenger<br/>vet every finding
@@ -100,7 +100,7 @@ controller is broken, not that we should plough on.
 Each state encodes a guarantee the next phase relies on:
 
 - **Why `TRIAGE` is its own state, not folded into `INTAKE`.** Intake's job is to write the manifest *atomically* — no agents run, no `ctx.shared` keys are set. Triage then reads the now-immutable manifest and chooses the routing. Separating them makes "did we hash the input?" verifiable independent of "did we pick the right agent?".
-- **Why `HYPOTHESIS_GEN` runs before agents.** The 25 case-level hypotheses are seeded with uniform priors so the ledger has a target schema for ACH score deltas the moment the first agent finishes. Without the seed, an agent would have nowhere to write `ach_score_delta`.
+- **Why `HYPOTHESIS_GEN` runs before agents.** The 33 case-level hypotheses are seeded with uniform priors so the ledger has a target schema for ACH score deltas the moment the first agent finishes. Without the seed, an agent would have nowhere to write `ach_score_delta`.
 - **Why `CORRELATE` can loop back to `PARALLEL_INVESTIGATE`.** `DiskForensicator` extracts artefacts that only become parseable *after* the disk is mounted; `WindowsArtifactAgent` then needs to run against the extracted dir. The back-edge lets that chain happen without inventing a separate state for every chained pair.
 - **Why `ADVERSARIAL_REVIEW` can also loop back.** If the LLM challenger has a substantive counter to a Finding — e.g., "you claim brute-force based on 3 failed logons, but the source IP is on the allow-list" — the right response is to re-run the affected agent with the new constraint, not to overwrite the Finding's confidence. The loop preserves the original Finding's audit trail.
 - **Why `SYNTHESIZE` refuses to run with unresolved challenges.** ACH ranking weights confidence; a `red_review.status == "unresolved"` Finding has untrustworthy confidence by definition. Scoring with it would launder a dispute into a number. So the gate.

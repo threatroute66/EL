@@ -58,7 +58,7 @@ external compromise — pretexting-driven exfil.
 | Measure | EL | [Basilmellow writeup](https://github.com/Basilmellow/Autopsy-M57-Linux-Forensics) | [jynxora writeup](https://github.com/jynxora/M57-Jean-Case-Analysis) |
 |---|---|---|---|
 | Leading hypothesis | ✅ BEC / pretext exfil | ❌ Invented "USB insider" (on a Win7 path — image is XP) | ❌ "Browser exploit + AIM6 bundleware", missed email vector |
-| ACH gap over runner-up | +42 (score 57 vs H_ANTI_FORENSICS 15) | — | — |
+| ACH gap over runner-up | +38 (score 51 vs H_INSIDER_EMAIL_EXFIL 13) on current `main`; score drifts with knowledge-store corpus state (earlier runs: +42 over H_ANTI_FORENSICS 15) — the *ranking* is the stable claim | — | — |
 | Exfil email identified | ✅ Two subjects ("Thanks!" + "Please send me the information now") | ❌ Invented `confidential_client_list.xls` | ❌ Named the file but missed the outbound |
 | Attachment name + size | ✅ `1_m57biz.xls (291840 B)` named inline in narrative | ❌ | ❌ |
 | Display-name vs SMTP mismatch | ✅ 4 findings (2 inbound phishing + 2 reply-chain precursors) | — | — |
@@ -563,7 +563,7 @@ Judges can independently verify the contract:
 .venv/bin/pytest -q tests/test_ioc_*.py tests/test_*_guard*.py \
                   tests/test_*_fp_*.py tests/test_h_ransomware_*.py
 
-# 5. Full suite (1053 tests) — runs in ~60s
+# 5. Full suite (3,255 tests) — runs in ~11 min
 make test
 
 # 6. Walk a specific finding back to its tool execution

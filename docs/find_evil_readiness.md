@@ -8,7 +8,7 @@ Written as an honest audit, not a marketing pitch. Grades: ✅ meets, ⚠ partia
 
 ## One-paragraph summary
 
-EL is a 24-agent DFIR orchestrator running on the SANS SIFT Workstation,
+EL is a 34-agent DFIR orchestrator running on the SANS SIFT Workstation,
 built during the 2026-04-15 → 2026-06-15 hackathon window as a Python
 multi-agent framework. It takes evidence (memory image, pcap, EVTX,
 CloudTrail/Entra/M365 logs, E01 disk image with NTFS/ext4/APFS, or an
@@ -21,8 +21,9 @@ requirement directly — an `execution_log.jsonl` + `traceability_matrix.md`
 linking every claim to the specific subprocess that produced it. Every
 claim is Pydantic-enforced to carry tool + version + command +
 `output_sha256` + `output_path`, and `confidence="insufficient"` is a
-first-class output ("I don't know" beats a guess). 1053 tests pass.
-Validated end-to-end on 12 distinct evidence types including M57-Jean,
+first-class output ("I don't know" beats a guess). 3,255 tests
+(3,169 pass · 86 skip, ~11 min). Validated end-to-end on 12 distinct
+evidence types including M57-Jean,
 LoneWolf, BelkaCTF mobile / macOS / Android, SRL-2018 (paired
 memory + disk + baseline), and ~2000 malware-traffic pcaps.
 
@@ -33,7 +34,7 @@ memory + disk + baseline), and ~2000 malware-traffic pcaps.
 ### 1.1 Agentic framework as the primary execution engine ✅
 
 - **Framework used**: custom multi-agent Python orchestrator in
-  `el/orchestrator/coordinator.py` driving 24 specialist Agent classes
+  `el/orchestrator/coordinator.py` driving 34 specialist Agent classes
   (`el/agents/*.py`), each implementing the `Agent ABC → run(ctx) → list[Finding]`
   contract (`el/agents/base.py`). The coordinator is a deterministic state
   machine with legal transitions in `el/orchestrator/states.py`.
@@ -43,7 +44,7 @@ memory + disk + baseline), and ~2000 malware-traffic pcaps.
   over the sealed outputs. An `.mcp.json` scaffold is in the repo root for
   future MCP-server integration.
 - **Criterion language**: *"comparable agentic architectures are permitted"*
-  — the 24-agent coordinator, Pydantic-schema contract between agents, and
+  — the 34-agent coordinator, Pydantic-schema contract between agents, and
   red-reviewer blocking transition satisfy the "agentic framework"
   definition.
 
@@ -111,7 +112,7 @@ Three architectural mechanisms, all tested and fired on real cases:
   packages, creates venv, runs `el doctor` which probes every
   external tool (vol3, Sleuth Kit, EZ Tools via dotnet, plaso,
   bulk_extractor, yara, evtexport, msiecfexport, cryptsetup, …).
-- **1053 pytest tests pass** in ~58 s. Includes real-LUKS
+- **3,255 pytest tests** (3,169 pass · 86 skip) in ~11 min. Includes real-LUKS
   end-to-end round-trip, real pefile carve analysis on LoneWolf,
   and content-schema regression tests.
 - Host requirements documented in README (RAM / vCPU / disk / SIFT
@@ -208,7 +209,7 @@ sections cover every feature. Also this document.
 
 Full pipeline rendered as a Mermaid `flowchart TB`: 12 evidence-input
 types → Intake (hash + manifest + read-only enforcement) → Triage →
-Coordinator state machine → 24 specialist agents (subgraph) →
+Coordinator state machine → 34 specialist agents (subgraph) →
 shared per-case substrate (findings.sqlite + graph.kuzu +
 ~/.el/knowledge.sqlite) → Correlator → ACH Engine → Red Reviewer
 (with the loop-back to Coordinator when a Finding remains
@@ -306,9 +307,11 @@ Judge-facing document covering:
   answer that two public GitHub writeups both got wrong (Basilmellow
   invented USB-insider details on a Win7 path when the image is XP;
   jynxora landed on external-compromise+AIM6 but missed the email
-  vector). EL correctly classified as BEC with `H_BEC_ACCOUNT_TAKEOVER
-  score 57, gap +44` over runner-up, and surfaced the actual exfil
-  email with attachment name/size inline.
+  vector). EL correctly classified as BEC with `H_BEC_ACCOUNT_TAKEOVER`
+  leading by a wide gap (currently score 51, gap +38 over
+  `H_INSIDER_EMAIL_EXFIL` 13 on `main`; the absolute score drifts a few
+  points with the knowledge-store corpus, the ranking is stable), and
+  surfaced the actual exfil email with attachment name/size inline.
 
 ### 3.3 Breadth and Depth of Analysis ✅
 
@@ -341,6 +344,18 @@ memory.
   `ld.so.preload` + auth-log burst + shell-history malicious
   patterns + cron + SSH authorized_keys anomaly
 
+**Multi-host depth — `el investigate-bundle`**: an enterprise scenario
+spanning N hosts runs as one bundle — each device through the full
+per-host pipeline, then a synthesis pass merges every finding and
+recomputes ACH on the union so cross-host evidence sums into the same
+hypothesis. It auto-renders a cross-host dashboard
+(`cases/_combined/<bundle>/combined.html`: joint ACH heatmap, unified
+swim-lane timeline, merged Locard graph, cross-host IOC overlap, per-host
+drill-down). Validated on the 3-host **2019 Narcos** corpus (per-host +
+combined graphs populate; joint leader `H_APT_ESPIONAGE` over 17 k
+findings) and the SRL-2018 multi-host sweep. Bundles auto-detach to a
+`systemd --user` unit so a multi-hour run survives logout.
+
 ### 3.4 Constraint Implementation ✅ (ARCHITECTURAL, NOT PROMPT-BASED)
 
 This is the criterion judges pay closest attention to. EL's guardrails
@@ -369,7 +384,7 @@ decision path for evidence extraction.
 - **`el serve` HTTP server**: binds 127.0.0.1 only by default; the
   systemd user unit ships with `NoNewPrivileges=true`,
   `ProtectSystem=strict`, `ReadOnlyPaths=/opt/EL/cases`.
-- **Tested for bypass**: 1053 tests include schema-violation
+- **Tested for bypass**: 3,255 tests include schema-violation
   attempts (`tests/test_finding_contract.py`), state-machine refusal
   (`tests/test_coordinator_blocks.py`), ACH-no-score-from-insufficient
   (`tests/test_ach_excludes_insufficient.py`), ssdeep+phash cross-

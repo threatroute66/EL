@@ -36,7 +36,7 @@ filesystem tree (Windows / Linux / macOS / Android / iOS) — and it produces:
   command, output sha256, supporting/refuting hypotheses, and an
   adversarial-review verdict. No claim without evidence.
 - **A ranked hypothesis table** — Heuer's *Analysis of Competing
-  Hypotheses* over 25 case-level hypotheses (ransomware, APT espionage,
+  Hypotheses* over 33 case-level hypotheses (ransomware, APT espionage,
   insider exfil, BEC, supply chain, brute force, cloud persistence, C2
   beaconing, opportunistic commodity, process injection, credential
   access, lateral movement, persistence variants, mobile-spyware
@@ -90,7 +90,7 @@ flowchart TB
 
     INPUTS --> INTAKE --> TRIAGE --> COORD
 
-    subgraph AGENTS["29 specialist agents (one per evidence kind, chained as applicable)"]
+    subgraph AGENTS["34 specialist agents (one per evidence kind, chained as applicable)"]
         direction TB
         A_MEM["MemoryForensicator<br/>18 vol3 plugins + Baseliner<br/>+ MemProcFS FindEvil corroboration"]
         A_USR["<b>UserActivityAgent</b><br/>Office MRU FILETIMEs + TypedPaths<br/>+ drive-letter↔USB map<br/>+ removable-staging detector"]
@@ -409,6 +409,19 @@ el investigate /cases/velociraptor-bundle/ --case-id endpoint-collection
 el investigate <input> --baseline /path/to/baseline.json   # Memory Baseliner comparison
 el investigate <input> --timeline                           # also run Plaso super-timeline (slow)
 
+# Multi-host case: run N devices as ONE bundle. Each device runs the full
+# per-host pipeline into cases/<bundle>/devices/<name>/; a synthesis pass
+# then merges every finding, recomputes ACH on the union (cross-host evidence
+# sums into the same hypothesis), and auto-renders the cross-host dashboard
+# at cases/_combined/<bundle>/combined.html (joint ACH heatmap, unified
+# swim-lane timeline, merged Locard graph, per-host drill-down).
+el investigate-bundle apt-intrusion \
+   -d dc:/cases/dc.E01 -d ws01:/cases/ws01.E01 -d ws02:/cases/ws02-mem.raw
+# Bundles (and any input ≥ EL_AUTODETACH_GB, default 4 GB) auto-detach to a
+# systemd --user unit so a multi-hour run survives logout; --foreground forces
+# attached. The web index links every bundle's combined dashboard + per-host
+# reports inline.
+
 # Re-render report from an existing case ledger (no re-investigation)
 el report /opt/EL/cases/wkstn-01
 
@@ -681,7 +694,7 @@ with each case surfacing bugs that became permanent regression tests:
 | BelkaCTF macOS Big Sur | macOS APFS filesystem tree | ~40 GB | `MacOSForensicator` + `fsapfsmount` APFS mount; 8 /etc_core + 3 SSH + 2 system launch plists + 1 KnowledgeC + 1 Quarantine + 3 Safari — clean baseline, no hits |
 | BelkaCTF Android | Extracted filesystem tree | ~30 GB | `AndroidForensicator` detected Magisk root + com.topjohnwu.magisk sideloaded via packageinstaller + WhatsApp presence — 3 detector hits |
 | BelkaCTF iPhone SE (iOS 14.3) | Extracted filesystem tree | ~200 GB | `IOSForensicator` pulled 63 app Info.plists + 105 bundle metadata + SMS/AddressBook/CallHistory/KnowledgeC/Health DBs; 18 encrypted-messenger / privacy-tool apps detected (Signal, Telegram, Wickr Enterprise, ProtonMail, Tutanota, Onion Browser, KeepSafe, Burner, …) — end-to-end in 1m39s after the intake Merkle-hash perf fixes |
-| [NPS M57-Jean](https://digitalcorpora.org/corpora/scenarios/m57-jean/) | NTFS E01 multi-part (Windows XP) | 3 GB | **EL arrived at the canonical answer neither [Basilmellow](https://github.com/Basilmellow/Autopsy-M57-Linux-Forensics) nor [jynxora](https://github.com/jynxora/M57-Jean-Case-Analysis) reached**: BEC / pretexting exfil (H_BEC_ACCOUNT_TAKEOVER score **57, gap +44** post-gap-closure, up from 30 initial). Full story reconstructed: (1) attacker sent inbound email spoofing `alison@m57.biz` from `tuckgorge@gmail.com` (2 subjects: "Thanks!" + "Please send me the information now"), (2) Jean replied with `1_m57biz.xls (291840B)` attached, (3) bonus anti-forensic cleanup (15 zero-size + 15 zero-timestamp Windows system binaries — `auditusr.exe`, `pdh.dll`, `ciadmin.dll`), (4) 4778 IE5 cache records parsed including 24 `__utm` tracker-sync session-hijack artefacts. The per-finding `[finding_id]` citations + competing-hypothesis narrative render in `case.html` end-to-end |
+| [NPS M57-Jean](https://digitalcorpora.org/corpora/scenarios/m57-jean/) | NTFS E01 multi-part (Windows XP) | 3 GB | **EL arrived at the canonical answer neither [Basilmellow](https://github.com/Basilmellow/Autopsy-M57-Linux-Forensics) nor [jynxora](https://github.com/jynxora/M57-Jean-Case-Analysis) reached**: BEC / pretexting exfil (H_BEC_ACCOUNT_TAKEOVER score **51, gap +38** over runner-up H_INSIDER_EMAIL_EXFIL (13) on current `main`; the exact ACH score drifts with the `~/.el/knowledge.sqlite` corpus state — rarity-bucketing demotes IOCs as more cases accrue — so a fresh run reproduces the *ranking + canonical answer*, not the score to the point). Full story reconstructed: (1) attacker sent inbound email spoofing `alison@m57.biz` from `tuckgorge@gmail.com` (2 subjects: "Thanks!" + "Please send me the information now"), (2) Jean replied with `1_m57biz.xls (291840B)` attached, (3) bonus anti-forensic cleanup (15 zero-size + 15 zero-timestamp Windows system binaries — `auditusr.exe`, `pdh.dll`, `ciadmin.dll`), (4) 4778 IE5 cache records parsed including 24 `__utm` tracker-sync session-hijack artefacts. The per-finding `[finding_id]` citations + competing-hypothesis narrative render in `case.html` end-to-end |
 | [Digital Corpora — 2018 Lone Wolf Scenario](https://digitalcorpora.org/corpora/scenarios/2018-lone-wolf-scenario/) | Paired NTFS E01 (9-part, 13 GB) + Windows memory (18 GB) + pagefile (3 GB) | ~34 GB total | Disk: H_APT_ESPIONAGE score 21 · Cobalt Strike family fingerprint in `domain.txt` (`__utm.gif` Malleable-C2) · multi-technique lateral-movement chain on 2018-04-04 (PS-remoting + WMI event-consumer + service install) · 64 execution-corroborated findings · 161 prefetch + 146 EVTX + Amcache + SRUM extracted · new anti-forensics detectors fired (zero-size + zero-timestamp Windows system binaries) · 233-node Kùzu graph (1 Host + 71 Process + 154 File + 7 Event). Memory: H_C2_BEACONING score 11 · 4 Netscan beacon patterns to Azure IPs port 443 (`13.89.184.76 ×52`, `52.176.102.108 ×17`) · process-tree anomaly on explorer.exe · 19 cross-case knowledge hits linking LoneWolf memory IOCs to 14 prior Qakbot / Valak / Ursnif / Icedid / Ta551 pcap campaigns in the Layer-3 knowledge DB |
 
 Across these cases, EL surfaced 40+ bugs that are now locked in as
@@ -761,8 +774,8 @@ Rolled out in four tiers per
 
 ## Status
 
-- **3040 tests; `make test` runs them in ~9.5 minutes.**
-- 33 specialist agents · 140+ skill primitives · 33 case-level hypotheses
+- **3,255 tests; `make test` runs them in ~11 minutes.**
+- 34 specialist agents · 140+ skill primitives · 33 case-level hypotheses
   with deterministic scorers · 105 ATT&CK technique → tactic mappings ·
   21 malware family fingerprints · 9 disk anomaly patterns
 - Validated end-to-end on 12 evidence types: Windows memory (workstation
