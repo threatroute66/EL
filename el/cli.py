@@ -1319,6 +1319,57 @@ def investigate(
     _notify_pending_ai_brief(result.case_dir)
 
 
+def _render_bundle_combined_dashboard(
+    bundle_id: str, device_dirs: list[Path], combined_base: Path,
+) -> Path | None:
+    """Generate the cross-host ``_combined/<bundle>/`` dashboard for a
+    finished bundle — the same artifacts ``el combined-report`` produces:
+    report.md, combined_executive.html/.pdf (with the headless/deferred AI
+    brief), and combined.html (joint ACH heatmap, unified swim-lane
+    timeline, merged cross-host graph, drill-down into each host).
+
+    Wired into ``investigate-bundle`` so a multi-host run produces the
+    combined dashboard automatically — previously it emitted per-device
+    reports + a merged bundle case.html but NOT the dedicated cross-host
+    dashboard, which left multi-host scenarios looking absent in the web
+    view until the operator ran ``combined-report`` by hand.
+
+    Best-effort: returns the combined.html path, or None when there are
+    fewer than two valid device case dirs. Raising is the caller's to
+    handle — it logs a yellow note and proceeds (the seal + per-device
+    reports stand on their own)."""
+    dirs = [d for d in device_dirs if (d / "manifest.json").exists()]
+    if len(dirs) < 2:
+        return None
+    from el.reporting.combined import render_combined
+    # combined_base is the bundle's sibling _combined dir (CASE_ROOT/_combined),
+    # so this honours a relocated/monkeypatched cases root rather than the
+    # hardcoded /opt/EL/cases the `combined-report` CLI default assumes.
+    out_path = combined_base / bundle_id / "report.md"
+    render_combined(dirs, out_path, name=bundle_id)
+    exec_pdf_path: Path | None = None
+    try:
+        from el.reporting.combined_executive import (
+            render_combined_executive, render_combined_executive_pdf,
+        )
+        exec_html = out_path.with_name("combined_executive.html")
+        render_combined_executive(dirs, exec_html, name=bundle_id)
+        try:
+            exec_pdf_path = render_combined_executive_pdf(exec_html)
+        except Exception:
+            pass  # weasyprint missing / pagination failure — HTML still valid
+    except Exception:
+        pass      # combined executive brief is optional; dashboard stands alone
+    from el.reporting.combined_html import render_combined_html
+    html_path = out_path.with_name("combined.html")
+    try:
+        render_combined_html(dirs, html_path, name=bundle_id,
+                             executive_pdf_path=exec_pdf_path)
+    except TypeError:
+        render_combined_html(dirs, html_path, name=bundle_id)  # older signature
+    return html_path
+
+
 def _notify_pending_ai_brief(case_dir: str | Path) -> None:
     """Print an end-of-run notification when an AI-brief request file
     is sitting on disk waiting to be fulfilled.
@@ -1577,6 +1628,21 @@ def investigate_bundle_cmd(
     except Exception as e:
         console.print(
             f"[yellow]bundle report render failed: {e}[/yellow]")
+
+    # Cross-host dashboard: the dedicated _combined/<bundle>/combined.html
+    # (joint ACH heatmap, swim-lane timeline, per-host drill-down). Without
+    # this a multi-host bundle only produced per-device + merged reports —
+    # the combined view required a manual `combined-report` the operator
+    # often didn't know to run. Best-effort; never blocks the bundle.
+    try:
+        device_dirs = [bundle_dir / "devices" / d.name for d in bundle.devices]
+        combined_html = _render_bundle_combined_dashboard(
+            bundle_id, device_dirs, bundle_dir.parent / "_combined")
+        if combined_html is not None:
+            console.print(f"[bold]combined_dashboard[/bold]: {combined_html}")
+    except Exception as e:
+        console.print(
+            f"[yellow]combined dashboard render failed: {e}[/yellow]")
 
     _notify_pending_ai_brief(bundle_dir)
 

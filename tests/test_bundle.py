@@ -352,6 +352,32 @@ def test_cli_investigate_bundle_two_devices(tmp_path, monkeypatch):
     # aggregated manifest.
     assert (bundle_dir / "findings.sqlite").exists()
     assert (bundle_dir / "manifest.json").exists()
+    # The cross-host dashboard is auto-generated under CASE_ROOT/_combined/
+    # (NOT the hardcoded /opt/EL/cases) so a multi-host bundle surfaces a
+    # combined view without a manual `combined-report` step.
+    combined_html = (tmp_path / "cases" / "_combined"
+                     / "BUNDLE-CLI" / "combined.html")
+    assert combined_html.exists(), (
+        f"investigate-bundle must auto-render the combined dashboard; "
+        f"missing {combined_html}")
+    assert "combined_dashboard" in result.output
+
+
+def test_combined_dashboard_helper_skips_below_two_devices(tmp_path):
+    """The auto-dashboard helper is a no-op (returns None, writes nothing)
+    when fewer than two valid device case dirs exist — a single-device
+    'bundle' has no cross-host story to render."""
+    from el.cli import _render_bundle_combined_dashboard
+    # one real case dir + one bogus (no manifest.json) → only 1 valid
+    good = tmp_path / "devices" / "only"
+    good.mkdir(parents=True)
+    (good / "manifest.json").write_text('{"case_id": "x"}')
+    bogus = tmp_path / "devices" / "missing"
+    combined_base = tmp_path / "_combined"
+    result = _render_bundle_combined_dashboard(
+        "solo", [good, bogus], combined_base)
+    assert result is None
+    assert not combined_base.exists()   # nothing written
 
 
 def test_cli_investigate_bundle_rejects_bad_device_spec(tmp_path, monkeypatch):
