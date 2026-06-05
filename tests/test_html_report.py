@@ -376,9 +376,12 @@ def test_cli_serve_install_service_writes_unit(tmp_path, monkeypatch):
     # ccb1843; this assertion had lagged the template).
     assert "ReadOnlyPaths=-/opt/EL/cases" in content
     assert "NoNewPrivileges=true" in content
-    # systemctl daemon-reload + enable --now were called
+    # daemon-reload, then enable + explicit restart. The install flow
+    # deliberately uses `enable` + `restart` rather than `enable --now`
+    # (so a re-install reliably picks up a changed unit); assert that shape.
     assert any("daemon-reload" in c for c in calls)
-    assert any("enable" in c and "--now" in c for c in calls)
+    assert any("enable" in c and "el-serve.service" in c for c in calls)
+    assert any("restart" in c for c in calls)
 
 
 def test_cli_serve_uninstall_service_removes_unit(tmp_path, monkeypatch):
