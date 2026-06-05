@@ -41,8 +41,12 @@ memory + disk + baseline), and ~2000 malware-traffic pcaps.
 - **Claude Code integration**: EL ships the `el` CLI and a per-case
   `CLAUDE.md` briefing written by `el.case_template`; inside a Claude Code
   session the analyst drives EL via the CLI and can ask Claude to reason
-  over the sealed outputs. An `.mcp.json` scaffold is in the repo root for
-  future MCP-server integration.
+  over the sealed outputs. A dedicated MCP server is intentionally out of
+  scope — the CLI + `CLAUDE.md` integration already satisfies the
+  framework criterion, and because EL's agents/skills are thin CLI
+  wrappers, exposing them as MCP tools is a clone-and-wrap exercise for
+  any consumer who wants it (the repo ships an `.mcp.json` scaffold as a
+  starting point).
 - **Criterion language**: *"comparable agentic architectures are permitted"*
   — the 34-agent coordinator, Pydantic-schema contract between agents, and
   red-reviewer blocking transition satisfy the "agentic framework"
@@ -431,7 +435,7 @@ decision path for evidence extraction.
 | 2 | Consolidated Accuracy Report | ✅ **Closed** | `docs/accuracy_report.md`, commit `d25a95b` |
 | 3 | Architecture diagram upgrade | ✅ **Closed** | Mermaid block in `README.md` "Architecture", commit `6bf5b68` |
 | 4 | Scapy (GPL-2) dependency flag | ✅ **Closed** | README "Third-party dependency license notices" section, commit `6bf5b68` |
-| 5 | MCP-server integration | ❌ Not shipped — postponed | `.mcp.json` scaffold exists; no `el/mcp/server.py` yet |
+| 5 | MCP-server integration | ⚙ **Out of scope by design — not a gap** | MCP is not a Find Evil requirement; the CLI + `CLAUDE.md` integration already satisfies the framework criterion. EL's thin-CLI-wrapper agents make MCP a clone-and-wrap exercise for any consumer; `.mcp.json` scaffold ships as a starting point. |
 | 6 | Live `demo_case` evidence | ❌ Not shipped — postponed | Script to seed `/cases/demo/` awaits |
 
 ---
@@ -446,7 +450,9 @@ Complete:
 Remaining (postponed for separate sessions):
 4. Ship a runnable demo case (gap #6)
 5. Record the demo video (gap #1) — last, after repo is frozen
-6. Optional: MCP server (gap #5)
+
+Not pursued (design decision, see gap #5): a dedicated MCP server — out
+of scope, not an open task.
 
 Submission-day validation: `./install.sh --doctor` on a fresh SIFT
 VM, then run the demo case and confirm `reports/traceability_matrix.md`
