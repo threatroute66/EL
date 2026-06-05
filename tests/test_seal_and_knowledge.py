@@ -60,6 +60,76 @@ def test_verify_seal_detects_drift(tmp_path):
     assert any("hash drift" in d for d in drift)
 
 
+def _bundle_with_recovery(tmp_path):
+    """A case dir with a normal report + a large tsk_recover tree under
+    exports/recovery/ (mirrors a disk-image bundle device)."""
+    case = tmp_path / "case-rec"
+    (case / "reports").mkdir(parents=True)
+    (case / "reports" / "report.md").write_text("# findings")
+    rec = case / "devices" / "h1" / "exports" / "recovery" / "tsk_recover"
+    rec.mkdir(parents=True)
+    (rec / "big1.bin").write_bytes(b"\xde" * 4096)
+    (rec / "big2.bin").write_bytes(b"\xad" * 4096)
+    return case
+
+
+def test_recovery_tree_hashed_but_excluded_from_archive(tmp_path):
+    import tarfile
+    case = _bundle_with_recovery(tmp_path)
+    archive_root = tmp_path / "_archives"
+    m = case_seal.seal_case(case, "case-rec", archive=True,
+                            archive_root=archive_root)
+
+    # Manifest STILL hashes every recovered file (integrity preserved)
+    rec_keys = [k for k in m["files"] if "exports/recovery/" in k]
+    assert len(rec_keys) == 2
+    assert all(m["files"][k]["sha256"] for k in rec_keys)
+    assert all(m["files"][k]["archived"] is False for k in rec_keys)
+    assert m["archive_excluded_count"] == 2
+    assert m["archive_excluded_bytes"] == 8192
+
+    # ...but the tar.gz omits them, while keeping the report
+    with tarfile.open(m["archive_path"]) as tar:
+        names = tar.getnames()
+    assert any(n.endswith("reports/report.md") for n in names)
+    assert not any("exports/recovery/" in n for n in names)
+
+
+def test_verify_tolerates_excluded_recovery_when_extracted(tmp_path):
+    """Verifying an extracted archive (recovery tree absent) is NOT drift,
+    but the report (which WAS archived) is still checked."""
+    case = _bundle_with_recovery(tmp_path)
+    case_seal.seal_case(case, "case-rec", archive=False)
+    # Simulate an extracted archive: delete the excluded recovery tree
+    import shutil
+    shutil.rmtree(case / "devices" / "h1" / "exports" / "recovery")
+    ok, drift = case_seal.verify_seal(case)
+    assert ok, f"excluded-and-absent recovery must not be drift: {drift}"
+
+
+def test_verify_still_detects_tamper_of_recovered_file_on_live_dir(tmp_path):
+    """Excluded-from-archive does NOT mean unchecked: on the live case dir
+    the recovered file is present and its hash is still verified."""
+    case = _bundle_with_recovery(tmp_path)
+    case_seal.seal_case(case, "case-rec", archive=False)
+    rec = case / "devices" / "h1" / "exports" / "recovery" / "tsk_recover"
+    (rec / "big1.bin").write_bytes(b"\x00" * 4096)   # tamper in place
+    ok, drift = case_seal.verify_seal(case)
+    assert not ok and any("hash drift" in d for d in drift)
+
+
+def test_empty_exclude_archives_everything(tmp_path):
+    """archive_exclude=() restores the pre-existing 'archive everything'
+    behaviour."""
+    import tarfile
+    case = _bundle_with_recovery(tmp_path)
+    m = case_seal.seal_case(case, "case-rec", archive=True,
+                            archive_root=tmp_path / "_arch", archive_exclude=())
+    assert m["archive_excluded_count"] == 0
+    with tarfile.open(m["archive_path"]) as tar:
+        assert any("exports/recovery/" in n for n in tar.getnames())
+
+
 # --- Knowledge store ------------------------------------------------------
 
 def test_record_then_lookup_iocs_excludes_current_case(tmp_path, monkeypatch):
