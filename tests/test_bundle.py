@@ -380,6 +380,55 @@ def test_combined_dashboard_helper_skips_below_two_devices(tmp_path):
     assert not combined_base.exists()   # nothing written
 
 
+def test_bundle_index_links_surface_combined_and_hosts(tmp_path):
+    """The serve index helper links a bundle's combined dashboard + each
+    rendered per-host case report, so multi-host cases are discoverable
+    from the landing page (not buried under devices/ and _combined/)."""
+    from el.cli import _bundle_index_links
+    root = tmp_path / "cases"
+    bundle = root / "narcos"
+    (bundle / "devices" / "Narcos-1" / "reports").mkdir(parents=True)
+    (bundle / "devices" / "Narcos-2" / "reports").mkdir(parents=True)
+    (bundle / "bundle.json").write_text("{}")
+    (bundle / "devices" / "Narcos-1" / "reports" / "case.html").write_text("x")
+    (bundle / "devices" / "Narcos-2" / "reports" / "case.html").write_text("x")
+    comb = root / "_combined" / "narcos"
+    comb.mkdir(parents=True)
+    (comb / "combined.html").write_text("x")
+
+    frag = _bundle_index_links(str(bundle), str(root), "narcos")
+    assert "_combined/narcos/combined.html" in frag
+    assert ">combined</a>" in frag
+    assert "narcos/devices/Narcos-1/reports/case.html" in frag
+    assert "narcos/devices/Narcos-2/reports/case.html" in frag
+    assert "hosts:" in frag
+
+
+def test_bundle_index_links_empty_for_non_bundle(tmp_path):
+    """A plain (non-bundle) case has no bundle.json → no extra links."""
+    from el.cli import _bundle_index_links
+    case = tmp_path / "cases" / "plain"
+    (case / "reports").mkdir(parents=True)
+    assert _bundle_index_links(str(case), str(tmp_path / "cases"), "plain") == ""
+
+
+def test_bundle_index_links_omits_unrendered_hosts(tmp_path):
+    """A host whose case.html hasn't rendered is not linked; a bundle whose
+    combined.html doesn't exist yet links hosts only."""
+    from el.cli import _bundle_index_links
+    root = tmp_path / "cases"
+    bundle = root / "b"
+    (bundle / "devices" / "h1" / "reports").mkdir(parents=True)
+    (bundle / "devices" / "h2" / "reports").mkdir(parents=True)
+    (bundle / "bundle.json").write_text("{}")
+    (bundle / "devices" / "h1" / "reports" / "case.html").write_text("x")
+    # h2 has no case.html; no _combined/b/combined.html either
+    frag = _bundle_index_links(str(bundle), str(root), "b")
+    assert "combined.html" not in frag          # combined not rendered yet
+    assert "devices/h1/reports/case.html" in frag
+    assert "devices/h2/reports/case.html" not in frag
+
+
 def test_cli_investigate_bundle_rejects_bad_device_spec(tmp_path, monkeypatch):
     from typer.testing import CliRunner
     from el.cli import app

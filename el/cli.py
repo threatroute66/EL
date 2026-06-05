@@ -1015,6 +1015,14 @@ def serve_cmd(
                                 f' &middot; <a class="report" '
                                 f'href="{exec_url}">exec</a>')
 
+                    # Multi-host bundle: surface the cross-host combined
+                    # dashboard + per-device drill-down inline, so a bundle
+                    # is not hidden behind manual directory navigation
+                    # (cases/<bundle>/devices/<host>/reports/case.html and
+                    # _combined/<bundle>/combined.html are otherwise unlinked).
+                    report_link += _bundle_index_links(
+                        full, str(root_path), name)
+
                 rows.append({
                     "href": href,
                     "display": display,
@@ -1368,6 +1376,43 @@ def _render_bundle_combined_dashboard(
     except TypeError:
         render_combined_html(dirs, html_path, name=bundle_id)  # older signature
     return html_path
+
+
+def _bundle_index_links(case_full: str, root_path: str, name: str) -> str:
+    """HTML fragment for the serve case-index linking a bundle's cross-host
+    combined dashboard + each per-host case report. Empty string when
+    `case_full` is not a bundle (no bundle.json), so non-bundle cases are
+    unaffected. Pure + side-effect-free for testability.
+
+    Produces, for a bundle:  ` · combined · hosts: <h1>, <h2>, …`
+    where `combined` → _combined/<name>/combined.html and each host →
+    <name>/devices/<host>/reports/case.html (only hosts whose case.html
+    has actually rendered are linked)."""
+    import os as _os
+    import html as _html
+    import urllib.parse as _up
+    if not _os.path.isfile(_os.path.join(case_full, "bundle.json")):
+        return ""
+    frag = ""
+    comb_html = _os.path.join(root_path, "_combined", name, "combined.html")
+    if _os.path.isfile(comb_html):
+        comb_url = f"_combined/{_up.quote(name)}/combined.html"
+        frag += (f' &middot; <a class="report" href="{comb_url}">'
+                 f'combined</a>')
+    devdir = _os.path.join(case_full, "devices")
+    host_links = []
+    if _os.path.isdir(devdir):
+        for dev in sorted(_os.listdir(devdir)):
+            dch = _os.path.join(devdir, dev, "reports", "case.html")
+            if _os.path.isfile(dch):
+                durl = (f"{_up.quote(name)}/devices/"
+                        f"{_up.quote(dev)}/reports/case.html")
+                host_links.append(
+                    f'<a class="report" href="{durl}">{_html.escape(dev)}</a>')
+    if host_links:
+        frag += (' &middot; <span class="muted">hosts:</span> '
+                 + ', '.join(host_links))
+    return frag
 
 
 def _notify_pending_ai_brief(case_dir: str | Path) -> None:
