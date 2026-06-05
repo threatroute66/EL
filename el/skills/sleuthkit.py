@@ -6,6 +6,7 @@ to disk, hashes the output, and returns an EvidenceItem-compatible record.
 from __future__ import annotations
 
 import hashlib
+import re
 import shutil
 import subprocess
 from dataclasses import dataclass
@@ -121,6 +122,82 @@ def fsstat(image: Path, out_dir: Path, offset: int | None = None,
         args += ["-o", str(offset)]
     args += [str(image)]
     return _run("fsstat", image, args, out_dir, "fsstat", timeout)
+
+
+_SPLIT_SEG_RE = re.compile(r"\.(\d{3,})$")
+
+
+def is_split_raw(image: Path) -> bool:
+    """True when `image` is the FIRST segment of a split-raw (dd / FTK
+    Imager) image — its extension is a numeric segment (``.001`` / ``.000``)
+    and the next-numbered sibling exists.
+
+    Why this matters: The Sleuth Kit spans split-raw segments natively
+    (``img_stat``/``mmls``/``fls``/``tsk_recover`` given the first segment
+    auto-join the rest). But a kernel/ntfs-3g mount and ``bulk_extractor``
+    see ONLY the first segment — so on a 30 GB disk split into 1.5 GB pieces,
+    NTFS artifact extraction fails ("signature missing" / truncated volume)
+    and carving covers ~5% of the disk. The caller bridges via ``affuse``
+    first (see :func:`affuse_mount`)."""
+    image = Path(image)
+    m = _SPLIT_SEG_RE.search(image.name)
+    if not m:
+        return False
+    width = len(m.group(1))
+    nxt = str(int(m.group(1)) + 1).zfill(width)
+    sibling = image.with_name(image.name[:m.start()] + "." + nxt)
+    return sibling.exists()
+
+
+def affuse_mount(image: Path, mount_point: Path, timeout: int = 120) -> Path:
+    """Bridge a split-raw image into ONE contiguous raw stream via affuse
+    (AFFLIB). affuse exposes ``<mount_point>/<firstsegment>.raw`` spanning
+    ALL segments, so a kernel/ntfs-3g mount + bulk_extractor cover the whole
+    disk instead of just the first segment.
+
+    Mounts as the current user with ``allow_other`` so a later
+    ``sudo mount_ntfs`` (root) can read the FUSE-exposed stream — mirrors the
+    ``ewfmount -X allow_other`` pattern. Returns the unified ``.raw`` path;
+    caller unmounts via :func:`affuse_umount`."""
+    image = Path(image)
+    mount_point = Path(mount_point)
+    mount_point.mkdir(parents=True, exist_ok=True)
+    cmd = ["affuse", "-o", "allow_other", str(image), str(mount_point)]
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True,
+                              timeout=timeout)
+    except FileNotFoundError as e:
+        raise SleuthkitError("affuse not installed (apt install afflib-tools)") from e
+    except subprocess.TimeoutExpired as e:
+        raise SleuthkitError(f"affuse timeout: {e}") from e
+    if proc.returncode != 0:
+        raise SleuthkitError(
+            f"affuse failed (rc={proc.returncode}): {proc.stderr or proc.stdout}")
+    raw = mount_point / (image.name + ".raw")
+    if not raw.exists():
+        # affuse names the virtual file <firstsegment>.raw; fall back to the
+        # single entry it exposed if the naming convention ever differs.
+        entries = [p for p in mount_point.iterdir()]
+        if len(entries) == 1:
+            raw = entries[0]
+        else:
+            raise SleuthkitError(
+                f"affuse succeeded but no unified .raw found; got: {entries}")
+    return raw
+
+
+def affuse_umount(mount_point: Path, timeout: int = 30) -> None:
+    """Unmount an affuse FUSE mount + clean up the empty dir. Idempotent."""
+    try:
+        subprocess.run(["fusermount", "-u", str(mount_point)],
+                       capture_output=True, text=True, timeout=timeout)
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        pass
+    try:
+        if mount_point.exists() and not any(mount_point.iterdir()):
+            mount_point.rmdir()
+    except Exception:
+        pass
 
 
 def ewfmount(image: Path, mount_point: Path, timeout: int = 60) -> Path:

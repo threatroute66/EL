@@ -236,6 +236,11 @@ def survey() -> list[ToolStatus]:
         probe_simple("icat"),
         probe_simple("mactime"),
         probe_simple("ewfmount"),
+        # affuse (afflib-tools) bridges split-raw .001/.002 segments into one
+        # contiguous stream so NTFS mount + bulk_extractor span the whole disk
+        # (TSK spans natively). Without it, split-raw disks lose the entire
+        # windows_artifact chain + full-disk carving.
+        probe_simple("affuse"),
         probe_simple("log2timeline.py", ["--version"]),
         probe_simple("psort.py", ["--version"]),
         probe_simple("bulk_extractor", ["-V"]),

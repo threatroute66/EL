@@ -33,7 +33,52 @@ class DiskForensicatorAgent(Agent):
         if kind == "bitlocker":
             return self._handle_bitlocker(ctx, analysis)
 
-        return out + self._raw_disk_walk(ctx, analysis, ctx.input_path)
+        # Split-raw (.001/.002/… dd or FTK Imager segments): TSK spans these
+        # natively, but the kernel/ntfs-3g mount + bulk_extractor see ONLY the
+        # first segment. Bridge all segments into one contiguous stream via
+        # affuse so NTFS artifact extraction (→ the whole windows_artifact
+        # chain + graph population) and carving cover the FULL disk. Falls
+        # back to the first segment if affuse is unavailable.
+        raw_image = ctx.input_path
+        affuse_mp: Path | None = None
+        if sk.is_split_raw(ctx.input_path):
+            try:
+                affuse_mp = ctx.case_dir / "raw" / "affuse"
+                raw_image = sk.affuse_mount(ctx.input_path, affuse_mp)
+                out.append(self.emit(ctx, Finding(
+                    case_id=ctx.case_id, agent=self.name, confidence="high",
+                    claim=(
+                        f"Split-raw image bridged into one contiguous stream "
+                        f"via affuse ({ctx.input_path.name} → {raw_image.name}). "
+                        f"TSK spans segments natively, but the NTFS mount + "
+                        f"bulk_extractor need the unified stream to cover the "
+                        f"whole disk rather than only the first segment."),
+                    evidence=[EvidenceItem(
+                        tool="affuse", version="afflib-tools",
+                        command=f"affuse -o allow_other {ctx.input_path} <mp>",
+                        output_sha256="0" * 64,
+                        output_path=str(raw_image),
+                        extracted_facts={"first_segment": ctx.input_path.name,
+                                          "unified_stream": str(raw_image)})],
+                    hypotheses_supported=["H_DISK_IMAGE"],
+                )))
+            except sk.SleuthkitError as e:
+                affuse_mp = None
+                raw_image = ctx.input_path
+                out.append(self.emit(ctx, Finding(
+                    case_id=ctx.case_id, agent=self.name, confidence="insufficient",
+                    claim=(
+                        f"Split-raw image detected but affuse bridge failed: "
+                        f"{e}. Falling back to the first segment — TSK walks "
+                        f"still span all segments, but NTFS artifact extraction "
+                        f"+ full-disk carving will be limited to the first "
+                        f"segment. Install afflib-tools to enable bridging."),
+                )))
+        try:
+            return out + self._raw_disk_walk(ctx, analysis, raw_image)
+        finally:
+            if affuse_mp is not None:
+                sk.affuse_umount(affuse_mp)
 
     def _handle_vm_disk(self, ctx: AgentContext, analysis: Path,
                         kind: str) -> list[Finding]:
