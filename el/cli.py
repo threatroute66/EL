@@ -1302,10 +1302,9 @@ def investigate(
     result = Coordinator(run_timeline=timeline,
                          memory_baseline=baseline).investigate(input_path, case_id=case_id)
     if any([investigator, objective, case_number, incident_date]):
-        from datetime import date as _date
         meta = CaseMetadata(
             case_number=case_number,
-            incident_date=_date.fromisoformat(incident_date) if incident_date else None,
+            incident_date=_parse_incident_date(incident_date),
             investigator_name=investigator,
             objective_statement=objective,
         )
@@ -1481,6 +1480,28 @@ def _notify_pending_ai_brief(case_dir: str | Path) -> None:
         )
 
 
+def _parse_incident_date(value: str | None):
+    """Leniently parse an --incident-date string to a date, or None.
+
+    A non-ISO value (e.g. 'unknown') must NOT raise: this is evaluated
+    AFTER the multi-hour investigate/bundle pipeline has finished, so a
+    ValueError here used to kill the run at the metadata-save step and
+    skip bundle synthesis entirely (observed 2026-06-06 with
+    --incident-date unknown). Metadata is decoration; the evidence run
+    is the product. Warn and drop the value instead.
+    """
+    if not value:
+        return None
+    from datetime import date as _date
+    try:
+        return _date.fromisoformat(value)
+    except ValueError:
+        console.print(
+            f"[yellow]--incident-date {value!r} is not an ISO date "
+            f"(YYYY-MM-DD) — recording no incident date.[/yellow]")
+        return None
+
+
 def _parse_device_spec(spec: str) -> tuple[str, str]:
     """Parse a `name:path` device flag value. Returns (name, path).
     Names allowed: alphanumeric + dash + underscore (so the device
@@ -1645,10 +1666,9 @@ def investigate_bundle_cmd(
     save_bundle(bundle_dir, bundle)
 
     if investigator or objective or case_number or incident_date:
-        from datetime import date as _date
         meta = CaseMetadata(
             case_number=case_number,
-            incident_date=_date.fromisoformat(incident_date) if incident_date else None,
+            incident_date=_parse_incident_date(incident_date),
             investigator_name=investigator,
             objective_statement=objective,
         )

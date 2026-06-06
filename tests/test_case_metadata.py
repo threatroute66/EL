@@ -68,3 +68,18 @@ def test_save_creates_parent_directory(tmp_path):
     target = tmp_path / "nested" / "case-x"
     save(target, CaseMetadata(investigator_name="X"))
     assert (target / CASE_METADATA_FILENAME).exists()
+
+
+def test_parse_incident_date_lenient():
+    """A non-ISO --incident-date must degrade to None, not raise —
+    it is evaluated after the multi-hour pipeline and a ValueError
+    there kills bundle synthesis (regression: 2026-06-06 run with
+    --incident-date 'unknown')."""
+    from datetime import date
+
+    from el.cli import _parse_incident_date
+
+    assert _parse_incident_date(None) is None
+    assert _parse_incident_date("") is None
+    assert _parse_incident_date("unknown") is None
+    assert _parse_incident_date("2020-11-13") == date(2020, 11, 13)
