@@ -99,3 +99,83 @@ def test_export_serialises_as_json(tmp_path):
     s = json.dumps(out)
     parsed = json.loads(s)
     assert len(parsed["nodes"]) == len(out["nodes"])
+
+
+def _seed_minimal(case_dir: Path, pid_name: str) -> None:
+    """One Process + one IPAddress + a CONNECTED_TO edge."""
+    init_graph(case_dir)
+    db, conn = open_graph(case_dir)
+    try:
+        conn.execute(
+            f"CREATE (:Process {{pid: 4444, ppid: 1, name: '{pid_name}', "
+            f"cmdline: '', host: 'h', start_utc: ''}})")
+        conn.execute("CREATE (:IPAddress {addr: '203.0.113.7', version: 4})")
+        conn.execute(
+            "MATCH (p:Process {pid: 4444}), "
+            "(i:IPAddress {addr: '203.0.113.7'}) "
+            "CREATE (p)-[:CONNECTED_TO]->(i)")
+    finally:
+        del conn; del db
+
+
+def test_export_bundle_unions_device_graphs(tmp_path):
+    """A bundle dir has no top-level graph.kuzu — the export must union
+    the device graphs with per-device namespaced ids so identical PKs
+    (same pid on two devices) stay distinct nodes."""
+    _seed_minimal(tmp_path / "devices" / "memory", "from-memory.exe")
+    _seed_minimal(tmp_path / "devices" / "cdrive", "from-cdrive.exe")
+
+    out = export_graph(tmp_path)
+    assert out["stats"]["devices"] == ["cdrive", "memory"]
+    assert out["stats"]["total_nodes"] == 4   # 2× (Process + IPAddress)
+    assert out["stats"]["total_edges"] == 2
+
+    ids = {n["id"] for n in out["nodes"]}
+    assert "memory/proc:4444" in ids
+    assert "cdrive/proc:4444" in ids          # no pid collision
+    by_id = {n["id"]: n for n in out["nodes"]}
+    assert by_id["memory/proc:4444"]["attrs"]["device"] == "memory"
+    assert by_id["memory/proc:4444"]["label"] == "from-memory.exe (4444)"
+
+    for e in out["edges"]:
+        assert e["from"].split("/", 1)[0] in ("memory", "cdrive")
+        assert e["from"].split("/", 1)[0] == e["to"].split("/", 1)[0]
+
+
+def test_export_bundle_prefers_top_level_graph(tmp_path):
+    """When a top-level graph.kuzu DOES exist, device graphs must be
+    ignored (single-case semantics unchanged)."""
+    _seed(tmp_path)
+    _seed_minimal(tmp_path / "devices" / "x", "ignored.exe")
+    out = export_graph(tmp_path)
+    assert "devices" not in out["stats"]
+    assert not any(n["id"].startswith("x/") for n in out["nodes"])
+
+
+def test_export_bundle_empty_devices_dir(tmp_path):
+    (tmp_path / "devices").mkdir()
+    out = export_graph(tmp_path)
+    assert out["nodes"] == [] and out["stats"]["total_nodes"] == 0
+
+
+def test_export_scrubs_control_characters(tmp_path):
+    """Memory-carved strings (cmdlines, paths) carry NUL/control bytes;
+    embedded raw they make case.html invalid HTML and flip grep/sed
+    into binary mode (observed: 327 NULs in the Rocba bundle report)."""
+    init_graph(tmp_path)
+    db, conn = open_graph(tmp_path)
+    try:
+        conn.execute(
+            "CREATE (:Process {pid: 7, ppid: 1, name: 'evil\x00.exe', "
+            "cmdline: 'run\x00 -x\x01\x1f ok\ttab', host: 'h', "
+            "start_utc: ''})")
+    finally:
+        del conn; del db
+    out = export_graph(tmp_path)
+    import json as _json
+    blob = _json.dumps(out)
+    assert "\\u0000" not in blob and "\x00" not in blob
+    node = out["nodes"][0]
+    assert node["attrs"]["name"] == "evil.exe"
+    assert node["attrs"]["cmdline"] == "run -x ok\ttab"   # tab survives
+    assert node["label"] == "evil.exe (7)"

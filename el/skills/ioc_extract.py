@@ -44,13 +44,18 @@ _IPV6 = re.compile(
     r"(?![\w:])"
 )
 _DOMAIN = re.compile(r"(?<![\w.-])((?:[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.){1,}[a-zA-Z]{2,24})(?![\w-])")
-_URL = re.compile(r"https?://[^\s'\"<>()]+", re.IGNORECASE)
+# Control chars (incl. NUL) must terminate a URL / path token:
+# memory-carved strings arrive NUL-padded, and a bare negated class
+# matches \x00 — two adjacent carved URLs then fuse into one IOC with
+# embedded NULs that poison reports (case.html flipped grep into
+# binary-file mode; 327 NULs observed on the Rocba bundle).
+_URL = re.compile(r"https?://[^\s'\"<>()\x00-\x1f\x7f]+", re.IGNORECASE)
 _MD5 = re.compile(r"(?<![A-Fa-f0-9])[A-Fa-f0-9]{32}(?![A-Fa-f0-9])")
 _SHA1 = re.compile(r"(?<![A-Fa-f0-9])[A-Fa-f0-9]{40}(?![A-Fa-f0-9])")
 _SHA256 = re.compile(r"(?<![A-Fa-f0-9])[A-Fa-f0-9]{64}(?![A-Fa-f0-9])")
 _EMAIL = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,24}")
 _REGKEY = re.compile(r"(?:HKLM|HKCU|HKU|HKCR|HKCC|HKEY_[A-Z_]+)\\[\\\w .${}()-]{3,}", re.IGNORECASE)
-_WINPATH = re.compile(r"(?:[A-Z]:\\(?:[^\\<>:\"|?*\r\n]+\\)*[^\\<>:\"|?*\r\n]+)")
+_WINPATH = re.compile(r"(?:[A-Z]:\\(?:[^\\<>:\"|?*\x00-\x1f\x7f]+\\)*[^\\<>:\"|?*\x00-\x1f\x7f]+)")
 # Bitcoin wallet addresses. Legacy (P2PKH / P2SH) uses Base58 (no 0/O/I/l),
 # starts with '1' or '3', total length 26–35. Bech32 (native segwit) uses
 # the HRP 'bc' + '1' separator + data charset and totals 42–62 chars in

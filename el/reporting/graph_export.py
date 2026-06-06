@@ -4,6 +4,13 @@ Reads the per-case Kùzu graph (`cases/<id>/graph.kuzu/`) read-only and
 materialises a `{nodes, edges}` adjacency for `case.html`'s attack-chain
 visualisation. Never mutates the graph.
 
+Bundle awareness: a bundle dir (`cases/<bundle>/`) has NO top-level
+graph.kuzu — each device under `devices/<name>/` carries its own.
+When the top-level graph is absent but device graphs exist, the export
+is the UNION of the device graphs with ids namespaced per device
+(`<device>/<id>`) so e.g. Process pid 4444 on two devices stays two
+distinct nodes. Each merged node carries `attrs.device`.
+
 Output format:
 
   {
@@ -76,8 +83,19 @@ _TABLE_ID_PREFIX = {tbl: pre for tbl, _pk, pre, _a in _NODE_TABLES}
 _TABLE_PK = {tbl: pk for tbl, pk, _pre, _a in _NODE_TABLES}
 
 
+def _scrub(v: Any) -> Any:
+    """Strip C0 control characters (except tab) from strings bound for
+    the HTML-embedded JSON. Memory-carved values (process cmdlines,
+    file paths from dumped sections) routinely carry NUL and friends —
+    embedding them makes case.html invalid HTML and flips text tools
+    (grep, sed) into binary mode."""
+    if isinstance(v, str):
+        return "".join(c for c in v if c == "\t" or ord(c) >= 0x20)
+    return v
+
+
 def _node_id(table: str, pk_value: Any) -> str:
-    return f"{_TABLE_ID_PREFIX.get(table, table.lower())}:{pk_value}"
+    return f"{_TABLE_ID_PREFIX.get(table, table.lower())}:{_scrub(pk_value)}"
 
 
 def _label_for(table: str, attrs: dict, pk_value: Any) -> str:
@@ -97,25 +115,10 @@ def _label_for(table: str, attrs: dict, pk_value: Any) -> str:
     return str(pk_value)
 
 
-def export_graph(case_dir: str | Path, max_nodes: int = 500) -> dict:
-    """Read the case's Kùzu graph and return {nodes, edges, stats}.
-
-    Falls back to an empty graph if Kùzu is unavailable, the case's
-    graph.kuzu dir is missing, or the graph has no nodes (common on
-    fresh/mobile cases where the investigator agents haven't populated
-    the graph yet)."""
-    case_dir = Path(case_dir)
-    gp = case_dir / "graph.kuzu"
-    stats: dict[str, Any] = {"total_nodes": 0, "total_edges": 0,
-                              "capped": False, "max_nodes": max_nodes}
-    if not gp.exists():
-        return {"nodes": [], "edges": [], "stats": stats}
-
-    try:
-        import kuzu
-    except Exception:
-        return {"nodes": [], "edges": [], "stats":
-                {**stats, "error": "kuzu unavailable"}}
+def _read_graph(gp: Path) -> tuple[dict[str, dict], list[dict]]:
+    """Read one graph.kuzu read-only → (nodes by id, edges). Raises on
+    open failure — callers decide whether that's fatal."""
+    import kuzu
 
     try:
         db = kuzu.Database(str(gp), read_only=True)
@@ -138,14 +141,13 @@ def export_graph(case_dir: str | Path, max_nodes: int = 500) -> dict:
             if pkv is None:
                 continue
             nid = _node_id(table, pkv)
-            attrs = {k: v for k, v in rec.items() if k != pk_field and v is not None}
+            attrs = {k: _scrub(v) for k, v in rec.items()
+                     if k != pk_field and v is not None}
             nodes[nid] = {
                 "id": nid, "type": table,
-                "label": _label_for(table, attrs, pkv),
+                "label": _scrub(_label_for(table, attrs, pkv)),
                 "attrs": attrs,
             }
-
-    stats["total_nodes"] = len(nodes)
 
     edges: list[dict] = []
     for rel_table, from_table, to_table in _REL_TABLES:
@@ -169,23 +171,92 @@ def export_graph(case_dir: str | Path, max_nodes: int = 500) -> dict:
                 "to": _node_id(to_table, tpk),
                 "type": rel_table,
             })
+    return nodes, edges
+
+
+def _cap_by_degree(nodes: dict[str, dict], edges: list[dict],
+                   max_nodes: int, stats: dict) -> tuple[dict, list]:
+    """Keep the top-max_nodes most-connected nodes (mutates stats)."""
+    if len(nodes) <= max_nodes:
+        return nodes, edges
+    degree: dict[str, int] = {}
+    for e in edges:
+        degree[e["from"]] = degree.get(e["from"], 0) + 1
+        degree[e["to"]] = degree.get(e["to"], 0) + 1
+    ranked = sorted(nodes.keys(), key=lambda n: (-degree.get(n, 0), n))
+    keep = set(ranked[:max_nodes])
+    nodes = {k: v for k, v in nodes.items() if k in keep}
+    edges = [e for e in edges if e["from"] in keep and e["to"] in keep]
+    stats["capped"] = True
+    stats["shown_nodes"] = len(nodes)
+    stats["shown_edges"] = len(edges)
+    return nodes, edges
+
+
+def export_graph(case_dir: str | Path, max_nodes: int = 500) -> dict:
+    """Read the case's Kùzu graph and return {nodes, edges, stats}.
+
+    Bundle dirs (no top-level graph.kuzu, but devices/<n>/graph.kuzu
+    present) export the union of the device graphs with per-device
+    namespaced ids — see module docstring.
+
+    Falls back to an empty graph if Kùzu is unavailable, no graph dir
+    exists, or the graph has no nodes (common on fresh/mobile cases
+    where the investigator agents haven't populated the graph yet)."""
+    case_dir = Path(case_dir)
+    gp = case_dir / "graph.kuzu"
+    stats: dict[str, Any] = {"total_nodes": 0, "total_edges": 0,
+                              "capped": False, "max_nodes": max_nodes}
+
+    device_graphs: list[tuple[str, Path]] = []
+    if not gp.exists():
+        devices_dir = case_dir / "devices"
+        if devices_dir.is_dir():
+            device_graphs = sorted(
+                (p.parent.name, p)
+                for p in devices_dir.glob("*/graph.kuzu"))
+        if not device_graphs:
+            return {"nodes": [], "edges": [], "stats": stats}
+
+    try:
+        import kuzu  # noqa: F401 — probed before any read
+    except Exception:
+        return {"nodes": [], "edges": [], "stats":
+                {**stats, "error": "kuzu unavailable"}}
+
+    if not device_graphs:
+        try:
+            nodes, edges = _read_graph(gp)
+        except Exception as e:
+            return {"nodes": [], "edges": [], "stats":
+                    {**stats, "error": f"graph open failed: {e}"}}
+    else:
+        # Bundle union — namespace every id with the device name so
+        # identical PKs on different devices (Process pids, "host_unknown"
+        # Host rows) stay distinct nodes.
+        nodes, edges = {}, []
+        read_errors: list[str] = []
+        for dev, dgp in device_graphs:
+            try:
+                dnodes, dedges = _read_graph(dgp)
+            except Exception as e:
+                read_errors.append(f"{dev}: {e}")
+                continue
+            for nid, node in dnodes.items():
+                qid = f"{dev}/{nid}"
+                node = {**node, "id": qid,
+                        "attrs": {**node["attrs"], "device": dev}}
+                nodes[qid] = node
+            for e in dedges:
+                edges.append({**e, "from": f"{dev}/{e['from']}",
+                              "to": f"{dev}/{e['to']}"})
+        stats["devices"] = [dev for dev, _ in device_graphs]
+        if read_errors:
+            stats["error"] = "; ".join(read_errors)
+
+    stats["total_nodes"] = len(nodes)
     stats["total_edges"] = len(edges)
-
-    # Cap by degree — keep the top-max_nodes most-connected nodes
-    if len(nodes) > max_nodes:
-        degree: dict[str, int] = {}
-        for e in edges:
-            degree[e["from"]] = degree.get(e["from"], 0) + 1
-            degree[e["to"]] = degree.get(e["to"], 0) + 1
-        ranked = sorted(nodes.keys(),
-                         key=lambda n: (-degree.get(n, 0), n))
-        keep = set(ranked[:max_nodes])
-        nodes = {k: v for k, v in nodes.items() if k in keep}
-        edges = [e for e in edges if e["from"] in keep and e["to"] in keep]
-        stats["capped"] = True
-        stats["shown_nodes"] = len(nodes)
-        stats["shown_edges"] = len(edges)
-
+    nodes, edges = _cap_by_degree(nodes, edges, max_nodes, stats)
     return {"nodes": list(nodes.values()), "edges": edges, "stats": stats}
 
 
