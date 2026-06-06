@@ -1222,7 +1222,8 @@ class DiskForensicatorAgent(Agent):
 
         try:
             sk.mount_ntfs(raw_image, partition["start_sector"], fs_mount,
-                          sector_size=sector_size, timeout=60)
+                          sector_size=sector_size, timeout=60,
+                          length_sectors=partition.get("length_sectors"))
         except sk.SleuthkitError as e:
             self.emit(ctx, Finding(
                 case_id=ctx.case_id, agent=self.name, confidence="insufficient",

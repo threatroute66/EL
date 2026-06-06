@@ -229,42 +229,50 @@ def ewfmount(image: Path, mount_point: Path, timeout: int = 60) -> Path:
     return raw
 
 
+# mount_point -> loop device created by mount_ntfs(); umount() detaches it.
+_NTFS_LOOPS: dict[str, str] = {}
+
+
 def mount_ntfs(raw_image: Path, offset_sectors: int, mount_point: Path,
-               sector_size: int = 512, timeout: int = 60) -> None:
+               sector_size: int = 512, timeout: int = 60,
+               length_sectors: int | None = None) -> None:
     """Read-only mount an NTFS partition from a raw disk stream.
 
     Per sleuthkit SKILL: always pass ro,offset,norecovery. norecovery
     prevents NTFS journal replay (which would alter the on-disk state).
 
-    Two-stage strategy:
+    Three-stage strategy:
 
-      1. **ntfs-3g direct mount** — works against any file shape
+      1. **ntfs-3g direct mount** — offset 0 ONLY. ntfs-3g does NOT
+         honour ``offset=`` (it is silently ignored and the tool reads
+         sector 0, then reports "NTFS signature is missing" — observed
+         on the vanko-surface E01, where the partition at sector
+         1411072 was perfectly healthy). Works against any file shape
          including FUSE-exposed virtual files (`dislocker-file`,
-         `ewfmount` exports, anything backed by a userspace fuse
-         driver). ntfs-3g handles its own block I/O internally and
-         doesn't need a kernel loop device. Tried FIRST.
+         `ewfmount` exports), so it stays first for whole-volume
+         streams like VSS snapshot devices.
 
-      2. **Kernel `mount -o loop,offset=...`** — fallback for the
-         rare case where ntfs-3g is unavailable or the image has
-         a quirk ntfs-3g rejects. Cannot stack on FUSE files (loop
-         device requires a real backing inode), so this path is
-         only useful for plain raw files.
+      2. **Explicit `losetup --offset --sizelimit` + ntfs-3g on the
+         loop device** — the workhorse for a partition inside a larger
+         stream. Loop devices stack on FUSE files on this kernel, and
+         ``--sizelimit`` keeps end-of-device probes (blkid backup-
+         superblock reads, $Boot mirror) inside the partition: without
+         it, probing reads past the last partition into image tail
+         sectors that a damaged/short final EWF segment may not be
+         able to serve (I/O error → auto-probe declares "wrong fs").
 
-    The order matters: dislocker-fuse exposed `dislocker-file` is
-    a FUSE virtual file; the kernel loop path rc=32 there even
-    when the underlying NTFS is healthy. ntfs-3g works against it
-    directly.
+      3. **Kernel `mount -o loop,offset=...`** — last resort for the
+         case where ntfs-3g is unavailable entirely.
     """
     mount_point.mkdir(parents=True, exist_ok=True)
     offset_bytes = offset_sectors * sector_size
     errors: list[str] = []
-
-    # Path 1: ntfs-3g direct mount. -o option list mirrors kernel
-    # mount's; ntfs-3g understands offset= the same way.
     ntfs3g = shutil.which("ntfs-3g")
-    if ntfs3g:
-        cmd = ["sudo", ntfs3g, "-o",
-               f"ro,offset={offset_bytes},norecovery",
+
+    # Path 1: ntfs-3g direct mount — only valid at offset 0 (ntfs-3g
+    # ignores offset=; a nonzero offset here would probe sector 0).
+    if ntfs3g and offset_bytes == 0:
+        cmd = ["sudo", ntfs3g, "-o", "ro,norecovery",
                str(raw_image), str(mount_point)]
         try:
             proc = subprocess.run(cmd, capture_output=True, text=True,
@@ -277,8 +285,45 @@ def mount_ntfs(raw_image: Path, offset_sectors: int, mount_point: Path,
         except subprocess.TimeoutExpired as e:
             raise SleuthkitError(f"ntfs-3g mount timeout: {e}") from e
 
-    # Path 2: kernel loop mount. Won't work on FUSE files but covers
-    # the case where ntfs-3g is missing or rejected the image.
+    # Path 2: explicit read-only loop device with offset (+ sizelimit
+    # when the partition length is known), then ntfs-3g on the loop.
+    if ntfs3g:
+        losetup_cmd = ["sudo", "losetup", "--find", "--show", "--read-only",
+                       "--offset", str(offset_bytes)]
+        if length_sectors:
+            losetup_cmd += ["--sizelimit", str(length_sectors * sector_size)]
+        losetup_cmd.append(str(raw_image))
+        loop_dev = ""
+        try:
+            proc = subprocess.run(losetup_cmd, capture_output=True,
+                                  text=True, timeout=timeout)
+            if proc.returncode == 0:
+                loop_dev = proc.stdout.strip()
+            else:
+                errors.append(f"losetup rc={proc.returncode}: "
+                              f"{(proc.stderr or proc.stdout).strip()[:200]}")
+        except subprocess.TimeoutExpired:
+            errors.append("losetup timeout")
+        if loop_dev:
+            cmd = ["sudo", ntfs3g, "-o", "ro,norecovery",
+                   loop_dev, str(mount_point)]
+            try:
+                proc = subprocess.run(cmd, capture_output=True, text=True,
+                                      timeout=timeout)
+            except subprocess.TimeoutExpired as e:
+                subprocess.run(["sudo", "losetup", "-d", loop_dev],
+                               capture_output=True, timeout=30)
+                raise SleuthkitError(f"ntfs-3g mount timeout: {e}") from e
+            if proc.returncode == 0:
+                _NTFS_LOOPS[str(mount_point)] = loop_dev
+                return
+            errors.append(
+                f"ntfs-3g on {loop_dev} rc={proc.returncode}: "
+                f"{(proc.stderr or proc.stdout).strip()[:200]}")
+            subprocess.run(["sudo", "losetup", "-d", loop_dev],
+                           capture_output=True, timeout=30)
+
+    # Path 3: kernel loop mount — covers ntfs-3g entirely missing.
     cmd = ["sudo", "mount", "-o",
            f"ro,loop,offset={offset_bytes},norecovery",
            str(raw_image), str(mount_point)]
@@ -297,12 +342,20 @@ def mount_ntfs(raw_image: Path, offset_sectors: int, mount_point: Path,
 
 def umount(mount_point: Path, timeout: int = 30) -> None:
     """Unmount a kernel mount + clean up empty mount-point dir.
-    Idempotent — silent on already-unmounted."""
+    Idempotent — silent on already-unmounted. Detaches any loop
+    device mount_ntfs() created for this mount point."""
     try:
         subprocess.run(["sudo", "umount", str(mount_point)],
                        capture_output=True, text=True, timeout=timeout)
     except subprocess.TimeoutExpired:
         pass
+    loop_dev = _NTFS_LOOPS.pop(str(mount_point), None)
+    if loop_dev:
+        try:
+            subprocess.run(["sudo", "losetup", "-d", loop_dev],
+                           capture_output=True, text=True, timeout=timeout)
+        except subprocess.TimeoutExpired:
+            pass
     try:
         if mount_point.exists() and not any(mount_point.iterdir()):
             mount_point.rmdir()

@@ -120,9 +120,39 @@ def _auto_detach_gb_threshold() -> float:
         return 4.0
 
 
+_SEGMENT_FIRST_RE = None  # compiled lazily in _segment_family_bytes
+
+
+def _segment_family_bytes(p) -> int:
+    """Total bytes of a split-image segment family (surface.E01..E21,
+    disk.001/.002, .s01/.Lx01...). The detach decision must see the WHOLE
+    acquisition, not the first 2 GB segment — a 21-segment E01 set once
+    dodged auto-detach because only surface_physical.E01 was stat'd.
+    Returns 0 when ``p`` is not the first segment of a split image."""
+    import re as _re
+    global _SEGMENT_FIRST_RE
+    if _SEGMENT_FIRST_RE is None:
+        _SEGMENT_FIRST_RE = (
+            _re.compile(r"(?i)^\.(?:[els]x?0*1|0*1)$"),          # .E01 .Ex01 .s01 .001
+            _re.compile(r"(?i)^\.(?:[els]x?[0-9a-z]{2,}|[0-9]{3,})$"),  # any segment
+        )
+    first_re, any_re = _SEGMENT_FIRST_RE
+    if not first_re.match(p.suffix):
+        return 0
+    total = 0
+    for sib in p.parent.glob(p.stem + ".*"):
+        try:
+            if sib.is_file() and any_re.match(sib.suffix):
+                total += sib.stat().st_size
+        except OSError:
+            continue
+    return total
+
+
 def _input_size_gb(*paths: str) -> float:
     """Total size in GB of one or more evidence inputs. A single image is a
-    plain stat; a directory (CyLR/FFS tree) is summed with a bounded walk.
+    plain stat (split images sum their whole segment family); a directory
+    (CyLR/FFS tree) is summed with a bounded walk.
     Read-only — never touches the evidence."""
     from pathlib import Path as _P
     total = 0
@@ -130,7 +160,7 @@ def _input_size_gb(*paths: str) -> float:
         p = _P(path)
         try:
             if p.is_file():
-                total += p.stat().st_size
+                total += _segment_family_bytes(p) or p.stat().st_size
             elif p.is_dir():
                 for f in p.rglob("*"):
                     try:
