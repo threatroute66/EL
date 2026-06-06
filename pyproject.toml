@@ -83,6 +83,11 @@ dev = [
     "pytest>=8",
     "ruff>=0.4",
 ]
+# Fuzzy-hash similarity for Layer-3 cross-case malware correlation
+# (el/skills/similarity_digest.py degrades gracefully without it).
+similarity = [
+    "python-tlsh>=4.5",
+]
 
 [project.scripts]
 el = "el.cli:app"

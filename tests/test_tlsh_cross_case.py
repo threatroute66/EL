@@ -21,6 +21,11 @@ from pathlib import Path
 
 import pytest
 
+# python-tlsh is an optional dependency (the `similarity` extra);
+# similarity_digest degrades to None without it, which would fail
+# every assertion below — skip the module instead on bare hosts.
+pytest.importorskip("tlsh")
+
 from el import knowledge as kb
 from el.skills.similarity_digest import (
     tlsh_digest, tlsh_distance, tlsh_score_band,

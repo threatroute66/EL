@@ -1223,6 +1223,21 @@ class MemoryForensicatorAgent(Agent):
         if not rows:
             return out
 
+        # Populate the case graph BEFORE the early return below — netscan
+        # is the only network visibility a memory-only case has, and until
+        # this write the IPAddress / CONNECTED_TO tables stayed empty for
+        # such cases (Rocba bundle: 430 netscan rows incl. two external RDP
+        # attack sources, yet correlator reported "0 IP(s)"). The schema's
+        # CONNECTED_TO(Process→IPAddress) rel exists precisely for this.
+        try:
+            self._populate_netscan_graph(ctx, rows)
+        except Exception as e:
+            out.append(self.emit(ctx, Finding(
+                case_id=ctx.case_id, agent=self.name, confidence="low",
+                claim=f"Netscan graph population partially failed: {e}",
+                evidence=[run.as_evidence({"phase": "netscan_graph"})],
+            )))
+
         beacons = netscan_triage.detect_repeat_endpoint_beacon(rows)
         laterals = netscan_triage.detect_lateral_admin_port_session(rows)
         if not beacons and not laterals:
@@ -1277,6 +1292,63 @@ class MemoryForensicatorAgent(Agent):
                 hypotheses_supported=["H_LATERAL_MOVEMENT"],
             )))
         return out
+
+    # Foreign addresses that carry no correlation value as graph nodes:
+    # unspecified/wildcard listeners and loopback chatter.
+    _NETSCAN_SKIP_ADDRS = {"", "*", "0.0.0.0", "::", "127.0.0.1", "::1"}
+
+    def _populate_netscan_graph(self, ctx: AgentContext,
+                                rows: list[dict]) -> int:
+        """Write netscan endpoints into the case graph.
+
+        For every (PID, ForeignAddr) pair: MERGE the IPAddress node and
+        a CONNECTED_TO edge from the owning Process. The Process node is
+        MERGEd too (netscan can know sockets whose process pslist missed
+        — pool-tag scanning survives process exit), with the name taken
+        from the row's Owner when we create it. All writes are MERGE so
+        re-investigation stays idempotent. Returns the edge-pair count.
+        """
+        pairs: set[tuple[int, str]] = set()
+        owners: dict[int, str] = {}
+        for row in rows:
+            addr = row.get("ForeignAddr") or ""
+            pid = row.get("PID")
+            if pid is None or addr in self._NETSCAN_SKIP_ADDRS:
+                continue
+            try:
+                pid = int(pid)
+            except (TypeError, ValueError):
+                continue
+            pairs.add((pid, addr))
+            owner = row.get("Owner")
+            if owner and pid not in owners:
+                owners[pid] = str(owner)
+
+        if not pairs:
+            return 0
+
+        db, conn = open_graph(ctx.case_dir)
+
+        def _esc(s: str) -> str:
+            return s.replace("\\", "\\\\").replace("'", "''")
+
+        for addr in {a for _, a in pairs}:
+            version = 6 if ":" in addr else 4
+            conn.execute(
+                f"MERGE (:IPAddress {{addr: '{_esc(addr)}', "
+                f"version: {version}}})")
+        written = 0
+        for pid, addr in sorted(pairs):
+            name = _esc(owners.get(pid, ""))
+            conn.execute(
+                f"MERGE (p:Process {{pid: {pid}}}) "
+                f"ON CREATE SET p.name = '{name}'")
+            conn.execute(
+                f"MATCH (p:Process {{pid: {pid}}}), "
+                f"      (i:IPAddress {{addr: '{_esc(addr)}'}}) "
+                f"MERGE (p)-[:CONNECTED_TO]->(i)")
+            written += 1
+        return written
 
     def _flag_malfind(self, ctx: AgentContext, run: vol3.PluginRun) -> list[Finding]:
         out: list[Finding] = []
