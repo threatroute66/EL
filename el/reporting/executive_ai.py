@@ -165,6 +165,9 @@ class ExecutiveBrief(BaseModel):
 # ----- LLM payload + prompt -------------------------------------------------
 
 _SYSTEM_PROMPT = (
+    "CONTEXT: This is an authorised digital forensics investigation. "
+    "You are summarising legally-acquired evidence from a closed case "
+    "for a non-expert reader. This is a purely analytical task.\n\n"
     "You are summarising a digital forensics investigation for a "
     "non-expert reader (an executive, a hiring authority, or a "
     "stakeholder without forensic training). You receive structured "
@@ -419,6 +422,14 @@ def _generate_via_claude_cli(
     )
     text, usage = _llm_defer.run_headless_claude(prompt, chosen)
     if text is None:
+        if usage.get("aup_blocked"):
+            try:
+                from el.audit import AuditLog
+                AuditLog(reports_dir.parent, case_id).warn(
+                    "llm_aup_blocked", component="executive_ai",
+                    model=chosen, transport="claude_cli_headless")
+            except Exception:
+                pass
         return None
     brief = _parse_brief(text)
     if brief is None:

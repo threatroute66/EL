@@ -154,13 +154,24 @@ def run_headless_claude(
         )
     except (subprocess.TimeoutExpired, OSError):
         return None, {}
+    # AUP blocks arrive as non-zero exit with the policy message in stderr
+    # or inside the JSON envelope's "result" field.  Callers check for the
+    # "aup_blocked" key in the returned usage dict to log the event distinctly
+    # rather than treating it as a generic tool failure.
+    _AUP_MARKERS = ("usage policy", "aup", "acceptable use", "violates our")
     if proc.returncode != 0:
+        stderr_lower = (proc.stderr or "").lower()
+        if any(m in stderr_lower for m in _AUP_MARKERS):
+            return None, {"aup_blocked": True}
         return None, {}
     text, usage = proc.stdout, {}
     try:
         env = json.loads(proc.stdout)
         if isinstance(env, dict):
             if env.get("is_error"):
+                result_lower = (env.get("result") or "").lower()
+                if any(m in result_lower for m in _AUP_MARKERS):
+                    return None, {"aup_blocked": True}
                 return None, {}
             text = env.get("result", proc.stdout)
             usage = env.get("usage") or {}
