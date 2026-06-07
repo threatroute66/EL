@@ -38,44 +38,83 @@ def _make_completed(rc: int, stderr: str = "", stdout: str = ""):
 # ---------------------------------------------------------------------------
 
 def test_mount_ntfs_tries_ntfs_3g_first(tmp_path):
-    """When ntfs-3g is on PATH, mount_ntfs MUST invoke it first.
-    Kernel mount must NOT run unless ntfs-3g fails."""
+    """At offset=0 ntfs-3g is invoked directly (Stage 1) — one call, no losetup.
+    Kernel mount must NOT run unless ntfs-3g fails.
+
+    Non-zero offsets use the losetup→ntfs-3g path (Stage 2); that is covered
+    by test_mount_ntfs_losetup_path below.
+    """
     img = tmp_path / "img.bin"
     img.write_bytes(b"\x00" * 4096)
     mp = tmp_path / "mnt"
     calls: list[list[str]] = []
     def fake_run(cmd, **kwargs):
         calls.append(list(cmd))
-        # ntfs-3g succeeds on first call
         return _make_completed(0)
     with patch("el.skills.sleuthkit.shutil.which",
                 return_value="/usr/bin/ntfs-3g"), \
          patch("el.skills.sleuthkit.subprocess.run", side_effect=fake_run):
-        mount_ntfs(img, 128, mp)
+        mount_ntfs(img, 0, mp)  # offset=0 → Stage 1: direct ntfs-3g
     assert len(calls) == 1, f"expected 1 call, got {len(calls)}"
-    # First command must be ntfs-3g, not mount
+    # The single call must be ntfs-3g, not losetup or kernel mount
     assert "ntfs-3g" in " ".join(calls[0])
+    assert "losetup" not in calls[0]
     assert "mount" not in [c for c in calls[0] if c == "mount"]
+
+
+def test_mount_ntfs_losetup_path(tmp_path):
+    """Non-zero offset: Stage 2 runs losetup first, then ntfs-3g on the loop
+    device. Kernel mount must NOT run when both succeed."""
+    img = tmp_path / "img.bin"
+    img.write_bytes(b"\x00" * 4096)
+    mp = tmp_path / "mnt"
+    calls: list[list[str]] = []
+    def fake_run(cmd, **kwargs):
+        calls.append(list(cmd))
+        # losetup --find --show returns a loop device path on stdout
+        if "losetup" in cmd:
+            return _make_completed(0, stdout="/dev/loop9")
+        return _make_completed(0)
+    with patch("el.skills.sleuthkit.shutil.which",
+                return_value="/usr/bin/ntfs-3g"), \
+         patch("el.skills.sleuthkit.subprocess.run", side_effect=fake_run):
+        mount_ntfs(img, 128, mp)  # offset=128 → Stage 2
+    assert len(calls) == 2, f"expected 2 calls (losetup + ntfs-3g), got {len(calls)}"
+    assert "losetup" in calls[0]
+    assert "ntfs-3g" in " ".join(calls[1])
+    # No kernel mount
+    assert not any("mount" == c for c in calls[1])
 
 
 def test_mount_ntfs_offset_correctly_computed(tmp_path):
     """offset_sectors × sector_size = offset_bytes. Verify the
-    arithmetic flows through to the ntfs-3g argument (regression
-    for a future off-by-512 bug)."""
+    arithmetic flows through to the losetup argument (regression
+    for a future off-by-512 bug).
+
+    With the losetup Stage-2 path, the offset appears as
+    ``--offset 65536`` (two separate argv tokens) in the losetup
+    command, not as ``offset=65536`` in a kernel -o string.
+    """
     img = tmp_path / "img.bin"
     img.write_bytes(b"\x00" * 4096)
     mp = tmp_path / "mnt"
     seen_cmd: list[list[str]] = []
     def fake_run(cmd, **kwargs):
         seen_cmd.append(list(cmd))
+        if "losetup" in cmd:
+            return _make_completed(0, stdout="/dev/loop9")
         return _make_completed(0)
     with patch("el.skills.sleuthkit.shutil.which",
                 return_value="/usr/bin/ntfs-3g"), \
          patch("el.skills.sleuthkit.subprocess.run", side_effect=fake_run):
         # 128 sectors × 512 bytes = 65536 bytes
         mount_ntfs(img, 128, mp, sector_size=512)
-    opts = " ".join(seen_cmd[0])
-    assert "offset=65536" in opts
+    # First call is losetup — verify the offset bytes are correct
+    losetup_cmd = seen_cmd[0]
+    assert "losetup" in losetup_cmd
+    assert "--offset" in losetup_cmd
+    offset_idx = losetup_cmd.index("--offset")
+    assert losetup_cmd[offset_idx + 1] == "65536"
 
 
 def test_mount_ntfs_passes_ro_norecovery(tmp_path):
