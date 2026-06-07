@@ -140,7 +140,21 @@ _IGRANK = (_IPHONE / "private/var/mobile/Containers/Data/Application/"
            "ig-ranking-data")
 
 
-@pytest.mark.skipif(not _SMS.is_file(), reason="iPhone image not mounted")
+def _safe_is_file(p: Path) -> bool:
+    try:
+        return p.is_file()
+    except OSError:
+        return False
+
+
+def _safe_is_dir(p: Path) -> bool:
+    try:
+        return p.is_dir()
+    except OSError:
+        return False
+
+
+@pytest.mark.skipif(not _safe_is_file(_SMS), reason="iPhone image not mounted")
 def test_real_imessage_attributedbody():
     import sqlite3
     c = sqlite3.connect(f"file:{_SMS}?immutable=1", uri=True)
@@ -150,7 +164,7 @@ def test_real_imessage_attributedbody():
     assert "messaging" in text.lower()
 
 
-@pytest.mark.skipif(not _IGRANK.is_dir(), reason="iPhone image not mounted")
+@pytest.mark.skipif(not _safe_is_dir(_IGRANK), reason="iPhone image not mounted")
 def test_real_nskeyedarchiver_plist():
     plist = next(_IGRANK.glob("*.plist"))
     obj = aa.unarchive(plist.read_bytes())

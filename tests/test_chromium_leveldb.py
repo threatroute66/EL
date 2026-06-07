@@ -139,7 +139,14 @@ _WORDLE = Path(
     "Default/Local Storage/leveldb")
 
 
-@pytest.mark.skipif(not (_WORDLE / "CURRENT").is_file(),
+def _safe_is_file(p: Path) -> bool:
+    try:
+        return p.is_file()
+    except OSError:
+        return False
+
+
+@pytest.mark.skipif(not _safe_is_file(_WORDLE / "CURRENT"),
                     reason="Samsung A53 image not mounted")
 def test_real_wordle_store_decodes():
     run = ldb.parse(_WORDLE)
