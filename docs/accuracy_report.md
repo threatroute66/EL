@@ -447,6 +447,68 @@ before the state machine). Strengthened the assertion to verify
 condition that catches a silent second-device failure. Commit
 `c14e3a7`.
 
+### Sequence 5 — vanko-r2: LLM challenger AUP blocks + silent merge skip (June 2026)
+
+Real evidence: `surface_physical.E01` — 21-segment EWF, 36.8 GB Surface 3 /
+Win10 disk image, vanko-r2 re-investigation run.
+
+**Failure 1.** The red reviewer's LLM challenger (headless `claude -p`
+path) returned non-zero exit codes on several batches during a detached
+investigation run. The audit log recorded `aup_blocked_batches > 0` but
+the underlying cause was not surfaced to the analyst — the findings in
+those batches silently retained rule-only verdicts with no indication that
+the LLM challenge was skipped. The affected batches contained raw forensic
+artifact strings: classified document names in evidence `facts` dicts
+(`"1_GWU Op Plan.docx"`), SDelete wipe command sequences, and autorun.inf
+script snippets — content that triggered the model's content filter even
+in a forensic context.
+
+**Self-correction 1.** Three targeted mitigations, all in the prompt
+construction layer rather than at the model-selection layer (where they
+would not have addressed the root cause):
+
+1. **Forensic preamble** prepended to `SYSTEM` before any finding content,
+   establishing unambiguous context before the model encounters artifact
+   strings (`_FORENSIC_PREAMBLE` in `el/agents/red_reviewer.py` and
+   `el/reporting/executive_ai.py`).
+2. **Fact truncation** (`_scrub_facts(max_val=300)`) and **claim cap**
+   (500 chars) in `_review_payload()` — raw tool output in `extracted_facts`
+   was the primary vector; truncating preserves analytical signal while
+   removing bulk verbatim content.
+3. **AUP sentinel detection** in `run_headless_claude()` in `el/llm_defer.py`
+   — distinguishes a content-filter block from a generic tool failure so
+   the audit log records `aup_blocked` separately and callers can track
+   coverage gaps rather than treating them as random failures.
+
+After mitigations: full vanko-r2 red review via Opus 4.8 — 44 batches,
+434 findings, zero AUP blocks, zero batch failures.
+
+**Failure 2 (found during the same cycle).** `apply_deferred_red_review`
+raised `KeyError: 'pending'` when merging Opus 4.8 verdicts. The merge
+function indexed `_SEVERITY = {"passed": 0, "unresolved": 1, "challenged": 2}`
+on a finding's current `red_review.status`; findings that had not yet been
+processed by the rule-based challenger still held the initial `"pending"`
+status and were not in the dict. The exception was caught by `cli.py` and
+printed as a yellow warning, meaning the 434 Opus 4.8 verdicts were
+silently discarded with no finding update and no error exit code. The only
+observable symptom was `el report` printing `deferred red-review merge
+skipped: 'pending'` instead of a merge count.
+
+**Self-correction 2.** Added `"pending": 0` to `_SEVERITY` — treating
+unreviewed findings as the lowest severity floor, consistent with the
+severity-max merge semantics. The fix is one line; no test yet (the
+scenario requires a fresh ledger entry that bypasses the rule challenger,
+which is architecturally unusual — tracked as a future regression).
+
+What distinguishes Sequence 5 from 1–4: the failure was not in EL's
+forensic detection logic but in the **adversarial review layer** — the
+component that exists to challenge EL's own findings. A broken challenger
+is operationally worse than a missing one, because it produces no visible
+gap in the output: rule-only verdicts look identical to merged verdicts
+in the HTML report. The mitigations make the gap auditable via the
+`aup_blocked_batches` audit-log field and the `deferred red-review merge`
+console message.
+
 ### Sequence 4 — M57-pcaps DGA detector: googleusercontent CDN false positive (April 2026)
 
 Real evidence: same M57-pcaps-v3 run that exposed Sequences 1's
@@ -492,25 +554,32 @@ classes" earlier in this doc. Commit `6a6e1ff`.
 
 ---
 
-What these four sequences share:
-- Triggered by **real third-party evidence** (M57 / BelkaCTF),
-  not synthetic test fixtures.
+What these five sequences share:
+- Triggered by **real third-party evidence** (M57 / BelkaCTF /
+  vanko-r2), not synthetic test fixtures.
 - The first symptom was always **observable in the agent's own
   outputs** — a triage finding admitting "no shape match",
   an audit log with `agent_start` but no `agent_done`, a
-  bundle summary listing fewer devices than requested, or a
-  finding whose own sample list exposes its noise.
-- The fix landed with **regression tests that explicitly
-  reproduce the failure** before fixing it, so the same class
-  of bug can't reappear silently.
+  bundle summary listing fewer devices than requested, a
+  finding whose own sample list exposes its noise, or an audit
+  log entry recording `aup_blocked_batches > 0`.
+- The fix landed at the layer that owned the root cause:
+  streaming primitive (OOM), regex flag (case mismatch),
+  state instantiation (coordinator reuse), suffix allowlist
+  (CDN noise), prompt construction (AUP content trigger).
 
 Sequences 1–3 caught silent crashes (no output where output was
-expected). Sequence 4 caught the inverse — output that was
-emitted but contained a known-noise class. The architecture
-handles both because Findings carry the data needed to
+expected). Sequence 4 caught output that was emitted but contained
+a known-noise class. Sequence 5 caught the adversarial review
+layer itself silently failing — arguably the most dangerous shape
+because a broken challenger produces output that looks identical
+to a working one. The architecture handles all three shapes
+because Findings and audit events carry the data needed to
 self-incriminate: a missing `agent_done` event, a sample list
 that points at a CDN, a `claim` text the analyst can sanity-
-check against the ground truth they brought to the engagement.
+check against the ground truth they brought to the engagement,
+or an `aup_blocked_batches` counter that proves coverage was
+incomplete.
 
 The accuracy posture isn't "we never made a mistake"; it's
 "the architecture surfaces our mistakes and tests pin them
@@ -563,7 +632,7 @@ Judges can independently verify the contract:
 .venv/bin/pytest -q tests/test_ioc_*.py tests/test_*_guard*.py \
                   tests/test_*_fp_*.py tests/test_h_ransomware_*.py
 
-# 5. Full suite (3,255 tests) — runs in ~11 min
+# 5. Full suite (3,178 passed, 89 skipped) — runs in ~10 min
 make test
 
 # 6. Walk a specific finding back to its tool execution
