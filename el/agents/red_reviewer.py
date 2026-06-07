@@ -89,7 +89,7 @@ Rules:
 - Output a JSON array of these objects, nothing else."""
 
 
-_SEVERITY = {"passed": 0, "unresolved": 1, "challenged": 2}
+_SEVERITY = {"pending": 0, "passed": 0, "unresolved": 1, "challenged": 2}
 
 
 @dataclass
