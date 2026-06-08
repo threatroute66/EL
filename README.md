@@ -71,6 +71,15 @@ guess.**
 
 ## Architecture
 
+> Rendered inline below (GitHub renders Mermaid natively). A standalone
+> export for slides / the submission form is at
+> [`docs/architecture.png`](docs/architecture.png) — evidence sources →
+> intake/triage → 34 specialist agents (each wrapping vetted SIFT CLI
+> tools) → shared per-case substrate → correlate / ACH / adversarial
+> review → judge-facing output pipeline, plus the **Claude Code session**
+> layer (Playwright MCP server from `.mcp.json` + the `el-red-review` /
+> `el-ai-brief` deferred-LLM fulfilment skills).
+
 ```mermaid
 flowchart TB
     subgraph INPUTS["Evidence inputs (16 validated shapes, 27 routed kinds)"]
@@ -162,11 +171,26 @@ flowchart TB
         P_CAPE["CAPE Sandbox<br/>(dynamic analysis)"]
     end
 
+    subgraph SESSION["Claude Code session (agentic framework — no API key needed)"]
+        direction TB
+        MCP["<b>Playwright MCP server</b><br/>(.mcp.json → npx @playwright/mcp)<br/>browser automation over the web view"]
+        SKILL_RR["skill: <b>el-red-review</b><br/>fulfils deferred adversarial challenger"]
+        SKILL_AI["skill: <b>el-ai-brief</b><br/>fulfils deferred executive brief"]
+    end
+
+    SERVE["<b>el serve</b><br/>loopback HTTP viewer :8089"]
+
     REPORT --> OUT
     REPORT -. opt-in .-> PUSH
+    O_HTML --> SERVE
+    SERVE <-. drive / screenshot .-> MCP
+    RED -. "deferred when inside Claude Code<br/>(CLAUDECODE=1, no API key)" .-> SKILL_RR
+    REPORT -. "deferred when inside Claude Code" .-> SKILL_AI
+    SKILL_RR -. verdicts merge .-> LEDGER
+    SKILL_AI -. brief re-renders .-> REPORT
 
     classDef sub fill:#0d1117,stroke:#30363d,color:#c9d1d9
-    class INPUTS,AGENTS,SHARED,OUT,PUSH sub
+    class INPUTS,AGENTS,SHARED,OUT,PUSH,SESSION sub
 ```
 
 ### Agents
