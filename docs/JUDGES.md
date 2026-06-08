@@ -1,6 +1,6 @@
 # Judges' Quickstart — EL
 
-> One page from fresh SIFT to a verifiable EL run. Two paths: a **5-minute test-suite walk-through** that proves the architectural contracts (no evidence download required) and a **30-minute end-to-end investigation** against a public DFIR scenario where EL reached the canonical answer that two public human writeups missed.
+> One page from fresh SIFT to a verifiable EL run. Three paths: a **5-minute test-suite walk-through** (Path A) that proves the architectural contracts with no evidence download; a **30-minute end-to-end investigation** against a public DFIR scenario where EL reached the canonical answer two public human writeups missed, run as a **standalone CLI** (Path B); and the **same investigation driven conversationally from inside a Claude Code session** with no `ANTHROPIC_API_KEY` (Path C).
 
 ## Prerequisites
 
@@ -56,7 +56,7 @@ make test
 | 90+ FP regression tests, each tied to a real case that originally produced the false positive | *IR Accuracy* — "honesty valued over perfection" posture made operational |
 | `test_coordinator_blocks.py` — refusal to SYNTHESIZE while any Finding is `red_review.status == "unresolved"` | *Autonomous Execution Quality* — adversarial review is non-skippable |
 
-## Path B — 30-minute end-to-end on a public DFIR scenario
+## Path B — 30-minute end-to-end on a public DFIR scenario (standalone CLI)
 
 The case: **M57-Jean** ([digitalcorpora.org](https://digitalcorpora.org/corpora/scenarios/m57-patents/)) — Pat Moore at the M57 startup investigates how a confidential spreadsheet leaked. The canonical answer per the scenario design: **Jean was socially engineered by a spoofed "Alison/President" email and replied with `m57biz.xls` attached** (not insider theft, not external compromise — pretexting-driven BEC exfil). Two public human writeups missed it; EL reached it with finding-level attribution.
 
@@ -88,6 +88,67 @@ xdg-open http://localhost:8089/m57-jean-judge/reports/executive.html
 - **Recovery corroboration:** 3 of the wiped binaries recovered from unallocated space (`tsk_recover`).
 
 Compare against the [two public human writeups EL beat on this scenario](accuracy_report.md#m57-jean-nps--digitalcorpora--bec--pretexting-exfil).
+
+## Path C — run the same investigation *inside* Claude Code (no API key)
+
+Path B above drives EL as a standalone CLI. EL is equally designed to be
+driven **conversationally from inside a Claude Code session** — the way it
+was built and the way the author runs it day-to-day. The difference that
+matters for judges: the two LLM-augmented steps (the adversarial
+**red-review challenger** and the six-section **executive brief**) are
+fulfilled by *your own Claude Code session*, so **no `ANTHROPIC_API_KEY` is
+required** — the same model auth you already use for Claude Code does the
+work. EL detects `CLAUDECODE=1`, writes a self-describing request file for
+each step, and two bundled skills (`/el-red-review`, `/el-ai-brief`)
+transport the model output back to disk and re-render the report.
+
+```bash
+# 1. Same install + evidence download as Path B (skip if already done).
+#    Then open Claude Code IN the EL project dir so the project CLAUDE.md
+#    operating context + the bundled skills both load automatically:
+cd /opt/EL && claude
+```
+
+Then, inside the session, either ask in natural language —
+
+> "Investigate /cases/nps-2008-jean.E01 with EL, case-id `m57-jean-judge`,
+> then fulfil the red-review and executive-brief requests and open the
+> report."
+
+— or run the deterministic sequence (the leading `!` runs a shell command
+in-session so its output lands in the transcript):
+
+```
+!/opt/EL/.venv/bin/el investigate /cases/nps-2008-jean.E01 --case-id m57-jean-judge --investigator "Judge"
+/el-red-review m57-jean-judge
+/el-ai-brief m57-jean-judge
+!/opt/EL/.venv/bin/el serve --port 8089 &
+```
+
+Open `http://localhost:8089/m57-jean-judge/reports/executive.html`. The
+**expected verdict is identical to Path B** — the forensic extractors are
+deterministic CLI tools; running them from inside Claude Code changes only
+*who fulfils the two advisory LLM steps* (your session vs an API key), never
+the Findings ledger or the ACH ranking.
+
+### A note on auto-detach (large evidence)
+
+M57-Jean's two-part E01 is ~3.2 GB on disk — **below** the 4 GB
+auto-detach threshold (`EL_AUTODETACH_GB`, default 4) — so `el investigate`
+runs **attached**: it blocks until done, and the `/el-red-review` +
+`/el-ai-brief` skills fulfil the deferred steps in-session as shown above.
+
+Evidence **at or above 4 GB on disk** (e.g. a 36 GB physical-disk E01 or a
+multi-device bundle) auto-promotes to a detached `systemd --user` transient
+unit so a GUI/login-session restart or `systemd-oomd` can't kill a
+multi-hour run. A **detached** run has no live assistant attached, so it
+**self-fulfils** the red-review and executive-brief steps headlessly via
+`claude -p` (still your Claude Code auth, still no API key) — you do *not*
+invoke the two slash-commands; they're already done by the time the unit
+exits. In that case `el investigate` returns immediately with a unit name;
+follow progress with `journalctl --user -u <unit> -f` or tail the per-case
+`analysis/forensic_audit.log`. Pass `--foreground` to force an attached run,
+or set `EL_AUTODETACH_GB=0` to disable the threshold entirely.
 
 ## Verifying any single finding — the sha256 round-trip
 
