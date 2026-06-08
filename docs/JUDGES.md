@@ -223,6 +223,7 @@ If the sha256 of step 4 doesn't match step 3, EL has produced a hallucinated cla
 ├── docs/
 │   ├── JUDGES.md                       (you are here)
 │   ├── accuracy_report.md              Per-corpus validation + honest misses
+│   ├── evidence_datasets.md            What EL was tested against + sources + findings
 │   ├── capability-gap-analysis.md      Working roadmap (shipped vs open)
 │   ├── state-machine.md                FSM diagram + transition table
 │   └── protocol-sift.md                Inheritance contract from upstream

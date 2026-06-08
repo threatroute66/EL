@@ -46,7 +46,11 @@ currently holds **90+ targeted anti-FP assertions** across
 ## Validated real-case results
 
 Each row lists what EL found + the specific finding_id trail
-judges can walk via `reports/traceability_matrix.md`.
+judges can walk via `reports/traceability_matrix.md`. For the
+provenance and download source of every dataset below — the
+"what it was tested against / source of the data" half of the
+Find Evil dataset-documentation requirement — see the companion
+[`evidence_datasets.md`](evidence_datasets.md).
 
 ### M57-Jean (NPS / digitalcorpora) — BEC / pretexting exfil
 
