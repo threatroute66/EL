@@ -1,0 +1,229 @@
+# Traceability Matrix — m57-jean
+
+_Finding → tool → command → output sha256 → output path. Required for the Find Evil submission: 'Judges must be able to trace any finding back to the specific tool execution that produced it.' Every row here is one EvidenceItem attached to a Finding; the finding_id column anchors the reverse-lookup._
+
+| finding_id | agent | conf | tool | command | output sha256 | output path |
+|---|---|---|---|---|---|---|
+| `01KT9TZE2ZADV0EX8Z6GZTA90E` | triage | high | `el.triage 0.1.0` | `head -c 64 /media/sansforensics/images/M57-Jean/nps-2008-jean.E01` | `0591eef38dba09dc…` | `/opt/EL/cases/m57-jean/analysis/triage/head.bin` |
+| `01KT9TZE3AAXEXWQQ9PE94YT8X` | disk_forensicator | high | `sleuthkit/ewfinfo ewfinfo 20140816` | `/usr/bin/ewfinfo /media/sansforensics/images/M57-Jean/nps-2008-jean.E01` | `f371f100633aebd3…` | `/opt/EL/cases/m57-jean/analysis/disk_forensicator/ewfinfo.txt` |
+| `01KT9TZE3DXGH3YH4KBJSXRY44` | disk_forensicator | high | `el.ewf_skew 0.1.0` | `parse_file(ewfinfo.txt)` | `f371f100633aebd3…` | `/opt/EL/cases/m57-jean/analysis/disk_forensicator/ewfinfo.txt` |
+| `01KT9TZE4HBK98406K2B0NTDPF` | disk_forensicator | high | `sleuthkit/ewfinfo ewfinfo 20140816` | `/usr/bin/ewfinfo /media/sansforensics/images/M57-Jean/nps-2008-jean.E01` | `f371f100633aebd3…` | `/opt/EL/cases/m57-jean/analysis/disk_forensicator/ewfinfo.txt` |
+| `01KT9TZE5DTSGQE0BFY5FQVHNM` | disk_forensicator | high | `sleuthkit/img_stat The Sleuth Kit ver 4.11.1` | `/usr/bin/img_stat /tmp/el-mounts/m57-jean/ewf1` | `39fcac63445d5004…` | `/opt/EL/cases/m57-jean/analysis/disk_forensicator/img_stat.txt` |
+| `01KT9TZE6KMW2YFQXQ2FX54XJ0` | disk_forensicator | high | `sleuthkit/mmls The Sleuth Kit ver 4.11.1` | `/usr/bin/mmls /tmp/el-mounts/m57-jean/ewf1` | `1a48558e5ce013fe…` | `/opt/EL/cases/m57-jean/analysis/disk_forensicator/mmls.txt` |
+| `01KT9TZE6RWKQYV0S32V0BWA9S` | disk_forensicator | high | `el.gpt_state 0.1.0` | `gpt_state.inspect(ewf1)` | `0bd427bcaab051c6…` | `/EL/cases/m57-jean/analysis/disk_forensicator/gpt_state/gpt_state.json` |
+| `01KT9TZJQG5W5M9SAS90833GM0` | disk_forensicator | high | `sleuthkit/fls The Sleuth Kit ver 4.11.1` | `/usr/bin/fls -o 63 -r -m / /tmp/el-mounts/m57-jean/ewf1` | `87d334a869753514…` | `/opt/EL/cases/m57-jean/analysis/disk_forensicator/fls_o63.txt` |
+| `01KT9TZM40YRDK0Y8RKYZGSHJ6` | disk_forensicator | high | `sleuthkit/mactime The Sleuth Kit ver 4.11.1` | `/usr/bin/mactime -d -z UTC -b /opt/EL/cases/m57-jean/analysis/disk_forensicator/fls_o63.txt` | `e706571fd913dfae…` | `/opt/EL/cases/m57-jean/analysis/disk_forensicator/mactime.txt` |
+| `01KT9TZNC21MA9HRQ6C871W3RB` | disk_forensicator | high | `el.disk_anomaly 0.1.0` | `disk_anomaly.scan_file(fls_o63.txt)` | `64e89cebf800cf8d…` | `/opt/EL/cases/m57-jean/analysis/disk_forensicator/fls_o63.txt` |
+| `01KT9TZNC8T223MP7J12F4KRNN` | disk_forensicator | high | `el.disk_anomaly 0.1.0` | `disk_anomaly.scan_file(fls_o63.txt)` | `64e89cebf800cf8d…` | `/opt/EL/cases/m57-jean/analysis/disk_forensicator/fls_o63.txt` |
+| `01KT9TZNCDVA3TM5FP5A4ZGXZV` | disk_forensicator | high | `el.disk_anomaly 0.1.0` | `disk_anomaly.scan_file(fls_o63.txt)` | `64e89cebf800cf8d…` | `/opt/EL/cases/m57-jean/analysis/disk_forensicator/fls_o63.txt` |
+| `01KT9TZRC88YBPTH3D702E5D4N` | disk_forensicator | high | `el.disk_forensicator 0.1.0` | `sk.extract_windows_artifacts(slot000:000-off63)` | `f0ff6a42fbc53664…` | `/opt/EL/cases/m57-jean/exports/windows-artifacts/MANIFEST.txt` |
+| `01KT9VRD4Q319TFZZ2XB8DVETM` | disk_forensicator | high | `bulk_extractor bulk_extractor 1.6.1` | `/usr/bin/bulk_extractor -o /opt/EL/cases/m57-jean/analysis/disk_forensicator/bulk_extractor -j 4 -e ` | `ce0097303eae37fb…` | `/opt/EL/cases/m57-jean/analysis/disk_forensicator/bulk_extractor` |
+| `01KT9VRD7VH9947MN2P15NM4KA` | disk_forensicator | high | `exiftool present` | `exiftool -j -r /opt/EL/cases/m57-jean/exports/windows-artifacts` | `3cc6b45eddb030c6…` | `opt/EL/cases/m57-jean/analysis/disk_forensicator/exiftool-summary.json` |
+| `01KT9VTHWPPFTHX1F633KNEA2M` | malware_triage | medium | `el.malware_triage 0.1.0` | `el.malware_triage.detect_families(2 text files)` | `0416411e0555b274…` | `/opt/EL/cases/m57-jean/analysis` |
+| `01KT9VTHWRM7BFRA0FW5PXZPM7` | malware_triage | medium | `el.malware_triage 0.1.0` | `el.malware_triage.detect_families(2 text files)` | `0416411e0555b274…` | `/opt/EL/cases/m57-jean/analysis` |
+| `01KT9VTHWTE7E9ZHD3VPG3RA3M` | malware_triage | medium | `el.malware_triage 0.1.0` | `el.malware_triage.detect_families(1 text files)` | `b25c18b144585b16…` | `/opt/EL/cases/m57-jean/analysis` |
+| `01KT9VTM79RAVW8W3EW32S3K39` | windows_artifact | high | `ezt/RECmd ez-tool` | `/usr/bin/dotnet /opt/zimmermantools/RECmd/RECmd.dll -d /opt/EL/cases/m57-jean/exports/windows-artifa` | `4cd767d11312d46f…` | `/opt/EL/cases/m57-jean/analysis/windows_artifact/registry` |
+| `01KT9VTMSFC1K8ZK3KHSGGKNTT` | windows_artifact | high | `ezt/AppCompatCacheParser ez-tool` | `/usr/bin/dotnet /opt/zimmermantools/AppCompatCacheParser.dll -f /opt/EL/cases/m57-jean/exports/windo` | `f637ce83edbd4e4d…` | `/opt/EL/cases/m57-jean/analysis/windows_artifact/shimcache` |
+| `01KT9VTMZCERAR980ZWT286ECM` | windows_artifact | high | `ezt/PECmd ez-tool` | `/usr/bin/dotnet /opt/zimmermantools/PECmd.dll -d /opt/EL/cases/m57-jean/exports/windows-artifacts/Pr` | `8b02de10ddc57475…` | `/opt/EL/cases/m57-jean/analysis/windows_artifact/prefetch` |
+| `01KT9VTN0JRAYRFEFHTK0SJM9Y` | windows_artifact | high | `evtexport libevt-20240421` | `evtexport /opt/EL/cases/m57-jean/exports/windows-artifacts/evt` | `e178e4d2989a09bb…` | `/opt/EL/cases/m57-jean/analysis/windows_artifact/evtx/evtx_parsed.csv` |
+| `01KT9VTNF48F2B3ZF4PZKA7XAV` | windows_artifact | high | `ezt/SBECmd ez-tool` | `/usr/bin/dotnet /opt/zimmermantools/SBECmd.dll -d /opt/EL/cases/m57-jean/exports/windows-artifacts/r` | `98fcb65c2b863d54…` | `/opt/EL/cases/m57-jean/analysis/windows_artifact/shellbags` |
+| `01KT9VTNGKVJDBB4P1384BMTH0` | windows_artifact | high | `el.time_baseline 0.1.0` | `parse_system_hive(SYSTEM)` | `d7e65edc2e6cceab…` | `/opt/EL/cases/m57-jean/exports/windows-artifacts/registry/SYSTEM` |
+| `01KT9VTNHV507Q4ER9RKNGM8DP` | windows_artifact | high | `el.recent_docs 0.1.0` | `parse_recentdocs(×3 NTUSER hive(s))` | `5458279a1ce460ff…` | `/opt/EL/cases/m57-jean/exports/windows-artifacts/registry` |
+| `01KT9VTNPQC1THP5DJCET2MJC6` | windows_artifact | high | `el.ie_cache 0.1.0` | `msiecfexport over 9 index.dat file(s)` | `0000000000000000…` | `/opt/EL/cases/m57-jean/analysis/windows_artifact/ie_cache` |
+| `01KT9VTNPSW10AZDBSA2E8MGWS` | windows_artifact | medium | `el.ie_cache 0.1.0` | `flag_suspects over parsed IE5 records` | `0000000000000000…` | `/opt/EL/cases/m57-jean/analysis/windows_artifact/ie_cache` |
+| `01KT9VTNQP0KAW1AJ3ZVQDPGJZ` | execution_corroborator | high | `el.execution_corroborator 0.1.0` | `xc.correlate(windows_artifact)` | `10c200fc2c135c22…` | `ases/m57-jean/analysis/execution_corroborator/correlation_summary.json` |
+| `01KT9VTPAQB527688YEFTWZMXX` | email_forensicator | high | `libpff/pffexport pffexport 20180714` | `/usr/bin/pffexport -q -t /opt/EL/cases/m57-jean/analysis/email_forensicator/Administrator--outlook /` | `81f6a1445db1aa8a…` | `ses/m57-jean/exports/windows-artifacts/mail/Administrator--outlook.pst` |
+| `01KT9VTPJ756TN7JWP4T57YXGN` | email_forensicator | high | `libpff/pffexport pffexport 20180714` | `/usr/bin/pffexport -q -t /opt/EL/cases/m57-jean/analysis/email_forensicator/Jean--outlook /opt/EL/ca` | `e17b8c393fc3478c…` | `opt/EL/cases/m57-jean/exports/windows-artifacts/mail/Jean--outlook.pst` |
+| `01KT9VTPJGASH7HWKB40ZKFEHT` | email_forensicator | high | `libpff/pffexport pffexport 20180714` | `/usr/bin/pffexport -q -t /opt/EL/cases/m57-jean/analysis/email_forensicator/Jean--outlook /opt/EL/ca` | `e17b8c393fc3478c…` | `opt/EL/cases/m57-jean/exports/windows-artifacts/mail/Jean--outlook.pst` |
+| `01KT9VTPJQQWGHW7QVV0ET1RJB` | email_forensicator | low | `libpff/pffexport pffexport 20180714` | `/usr/bin/pffexport -q -t /opt/EL/cases/m57-jean/analysis/email_forensicator/Jean--outlook /opt/EL/ca` | `e17b8c393fc3478c…` | `opt/EL/cases/m57-jean/exports/windows-artifacts/mail/Jean--outlook.pst` |
+| `01KT9VTPJYC1VA5KD3KJNDZ3KT` | email_forensicator | high | `libpff/pffexport pffexport 20180714` | `/usr/bin/pffexport -q -t /opt/EL/cases/m57-jean/analysis/email_forensicator/Jean--outlook /opt/EL/ca` | `e17b8c393fc3478c…` | `opt/EL/cases/m57-jean/exports/windows-artifacts/mail/Jean--outlook.pst` |
+| `01KT9VTPK5HARQ831F3GXR8K0A` | email_forensicator | high | `libpff/pffexport pffexport 20180714` | `/usr/bin/pffexport -q -t /opt/EL/cases/m57-jean/analysis/email_forensicator/Jean--outlook /opt/EL/ca` | `e17b8c393fc3478c…` | `opt/EL/cases/m57-jean/exports/windows-artifacts/mail/Jean--outlook.pst` |
+| `01KT9VTPKC4CDB72Y7N5JY36BX` | email_forensicator | high | `libpff/pffexport pffexport 20180714` | `/usr/bin/pffexport -q -t /opt/EL/cases/m57-jean/analysis/email_forensicator/Jean--outlook /opt/EL/ca` | `e17b8c393fc3478c…` | `opt/EL/cases/m57-jean/exports/windows-artifacts/mail/Jean--outlook.pst` |
+| `01KT9VTPKKSHYN7MZ5D4R4Q9KZ` | email_forensicator | high | `libpff/pffexport pffexport 20180714` | `/usr/bin/pffexport -q -t /opt/EL/cases/m57-jean/analysis/email_forensicator/Jean--outlook /opt/EL/ca` | `e17b8c393fc3478c…` | `opt/EL/cases/m57-jean/exports/windows-artifacts/mail/Jean--outlook.pst` |
+| `01KT9VTPKS75C2KMCFVE2SNP85` | email_forensicator | high | `libpff/pffexport pffexport 20180714` | `/usr/bin/pffexport -q -t /opt/EL/cases/m57-jean/analysis/email_forensicator/Jean--outlook /opt/EL/ca` | `e17b8c393fc3478c…` | `opt/EL/cases/m57-jean/exports/windows-artifacts/mail/Jean--outlook.pst` |
+| `01KT9VTPPHJKXECCQGM6HVJ8XT` | browser_forensicator | high | `el.browser/firefox 0.1.0` | `read_firefox_history(places.sqlite)` | `cc69abca8433944a…` | `rtifacts/browser/firefox/Administrator--towjib3x.default/places.sqlite` |
+| `01KT9VTPQE37MN9KR5NKZAATJB` | browser_forensicator | high | `el.browser/firefox 0.1.0` | `read_firefox_history(places.sqlite)` | `9fd5a060aedc7a78…` | `windows-artifacts/browser/firefox/Jean--c3xj7bxx.default/places.sqlite` |
+| `01KT9VTPQQMD2YQ1T1BEQQ4HH4` | browser_forensicator | medium | `el.browser/firefox 0.1.0` | `read_firefox_history(places.sqlite)` | `9fd5a060aedc7a78…` | `windows-artifacts/browser/firefox/Jean--c3xj7bxx.default/places.sqlite` |
+| `01KT9VVN6P3HHTA9NHAB6BP0HH` | recovery | low | `sleuthkit/tsk_recover The Sleuth Kit ver 4.11.1` | `/usr/bin/tsk_recover -e -o 63 /tmp/el-mounts/m57-jean-recovery/ewf1 /opt/EL/cases/m57-jean/exports/r` | `e2a219295214a10b…` | `opt/EL/cases/m57-jean/exports/recovery/tsk_recover/tsk_recover_all.txt` |
+| `01KT9VVN6SG5XQSDE2C5D9MHZ5` | recovery | medium | `el.disk_anomaly 0.1.0` | `disk_anomaly.scan_file(fls_o63.txt)` | `64e89cebf800cf8d…` | `/opt/EL/cases/m57-jean/analysis/disk_forensicator/fls_o63.txt` |
+| `01KT9W3N5P47RKVGCC1FH8M58N` | recovery | low | `bulk_extractor bulk_extractor 1.6.1` | `/usr/bin/bulk_extractor -o /opt/EL/cases/m57-jean/exports/recovery/bulk_extractor -j 4 -x aes -x wor` | `ffc9fe1ab8af7e06…` | `/opt/EL/cases/m57-jean/exports/recovery/bulk_extractor` |
+| `01KT9W43T2F6GPSD72K00BAGVC` | correlator | high | `el.correlator 0.1.0` | `kuzu cypher graph queries` | `0000000000000000…` | `/opt/EL/cases/m57-jean/analysis/correlator/correlation.json` |
+| `01KT9W4K902YNBJ7D05J09F2J3` | knowledge_lookup | low | `el.knowledge 0.1.0` | `kb.lookup_iocs([0iga3dj.cg])` | `1fcc9b27ff72bef6…` | `/home/sansforensics/.el/knowledge.sqlite` |
+| `01KT9W4K922PCY10PG9ED4D52C` | knowledge_lookup | low | `el.knowledge 0.1.0` | `kb.lookup_iocs([207.46.197.32])` | `b19d0856542bd829…` | `/home/sansforensics/.el/knowledge.sqlite` |
+| `01KT9W4K93VQF29TE63T45Q2KR` | knowledge_lookup | low | `el.knowledge 0.1.0` | `kb.lookup_iocs([207.46.232.182])` | `bb1e5106abbe5499…` | `/home/sansforensics/.el/knowledge.sqlite` |
+| `01KT9W4K94HSSK2B6SDEKR2KPX` | knowledge_lookup | low | `el.knowledge 0.1.0` | `kb.lookup_iocs([6aaba6aaaba.aaa])` | `b6ec9c5f09ab7287…` | `/home/sansforensics/.el/knowledge.sqlite` |
+| `01KT9W4K95ZDHTCTJWXFCQS343` | knowledge_lookup | low | `el.knowledge 0.1.0` | `kb.lookup_iocs([78a52b5bac78f4e711607707ac0e3f93])` | `c9a26b857f81b614…` | `/home/sansforensics/.el/knowledge.sqlite` |
+| `01KT9W4K96TJ4JSY62BN6M7N5F` | knowledge_lookup | low | `el.knowledge 0.1.0` | `kb.lookup_iocs([ad.yieldmanager.com])` | `9bd2201d497fe772…` | `/home/sansforensics/.el/knowledge.sqlite` |
+| `01KT9W4K97X8R8CSARPCEN8BDH` | knowledge_lookup | low | `el.knowledge 0.1.0` | `kb.lookup_iocs([ads.bridgetrack.com])` | `506bfcf3c97e8854…` | `/home/sansforensics/.el/knowledge.sqlite` |
+| `01KT9W4K9823YMACTQKKAV6QNN` | knowledge_lookup | low | `el.knowledge 0.1.0` | `kb.lookup_iocs([ads.cnn.com])` | `da89293989b8b2e4…` | `/home/sansforensics/.el/knowledge.sqlite` |
+| `01KT9W4K99TRDKTBKDWSH855HW` | knowledge_lookup | low | `el.knowledge 0.1.0` | `kb.lookup_iocs([ads.pointroll.com])` | `cb7e4a3cb8822986…` | `/home/sansforensics/.el/knowledge.sqlite` |
+| `01KT9W4K9BAY8ZK2H6T4RCPT7B` | knowledge_lookup | low | `el.knowledge 0.1.0` | `kb.lookup_iocs([aim.com])` | `680b3a8df221dd11…` | `/home/sansforensics/.el/knowledge.sqlite` |
+| `01KT9W4K9C24SCKEHN94NYB8BS` | knowledge_lookup | low | `el.knowledge 0.1.0` | `kb.lookup_iocs([alumni.caltech.edu])` | `2a6f0e20f6f70c67…` | `/home/sansforensics/.el/knowledge.sqlite` |
+| `01KT9W4K9D0DHBDJFV2477CFA9` | knowledge_lookup | low | `el.knowledge 0.1.0` | `kb.lookup_iocs([ameritech.net])` | `2db9b9fedc919c34…` | `/home/sansforensics/.el/knowledge.sqlite` |
+| `01KT9W4K9EG80XF5988FB9JSWX` | knowledge_lookup | low | `el.knowledge 0.1.0` | `kb.lookup_iocs([aol.com])` | `c22cfa842338a6a3…` | `/home/sansforensics/.el/knowledge.sqlite` |
+| `01KT9W4K9FA4JKPX14TTPS23W5` | knowledge_lookup | low | `el.knowledge 0.1.0` | `kb.lookup_iocs([apple.com])` | `2265cbcc3ef24106…` | `/home/sansforensics/.el/knowledge.sqlite` |
+| `01KT9W4K9GBZRSEJX94N80EYT2` | knowledge_lookup | low | `el.knowledge 0.1.0` | `kb.lookup_iocs([asp.net])` | `7f0aa384462f7c2f…` | `/home/sansforensics/.el/knowledge.sqlite` |
+| `01KT9W4K9H3MA990W6D0F4MRRA` | knowledge_lookup | low | `el.knowledge 0.1.0` | `kb.lookup_iocs([at.atwola.com])` | `a6953dcc64a1c9c0…` | `/home/sansforensics/.el/knowledge.sqlite` |
+| `01KT9W4K9KYVBEE53AYWZKZE64` | knowledge_lookup | low | `el.knowledge 0.1.0` | `kb.lookup_iocs([att.com])` | `4bfa20489573d881…` | `/home/sansforensics/.el/knowledge.sqlite` |
+| `01KT9W4K9MA7KBGTAMQW26N5G8` | knowledge_lookup | low | `el.knowledge 0.1.0` | `kb.lookup_iocs([b54422589f53ca7ece2dea80abea75de3174d37a])` | `68f5c6b14ba0c875…` | `/home/sansforensics/.el/knowledge.sqlite` |
+| `01KT9W4K9NHHYC3N54XZBSD3Q8` | knowledge_lookup | low | `el.knowledge 0.1.0` | `kb.lookup_iocs([bAA::])` | `ed3434758f0ef933…` | `/home/sansforensics/.el/knowledge.sqlite` |
+| `01KT9W4K9PW4AVV1S30TK6C7PZ` | knowledge_lookup | low | `el.knowledge 0.1.0` | `kb.lookup_iocs([bannerfarm.ace.advertising.com])` | `bf91954ff564f4ab…` | `/home/sansforensics/.el/knowledge.sqlite` |
+| `01KT9W4K9Q5WXHB9GPGYNTG7E7` | knowledge_lookup | low | `el.knowledge 0.1.0` | `kb.lookup_iocs([bigfoot.com])` | `c46a2edd3697f916…` | `/home/sansforensics/.el/knowledge.sqlite` |
+| `01KT9W4K9RCECD8TPVSD8CQAP2` | knowledge_lookup | low | `el.knowledge 0.1.0` | `kb.lookup_iocs([bs.serving-sys.com])` | `8ec55bfe341ddb56…` | `/home/sansforensics/.el/knowledge.sqlite` |
+| `01KT9W4K9SYGJ1B2EKQE1MF5KX` | knowledge_lookup | low | `el.knowledge 0.1.0` | `kb.lookup_iocs([c.casalemedia.com])` | `f931fb7eeb09499f…` | `/home/sansforensics/.el/knowledge.sqlite` |
+| `01KT9W4K9T72K8C1S2ZYA21TZW` | knowledge_lookup | low | `el.knowledge 0.1.0` | `kb.lookup_iocs([c.msn.com])` | `88271db5a170d01c…` | `/home/sansforensics/.el/knowledge.sqlite` |
+| `01KT9W4K9VD8KAJ86ZTBAMHS7C` | knowledge_lookup | low | `el.knowledge 0.1.0` | `kb.lookup_iocs([camexo20.ax])` | `ffe89002b2b08635…` | `/home/sansforensics/.el/knowledge.sqlite` |
+| `01KT9W4K9XPDH9JB20N4P4FFTR` | knowledge_lookup | low | `el.knowledge 0.1.0` | `kb.lookup_iocs([camext20.ax])` | `33510bda5cf87b41…` | `/home/sansforensics/.el/knowledge.sqlite` |
+| `01KT9W4K9YRVQ5W921P7SWXYCW` | knowledge_lookup | low | `el.knowledge 0.1.0` | `kb.lookup_iocs([camext30.ax])` | `2d51df26f7f8a059…` | `/home/sansforensics/.el/knowledge.sqlite` |
+| `01KT9W4K9Z4E7QNT6ZRKPZGHAR` | knowledge_lookup | low | `el.knowledge 0.1.0` | `kb.lookup_iocs([cdn.at.atwola.com])` | `fb034cd1f5d42684…` | `/home/sansforensics/.el/knowledge.sqlite` |
+| `01KT9W4KA0Z1GCBJVWKJEBZC5Z` | knowledge_lookup | low | `el.knowledge 0.1.0` | `kb.lookup_iocs([cgi.ebay.com])` | `bce38bf6a62bf7bd…` | `/home/sansforensics/.el/knowledge.sqlite` |
+| `01KT9W4KA1Q5ZWZWGE2HPYYYM2` | knowledge_lookup | low | `el.knowledge 0.1.0` | `kb.lookup_iocs([chambersign.org])` | `942cea203800f802…` | `/home/sansforensics/.el/knowledge.sqlite` |
+| `01KT9W4KA2C6W24E9FMTMNSBS2` | knowledge_lookup | low | `el.knowledge 0.1.0` | `kb.lookup_iocs([cnn.com])` | `ad8a66a8a577b9f2…` | `/home/sansforensics/.el/knowledge.sqlite` |
+| `01KT9W4KA3QED47FW91CZHKVBV` | knowledge_lookup | low | `el.knowledge 0.1.0` | `kb.lookup_iocs([contribute.sfgate.com])` | `566c4f23383f3e5f…` | `/home/sansforensics/.el/knowledge.sqlite` |
+| `01KT9W4KA4TWA2JVNHSYM1Z3MM` | knowledge_lookup | low | `el.knowledge 0.1.0` | `kb.lookup_iocs([cookie.host])` | `8eab7c15371a98b3…` | `/home/sansforensics/.el/knowledge.sqlite` |
+| `01KT9W4KA58K2VGSXWGHGWYGPR` | knowledge_lookup | low | `el.knowledge 0.1.0` | `kb.lookup_iocs([cryptsoft.com])` | `f48fd66b029f6034…` | `/home/sansforensics/.el/knowledge.sqlite` |
+| `01KT9W4KA6K71BST1R9XDWKJ9F` | knowledge_lookup | low | `el.knowledge 0.1.0` | `kb.lookup_iocs([cs.com])` | `c252e3f6aae0ccee…` | `/home/sansforensics/.el/knowledge.sqlite` |
+| `01KT9W4KA8JVRQTB8S69VJ9RP4` | knowledge_lookup | low | `el.knowledge 0.1.0` | `kb.lookup_iocs([delicious.com])` | `3f6ba100dd0cf200…` | `/home/sansforensics/.el/knowledge.sqlite` |
+| `01KT9W4KA8JVRQTB8S69VJ9RP5` | knowledge_lookup | low | `el.knowledge 0.1.0` | `kb.lookup_iocs([developer.mozilla.org])` | `adaafd8d68331238…` | `/home/sansforensics/.el/knowledge.sqlite` |
+| `01KT9W4KAAEZ12V14X8X0N36DM` | knowledge_lookup | low | `el.knowledge 0.1.0` | `kb.lookup_iocs([diginotar.nl])` | `de31cb98e0cf275c…` | `/home/sansforensics/.el/knowledge.sqlite` |
+| `01KT9W4KAB0CG4XKZC92WEV80H` | knowledge_lookup | low | `el.knowledge 0.1.0` | `kb.lookup_iocs([digsigtrust.com])` | `223845cc897308de…` | `/home/sansforensics/.el/knowledge.sqlite` |
+| `01KT9W4KACDP7SNM6Z3H7G1DA7` | knowledge_lookup | low | `el.knowledge 0.1.0` | `kb.lookup_iocs([domain.com])` | `eef2d88ac3ce45e2…` | `/home/sansforensics/.el/knowledge.sqlite` |
+| `01KT9W4KADMFFR3GTHY0EAKN3E` | knowledge_lookup | low | `el.knowledge 0.1.0` | `kb.lookup_iocs([doubleclick.net])` | `8c01ee3b9a5e1076…` | `/home/sansforensics/.el/knowledge.sqlite` |
+| `01KT9W4KAEDBR13HSHE7CE5TDE` | knowledge_lookup | low | `el.knowledge 0.1.0` | `kb.lookup_iocs([download.mozilla.org])` | `00d2c1df7397ad42…` | `/home/sansforensics/.el/knowledge.sqlite` |
+| `01KT9W4KAF5SCY53HNS333NGRZ` | knowledge_lookup | low | `el.knowledge 0.1.0` | `kb.lookup_iocs([dshowext.ax])` | `08be19ff991ca09a…` | `/home/sansforensics/.el/knowledge.sqlite` |
+| `01KT9W4KAG8TXH298FKS40N6Y4` | knowledge_lookup | low | `el.knowledge 0.1.0` | `kb.lookup_iocs([earthlink.net])` | `d7f454e831483717…` | `/home/sansforensics/.el/knowledge.sqlite` |
+| `01KT9W4KAHFG24FPRYSM85VWPA` | knowledge_lookup | low | `el.knowledge 0.1.0` | `kb.lookup_iocs([ebay.com])` | `d95166f219045c9e…` | `/home/sansforensics/.el/knowledge.sqlite` |
+| `01KT9W4KAKAYT08M3WDN19GVFC` | knowledge_lookup | low | `el.knowledge 0.1.0` | `kb.lookup_iocs([freebsd.org])` | `233490d5161f3487…` | `/home/sansforensics/.el/knowledge.sqlite` |
+| `01KT9W4KAMBQ88GGJB13RK1XMC` | knowledge_lookup | low | `el.knowledge 0.1.0` | `kb.lookup_iocs([freedownloadmanager.org])` | `2cfa20c489196d50…` | `/home/sansforensics/.el/knowledge.sqlite` |
+| `01KT9W4KAN34XQZJNC1CBQ4ES2` | knowledge_lookup | low | `el.knowledge 0.1.0` | `kb.lookup_iocs([g711codc.ax])` | `f54ca4335a5f9c0b…` | `/home/sansforensics/.el/knowledge.sqlite` |
+| `01KT9W4KAPWJVXTKZCY1GWEG1A` | knowledge_lookup | low | `el.knowledge 0.1.0` | `kb.lookup_iocs([geo.yahoo.com])` | `2b571ff9ca916e6c…` | `/home/sansforensics/.el/knowledge.sqlite` |
+| `01KT9W4KAQX9YDMZ06XXYRY7HC` | knowledge_lookup | low | `el.knowledge 0.1.0` | `kb.lookup_iocs([graftabl.com])` | `42817b9a96d84cff…` | `/home/sansforensics/.el/knowledge.sqlite` |
+| `01KT9W4KARXA6WMS09VN7P2362` | knowledge_lookup | low | `el.knowledge 0.1.0` | `kb.lookup_iocs([gzip.org])` | `24e37500a6128d32…` | `/home/sansforensics/.el/knowledge.sqlite` |
+| `01KT9W4KAS13X20MW6K2NNDXVS` | knowledge_lookup | low | `el.knowledge 0.1.0` | `kb.lookup_iocs([hotmail.com])` | `f81e0a262b0f3b39…` | `/home/sansforensics/.el/knowledge.sqlite` |
+| `01KT9W4KATCB91YXWH93D1CMVG` | knowledge_lookup | low | `el.knowledge 0.1.0` | `kb.lookup_iocs([hskupin.info])` | `c469e09e3eb3993b…` | `/home/sansforensics/.el/knowledge.sqlite` |
+| `01KT9W4KAVMSX2VJAP0KMTAHG6` | knowledge_lookup | low | `el.knowledge 0.1.0` | `kb.lookup_iocs([i2.cdn.turner.com])` | `daafe29d02ede5dd…` | `/home/sansforensics/.el/knowledge.sqlite` |
+| `01KT9W4KAWW3ZKRJ92Q36RNNP5` | knowledge_lookup | low | `el.knowledge 0.1.0` | `kb.lookup_iocs([informaction.com])` | `80741f837d60f057…` | `/home/sansforensics/.el/knowledge.sqlite` |
+| `01KT9W4KAYYVCKVYE6DM3MKDCA` | knowledge_lookup | low | `el.knowledge 0.1.0` | `kb.lookup_iocs([internetdownloadmanager.com])` | `c9a2083f33366df5…` | `/home/sansforensics/.el/knowledge.sqlite` |
+| `01KT9W4KAZTTG4Y75E4A6Q63RN` | knowledge_lookup | low | `el.knowledge 0.1.0` | `kb.lookup_iocs([ivfsrc.ax])` | `59934276b53e92ff…` | `/home/sansforensics/.el/knowledge.sqlite` |
+| `01KT9W4KB072J2KVF8WRWVQDWC` | knowledge_lookup | low | `el.knowledge 0.1.0` | `kb.lookup_iocs([kstvtune.ax])` | `ce4791c06bb3178e…` | `/home/sansforensics/.el/knowledge.sqlite` |
+| `01KT9W4KB1PFD3RPT37569YKVQ` | knowledge_lookup | low | `el.knowledge 0.1.0` | `kb.lookup_iocs([kswdmcap.ax])` | `7b3aac6144a6b350…` | `/home/sansforensics/.el/knowledge.sqlite` |
+| `01KT9W4KB2JDA6FXA16YZJ438T` | knowledge_lookup | low | `el.knowledge 0.1.0` | `kb.lookup_iocs([ksxbar.ax])` | `4d09040c2bec3267…` | `/home/sansforensics/.el/knowledge.sqlite` |
+| `01KT9W4KB3E3SNM2FNV7WMNTM9` | knowledge_lookup | low | `el.knowledge 0.1.0` | `kb.lookup_iocs([l3codecx.ax])` | `4b30f26cf1d63541…` | `/home/sansforensics/.el/knowledge.sqlite` |
+| `01KT9W4KB4BJA84D410DEW0YN4` | knowledge_lookup | low | `el.knowledge 0.1.0` | `kb.lookup_iocs([m.webtrends.com])` | `082a461babff0831…` | `/home/sansforensics/.el/knowledge.sqlite` |
+| `01KT9W4KB59WM1NAD4K1C5FX0K` | knowledge_lookup | low | `el.knowledge 0.1.0` | `kb.lookup_iocs([m1.2mdn.net])` | `23898b8b890b14c1…` | `/home/sansforensics/.el/knowledge.sqlite` |
+| `01KT9W4KB6ER9P4TT2V2VA3ADR` | knowledge_lookup | low | `el.knowledge 0.1.0` | `kb.lookup_iocs([macromedia.com])` | `7ca2c02022e6e204…` | `/home/sansforensics/.el/knowledge.sqlite` |
+| `01KT9W4KB7P7B3BVY83FWSVW0G` | knowledge_lookup | low | `el.knowledge 0.1.0` | `kb.lookup_iocs([media.adrevolver.com])` | `e37269eae664902b…` | `/home/sansforensics/.el/knowledge.sqlite` |
+| `01KT9W4KB9R3N9HES4TYKCSHE1` | knowledge_lookup | low | `el.knowledge 0.1.0` | `kb.lookup_iocs([mob.rice.edu])` | `678e6f5d18679dc4…` | `/home/sansforensics/.el/knowledge.sqlite` |
+| `01KT9W4KBA900F5K5993N2GT2Q` | knowledge_lookup | low | `el.knowledge 0.1.0` | `kb.lookup_iocs([mozilla.com])` | `bcc1bf92c55c47ae…` | `/home/sansforensics/.el/knowledge.sqlite` |
+| `01KT9W4KBBRHTRJ9XGY2PK3KSS` | knowledge_lookup | low | `el.knowledge 0.1.0` | `kb.lookup_iocs([mozilla.org])` | `117d82dba1d95ebe…` | `/home/sansforensics/.el/knowledge.sqlite` |
+| `01KT9W4KBCPN142RN64HB0E8HZ` | knowledge_lookup | low | `el.knowledge 0.1.0` | `kb.lookup_iocs([mpg4ds32.ax])` | `eda10d1229bb1634…` | `/home/sansforensics/.el/knowledge.sqlite` |
+| `01KT9W4KBDGQK2B82SWXWXGBD2` | knowledge_lookup | low | `el.knowledge 0.1.0` | `kb.lookup_iocs([msadds32.ax])` | `2e3dc4b44b4319f1…` | `/home/sansforensics/.el/knowledge.sqlite` |
+| `01KT9W4KBE6NA7H7KW6EVYNAEJ` | knowledge_lookup | low | `el.knowledge 0.1.0` | `kb.lookup_iocs([msn.com])` | `7795a0faae5ae2c8…` | `/home/sansforensics/.el/knowledge.sqlite` |
+| `01KT9W4KBGFGBQJFGNRTGZ0BRC` | knowledge_lookup | low | `el.knowledge 0.1.0` | `kb.lookup_iocs([msnbc.112.2o7.net])` | `0c2f6c94c23c8f8a…` | `/home/sansforensics/.el/knowledge.sqlite` |
+| `01KT9W4KBHRV6V7953W219N1MC` | knowledge_lookup | low | `el.knowledge 0.1.0` | `kb.lookup_iocs([msnportal.112.2o7.net])` | `5c8558ce6c9f2dd7…` | `/home/sansforensics/.el/knowledge.sqlite` |
+| `01KT9W4KBJ8CB3J44GA9ZY2RZJ` | knowledge_lookup | low | `el.knowledge 0.1.0` | `kb.lookup_iocs([msscds32.ax])` | `a4085f48b83dc9bc…` | `/home/sansforensics/.el/knowledge.sqlite` |
+| `01KT9W4KBKFMA1S5KDEHHTXTKV` | knowledge_lookup | low | `el.knowledge 0.1.0` | `kb.lookup_iocs([my.screenname.aol.com])` | `f9a4e55a4d443f80…` | `/home/sansforensics/.el/knowledge.sqlite` |
+| `01KT9W4KBM5KV5WYZV23Z0VZK3` | knowledge_lookup | low | `el.knowledge 0.1.0` | `kb.lookup_iocs([mycompany.com])` | `8587569b4da211bd…` | `/home/sansforensics/.el/knowledge.sqlite` |
+| `01KT9W4KBN8D3FZFKNYYT1VFBE` | knowledge_lookup | low | `el.knowledge 0.1.0` | `kb.lookup_iocs([myspace.com])` | `2a4117c6f76db799…` | `/home/sansforensics/.el/knowledge.sqlite` |
+| `01KT9W4KBPV451A8G6C0EMT60F` | knowledge_lookup | low | `el.knowledge 0.1.0` | `kb.lookup_iocs([netlock.hu])` | `44714eed356954a5…` | `/home/sansforensics/.el/knowledge.sqlite` |
+| `01KT9W4KBQ11C8SC03YTEP5N94` | knowledge_lookup | low | `el.knowledge 0.1.0` | `kb.lookup_iocs([netlock.net])` | `4144b0112d47b86b…` | `/home/sansforensics/.el/knowledge.sqlite` |
+| `01KT9W4KBSFDTYWBWXQQDB5EXQ` | knowledge_lookup | low | `el.knowledge 0.1.0` | `kb.lookup_iocs([netscape.com])` | `9b71ca95decee246…` | `/home/sansforensics/.el/knowledge.sqlite` |
+| `01KT9W4KBTEWB19P80W5CF9VV8` | knowledge_lookup | low | `el.knowledge 0.1.0` | `kb.lookup_iocs([nle.la])` | `8fdc6d9535b9abbe…` | `/home/sansforensics/.el/knowledge.sqlite` |
+| `01KT9W4KBVMBC9V5ZXR1AB4GJD` | knowledge_lookup | low | `el.knowledge 0.1.0` | `kb.lookup_iocs([omg.yahoo.com])` | `794a446b9851b77b…` | `/home/sansforensics/.el/knowledge.sqlite` |
+| `01KT9W4KBWS62FY24FQFPQXZ9Z` | knowledge_lookup | low | `el.knowledge 0.1.0` | `kb.lookup_iocs([openssl.org])` | `686e6d8156b6f68d…` | `/home/sansforensics/.el/knowledge.sqlite` |
+| `01KT9W4KBXTCZMJ9KSAF1MWCQ0` | knowledge_lookup | low | `el.knowledge 0.1.0` | `kb.lookup_iocs([phdsext.ax])` | `9c761e682a467ccf…` | `/home/sansforensics/.el/knowledge.sqlite` |
+| `01KT9W4KBYMJFW378CN2X563K3` | knowledge_lookup | low | `el.knowledge 0.1.0` | `kb.lookup_iocs([pobox.com])` | `610e79c9624cc61f…` | `/home/sansforensics/.el/knowledge.sqlite` |
+| `01KT9W4KC04CASARR56JMDS6H4` | knowledge_lookup | low | `el.knowledge 0.1.0` | `kb.lookup_iocs([proto.hiv])` | `8c4fd8a8e263ec37…` | `/home/sansforensics/.el/knowledge.sqlite` |
+| `01KT9W4KC1JV0EWZQZMFQVM00D` | knowledge_lookup | low | `el.knowledge 0.1.0` | `kb.lookup_iocs([psisrndr.ax])` | `83f1ae4ab544656a…` | `/home/sansforensics/.el/knowledge.sqlite` |
+| `01KT9W4KC2RYYKZTBX7E14H5QN` | knowledge_lookup | low | `el.knowledge 0.1.0` | `kb.lookup_iocs([rad.msn.com])` | `aa69e1fc87e8411a…` | `/home/sansforensics/.el/knowledge.sqlite` |
+| `01KT9W4KC3ZAE5FN8T2AXCG9RC` | knowledge_lookup | low | `el.knowledge 0.1.0` | `kb.lookup_iocs([search.ebay.com])` | `0d2a9f328b707d00…` | `/home/sansforensics/.el/knowledge.sqlite` |
+| `01KT9W4KC4N18QBBN9RMYTRCC6` | knowledge_lookup | low | `el.knowledge 0.1.0` | `kb.lookup_iocs([search.msn.com])` | `dc40102f9c233eca…` | `/home/sansforensics/.el/knowledge.sqlite` |
+| `01KT9W4KC58CF4KCMGDKX2MCY7` | knowledge_lookup | low | `el.knowledge 0.1.0` | `kb.lookup_iocs([sfgate.com])` | `7cc90e03ec8e39a5…` | `/home/sansforensics/.el/knowledge.sqlite` |
+| `01KT9W4KC6JJ1JYME2XW5AP9HE` | knowledge_lookup | low | `el.knowledge 0.1.0` | `kb.lookup_iocs([silverorange.com])` | `1fe7607c45604af6…` | `/home/sansforensics/.el/knowledge.sqlite` |
+| `01KT9W4KC7AKCJGKRBMB2CMSBH` | knowledge_lookup | low | `el.knowledge 0.1.0` | `kb.lookup_iocs([speakeasy.net])` | `f10c73d3a5756eb5…` | `/home/sansforensics/.el/knowledge.sqlite` |
+| `01KT9W4KC9BKEWTPQ0A2AMNNC5` | knowledge_lookup | low | `el.knowledge 0.1.0` | `kb.lookup_iocs([stores.ebay.com])` | `f3f7bf24681aae15…` | `/home/sansforensics/.el/knowledge.sqlite` |
+| `01KT9W4KCA83QSYENNCYEA8N5M` | knowledge_lookup | low | `el.knowledge 0.1.0` | `kb.lookup_iocs([sun.com])` | `b55cdcc3b30f8c65…` | `/home/sansforensics/.el/knowledge.sqlite` |
+| `01KT9W4KCB42HBCWNPXY3A22MJ` | knowledge_lookup | low | `el.knowledge 0.1.0` | `kb.lookup_iocs([supereva.it])` | `50022270667e772e…` | `/home/sansforensics/.el/knowledge.sqlite` |
+| `01KT9W4KCC416AEXQYDYHEKMAT` | knowledge_lookup | low | `el.knowledge 0.1.0` | `kb.lookup_iocs([thawte.com])` | `15295805059dc413…` | `/home/sansforensics/.el/knowledge.sqlite` |
+| `01KT9W4KCD43HW5ESZJ213QW4V` | knowledge_lookup | low | `el.knowledge 0.1.0` | `kb.lookup_iocs([theriver.com])` | `01779c01b95624f9…` | `/home/sansforensics/.el/knowledge.sqlite` |
+| `01KT9W4KCE1PMBBW2E9XJ3B6RG` | knowledge_lookup | low | `el.knowledge 0.1.0` | `kb.lookup_iocs([this.co])` | `8521035f5e2f76ad…` | `/home/sansforensics/.el/knowledge.sqlite` |
+| `01KT9W4KCF2ZRWPD3Y1FXFGCVV` | knowledge_lookup | low | `el.knowledge 0.1.0` | `kb.lookup_iocs([us.bc.yahoo.com])` | `c72baed2197d98f9…` | `/home/sansforensics/.el/knowledge.sqlite` |
+| `01KT9W4KCGR12MBBE71PXE42ZV` | knowledge_lookup | low | `el.knowledge 0.1.0` | `kb.lookup_iocs([us.ibm.com])` | `7b0db9df376a9d13…` | `/home/sansforensics/.el/knowledge.sqlite` |
+| `01KT9W4KCJZRNEFYRCJDB7ARM9` | knowledge_lookup | low | `el.knowledge 0.1.0` | `kb.lookup_iocs([verisign.com])` | `340d4b081632dcae…` | `/home/sansforensics/.el/knowledge.sqlite` |
+| `01KT9W4KCK9YT5ER6F963MD4VP` | knowledge_lookup | low | `el.knowledge 0.1.0` | `kb.lookup_iocs([verizon.net])` | `b00520a285545ae4…` | `/home/sansforensics/.el/knowledge.sqlite` |
+| `01KT9W4KCMW1VSA6R00DR1KFXP` | knowledge_lookup | low | `el.knowledge 0.1.0` | `kb.lookup_iocs([web.de])` | `1eec7adc7a3b2d82…` | `/home/sansforensics/.el/knowledge.sqlite` |
+| `01KT9W4KCNM05GCB96GPKWYH1S` | knowledge_lookup | low | `el.knowledge 0.1.0` | `kb.lookup_iocs([webmail.m57.biz])` | `070448e94a20ffda…` | `/home/sansforensics/.el/knowledge.sqlite` |
+| `01KT9W4KCP6FNW48EMV7FKNJJV` | knowledge_lookup | low | `el.knowledge 0.1.0` | `kb.lookup_iocs([win.com])` | `fb5196f3a46d920b…` | `/home/sansforensics/.el/knowledge.sqlite` |
+| `01KT9W4KCQPPNRDNG59619KN2Z` | knowledge_lookup | low | `el.knowledge 0.1.0` | `kb.lookup_iocs([wmv8ds32.ax])` | `27ee9dce463ee433…` | `/home/sansforensics/.el/knowledge.sqlite` |
+| `01KT9W4KCRT4SV9T5NB10GNZ76` | knowledge_lookup | low | `el.knowledge 0.1.0` | `kb.lookup_iocs([wmvds32.ax])` | `c6db12a66c5f71d8…` | `/home/sansforensics/.el/knowledge.sqlite` |
+| `01KT9W4KCSS80TM0EFJ40QDA3M` | knowledge_lookup | low | `el.knowledge 0.1.0` | `kb.lookup_iocs([wordpress.com])` | `d515ac8f2696affb…` | `/home/sansforensics/.el/knowledge.sqlite` |
+| `01KT9W4KCV9VDQM6CENTP373XP` | knowledge_lookup | low | `el.knowledge 0.1.0` | `kb.lookup_iocs([www.associatedcontent.com])` | `2d0dcbc834d97151…` | `/home/sansforensics/.el/knowledge.sqlite` |
+| `01KT9W4KCWJV2WXAWH1405FJSM` | knowledge_lookup | low | `el.knowledge 0.1.0` | `kb.lookup_iocs([www.cnn.com])` | `5fa9d54763389077…` | `/home/sansforensics/.el/knowledge.sqlite` |
+| `01KT9W4KCXE137P0G9R3XN9HS3` | knowledge_lookup | low | `el.knowledge 0.1.0` | `kb.lookup_iocs([www.ebay.com])` | `318ac7936588fd68…` | `/home/sansforensics/.el/knowledge.sqlite` |
+| `01KT9W4KCY1H0NAMQF5XGVM5YY` | knowledge_lookup | low | `el.knowledge 0.1.0` | `kb.lookup_iocs([www.feedburner.com])` | `ff99dee2d3b6772e…` | `/home/sansforensics/.el/knowledge.sqlite` |
+| `01KT9W4KCZMNB476MZPR83KJNE` | knowledge_lookup | low | `el.knowledge 0.1.0` | `kb.lookup_iocs([www.googleadservices.com])` | `531c0c97f236d51c…` | `/home/sansforensics/.el/knowledge.sqlite` |
+| `01KT9W4KD0YS3EXZNKRH9HFAW8` | knowledge_lookup | low | `el.knowledge 0.1.0` | `kb.lookup_iocs([www.msnbc.msn.com])` | `b796e81d2a2dc83c…` | `/home/sansforensics/.el/knowledge.sqlite` |
+| `01KT9W4KD14HFV3C33DM4YGMJC` | knowledge_lookup | low | `el.knowledge 0.1.0` | `kb.lookup_iocs([www.myspace.com])` | `bb0ff6b7ca3d528d…` | `/home/sansforensics/.el/knowledge.sqlite` |
+| `01KT9W4KD2NG64D8RWT5EKJAWX` | knowledge_lookup | low | `el.knowledge 0.1.0` | `kb.lookup_iocs([www.npr.org])` | `897bd535efb174b3…` | `/home/sansforensics/.el/knowledge.sqlite` |
+| `01KT9W4KD35VE9N6WRCD431NJ5` | knowledge_lookup | low | `el.knowledge 0.1.0` | `kb.lookup_iocs([www.sfgate.com])` | `9db1dc1d39e34aa8…` | `/home/sansforensics/.el/knowledge.sqlite` |
+| `01KT9W4KD42BB3PZMQYF4T0YEV` | knowledge_lookup | low | `el.knowledge 0.1.0` | `kb.lookup_iocs([www.yahoo])` | `77eab53a8b4406bb…` | `/home/sansforensics/.el/knowledge.sqlite` |
+| `01KT9W4KD5K2003XG2JZ9ABVQ4` | knowledge_lookup | low | `el.knowledge 0.1.0` | `kb.lookup_iocs([www.yahoo.com])` | `d61a0fed3d3852a6…` | `/home/sansforensics/.el/knowledge.sqlite` |
+| `01KT9W4KD7EAJ6AQZCHRW9YVQZ` | knowledge_lookup | low | `el.knowledge 0.1.0` | `kb.lookup_iocs([yahoo.com.au])` | `ac5e52b97c67ee5c…` | `/home/sansforensics/.el/knowledge.sqlite` |
+| `01KT9W4KD8CB45JJHE511ZS2FJ` | knowledge_lookup | low | `el.knowledge 0.1.0` | `kb.lookup_iocs([yahoogroups.com])` | `839bb94695d63765…` | `/home/sansforensics/.el/knowledge.sqlite` |
+| `01KT9W4KD9A1E1FCTPV0P8HDTH` | knowledge_lookup | low | `el.knowledge 0.1.0` | `kb.lookup_iocs([CPS-requests@verisign.com])` | `aea285ff39aa9158…` | `/home/sansforensics/.el/knowledge.sqlite` |
+| `01KT9W4KDAQTW542C365ANA50B` | knowledge_lookup | low | `el.knowledge 0.1.0` | `kb.lookup_iocs([biljir@pobox.com])` | `b1e82462e6eb2501…` | `/home/sansforensics/.el/knowledge.sqlite` |
+| `01KT9W4KDB05NXFWZQA7N3C9TA` | knowledge_lookup | low | `el.knowledge 0.1.0` | `kb.lookup_iocs([bugzilla@mob.rice.edu])` | `6589bec151b14322…` | `/home/sansforensics/.el/knowledge.sqlite` |
+| `01KT9W4KDCM0VBFMSD27TWC8A7` | knowledge_lookup | low | `el.knowledge 0.1.0` | `kb.lookup_iocs([chambersignroot@chambersign.org])` | `90d69cf9dc2d28bf…` | `/home/sansforensics/.el/knowledge.sqlite` |
+| `01KT9W4KDEZEAWKDVYRR1MJAR4` | knowledge_lookup | low | `el.knowledge 0.1.0` | `kb.lookup_iocs([chambersroot@chambersign.org])` | `24a1abba1d58bf78…` | `/home/sansforensics/.el/knowledge.sqlite` |
+| `01KT9W4KDFC4HABDWNJ18361C1` | knowledge_lookup | low | `el.knowledge 0.1.0` | `kb.lookup_iocs([cps@netlock.net])` | `ef4ea7c70f9af475…` | `/home/sansforensics/.el/knowledge.sqlite` |
+| `01KT9W4KDGE8RDVKYGGN93FV07` | knowledge_lookup | low | `el.knowledge 0.1.0` | `kb.lookup_iocs([eay@cryptsoft.com])` | `8dc7a4227947aa4e…` | `/home/sansforensics/.el/knowledge.sqlite` |
+| `01KT9W4KDH6HB2ADJ4M77MGH54` | knowledge_lookup | low | `el.knowledge 0.1.0` | `kb.lookup_iocs([ellenorzes@netlock.net])` | `7260efde2083bc62…` | `/home/sansforensics/.el/knowledge.sqlite` |
+| `01KT9W4KDJEKSVEZX7QMY4ESVG` | knowledge_lookup | low | `el.knowledge 0.1.0` | `kb.lookup_iocs([fdm_ffext@freedownloadmanager.org])` | `2f7f260ad631af3d…` | `/home/sansforensics/.el/knowledge.sqlite` |
+| `01KT9W4KDKY58MR8YD1JEB5K7C` | knowledge_lookup | low | `el.knowledge 0.1.0` | `kb.lookup_iocs([g.maone@informaction.com])` | `3793c98028fd9683…` | `/home/sansforensics/.el/knowledge.sqlite` |
+| `01KT9W4KDMQVZQJYXX4RDDQXWQ` | knowledge_lookup | low | `el.knowledge 0.1.0` | `kb.lookup_iocs([info@diginotar.nl])` | `17d0bf02358a98ad…` | `/home/sansforensics/.el/knowledge.sqlite` |
+| `01KT9W4KDND9R5YPXVKA9E0HX5` | knowledge_lookup | low | `el.knowledge 0.1.0` | `kb.lookup_iocs([info@netlock.hu])` | `3d00abdb5a869f42…` | `/home/sansforensics/.el/knowledge.sqlite` |
+| `01KT9W4KDPP8HNWDYW7JGXCPEZ` | knowledge_lookup | low | `el.knowledge 0.1.0` | `kb.lookup_iocs([info@netlock.net])` | `a494766fc051790a…` | `/home/sansforensics/.el/knowledge.sqlite` |
+| `01KT9W4KDQ9VYFZ778BYWY77V2` | knowledge_lookup | low | `el.knowledge 0.1.0` | `kb.lookup_iocs([inspector@mozilla.org])` | `5b688ab9da2a3afb…` | `/home/sansforensics/.el/knowledge.sqlite` |
+| `01KT9W4KDRVWJYFZVPGRES2J8N` | knowledge_lookup | low | `el.knowledge 0.1.0` | `kb.lookup_iocs([jloup@gzip.org])` | `59190f05e806055f…` | `/home/sansforensics/.el/knowledge.sqlite` |
+| `01KT9W4KDTT854ZMXARRK4ZHYK` | knowledge_lookup | low | `el.knowledge 0.1.0` | `kb.lookup_iocs([madler@alumni.caltech.edu])` | `3c51116159b668a4…` | `/home/sansforensics/.el/knowledge.sqlite` |
+| `01KT9W4KDV1CS817TGQQS8PRQV` | knowledge_lookup | low | `el.knowledge 0.1.0` | `kb.lookup_iocs([mozilla@example.com])` | `75ca245fdec535d3…` | `/home/sansforensics/.el/knowledge.sqlite` |
+| `01KT9W4KDW8AQZR6PD5MR9X8T1` | knowledge_lookup | low | `el.knowledge 0.1.0` | `kb.lookup_iocs([mozilla@hskupin.info])` | `8d1fc620705ff735…` | `/home/sansforensics/.el/knowledge.sqlite` |
+| `01KT9W4KDX0HV50CJQMRCBVPFY` | knowledge_lookup | low | `el.knowledge 0.1.0` | `kb.lookup_iocs([openssl-core@openssl.org])` | `91ebb2ac58111485…` | `/home/sansforensics/.el/knowledge.sqlite` |
+| `01KT9W4KDYNYS3NK34W9K95EYA` | knowledge_lookup | low | `el.knowledge 0.1.0` | `kb.lookup_iocs([premium-server@thawte.com])` | `862131d32d91eff9…` | `/home/sansforensics/.el/knowledge.sqlite` |
+| `01KT9W4KDZQY9FTH15XDXCB8QN` | knowledge_lookup | low | `el.knowledge 0.1.0` | `kb.lookup_iocs([reporter@mozilla.org])` | `71ebe450ca168b40…` | `/home/sansforensics/.el/knowledge.sqlite` |
+| `01KT9W4KE06ZHRPAYHM4A205CH` | knowledge_lookup | low | `el.knowledge 0.1.0` | `kb.lookup_iocs([secure@macromedia.com])` | `041e846b1ddf8454…` | `/home/sansforensics/.el/knowledge.sqlite` |
+| `01KT9W4KE15PMZV28HFS0E03DE` | knowledge_lookup | low | `el.knowledge 0.1.0` | `kb.lookup_iocs([someone@example.com])` | `72497f475e4f76d0…` | `/home/sansforensics/.el/knowledge.sqlite` |
+| `01KT9W4KE2D035QJHNRHV36W4G` | knowledge_lookup | low | `el.knowledge 0.1.0` | `kb.lookup_iocs([steven@silverorange.com])` | `593a8f427464e65b…` | `/home/sansforensics/.el/knowledge.sqlite` |
+| `01KT9W4KE30Q91Q54NRTSGK3Z1` | knowledge_lookup | low | `el.knowledge 0.1.0` | `kb.lookup_iocs([talkback@mozilla.org])` | `4f98159c5fe62530…` | `/home/sansforensics/.el/knowledge.sqlite` |
+| `01KT9W4KE59W2CZCEBB95EY7ES` | knowledge_lookup | low | `el.knowledge 0.1.0` | `kb.lookup_iocs([thegrendel@theriver.com])` | `008654a24351d173…` | `/home/sansforensics/.el/knowledge.sqlite` |
+| `01KT9W4KE6SKKD0MVQVABNTZ62` | knowledge_lookup | low | `el.knowledge 0.1.0` | `kb.lookup_iocs([tjh@cryptsoft.com])` | `bd85be195d290e3f…` | `/home/sansforensics/.el/knowledge.sqlite` |
+| `01KT9W4KE70S00K3N199WACA0S` | knowledge_lookup | low | `el.knowledge 0.1.0` | `kb.lookup_iocs([toolkit@mozilla.org])` | `c28dfe90c11e043f…` | `/home/sansforensics/.el/knowledge.sqlite` |
+| `01KT9W4KE8D63CAB5Q7ZB5QTQC` | knowledge_lookup | low | `el.knowledge 0.1.0` | `kb.lookup_iocs([tyHtdHtRHt@Ht.Ht])` | `237c11ba361af8e3…` | `/home/sansforensics/.el/knowledge.sqlite` |
+| `01KT9W4KE97FEZRPTB467PSKNJ` | knowledge_lookup | low | `el.knowledge 0.1.0` | `kb.lookup_iocs([+14159618830])` | `351729113edb1d1d…` | `/home/sansforensics/.el/knowledge.sqlite` |
+| `01KT9W4KEAXXTMF5QDSYMHZFHF` | knowledge_lookup | low | `el.knowledge 0.1.0` | `kb.lookup_iocs([A:\O=-yLىpvEvJOXUL@I{r'zVGJ0MA&X0w~U6P0)!4nt4])` | `53dbe069b1fc01fe…` | `/home/sansforensics/.el/knowledge.sqlite` |
+| `01KT9W4KEBZWR0M4YX99EPD377` | knowledge_lookup | low | `el.knowledge 0.1.0` | `kb.lookup_iocs([C:\     vk           a FilterDirectories c p i vk             FilterFilesWit` | `0fb6a47676baca06…` | `/home/sansforensics/.el/knowledge.sqlite` |
+| `01KT9W4KEDE4A9RMTZF13PMHKG` | knowledge_lookup | low | `el.knowledge 0.1.0` | `kb.lookup_iocs([C:\     vk            IsapiDateTimeFormatting vk   ])` | `aae9c1a13c7c1cb8…` | `/home/sansforensics/.el/knowledge.sqlite` |
+| `01KT9W4KEEN2D8T610SNWHJDA6` | knowledge_lookup | low | `el.knowledge 0.1.0` | `kb.lookup_iocs([C:\Documents and Settings])` | `a5854a1b23833aac…` | `/home/sansforensics/.el/knowledge.sqlite` |
+| `01KT9W4KEFWVSRQKWEQX04GY5P` | knowledge_lookup | low | `el.knowledge 0.1.0` | `kb.lookup_iocs([C:\Documents and Settings       vk.     C       C])` | `f357f40b50ce5b3d…` | `/home/sansforensics/.el/knowledge.sqlite` |
+| `01KT9W4KEGMKWS9EV21HGHFGK2` | knowledge_lookup | low | `el.knowledge 0.1.0` | `kb.lookup_iocs([C:\Documents and Settings       vk.    h       C])` | `3e10f0c18a2a2e14…` | `/home/sansforensics/.el/knowledge.sqlite` |
+| `01KT9W4KEHEWEA8T4M9CEMQP2P` | knowledge_lookup | low | `el.knowledge 0.1.0` | `kb.lookup_iocs([C:\Program Files\AIM6\aim6.exes C ])` | `e80af5aa4d17bd60…` | `/home/sansforensics/.el/knowledge.sqlite` |
+| `01KT9W4KEJ82VRT34CN66BHCWW` | knowledge_lookup | low | `el.knowledge 0.1.0` | `kb.lookup_iocs([C:\Program Files\Common Files\AOL\Loader\aolload.exes z hC ])` | `6599bcc620919a53…` | `/home/sansforensics/.el/knowledge.sqlite` |
+| `01KT9W4KEK713M0GT25NFTG88T` | knowledge_lookup | low | `el.knowledge 0.1.0` | `kb.lookup_iocs([C:\Program Files\Common Files\AOL\Loader\aolload.exes z vk Z   .4     \ C])` | `6a1e670a882655bf…` | `/home/sansforensics/.el/knowledge.sqlite` |
+| `01KT9W4KEM1KXERKPRMSKKA4V3` | knowledge_lookup | low | `el.knowledge 0.1.0` | `kb.lookup_iocs([C:\Program Files\Tencent\QQ Games\QQGames.exe   PW S H   W M I A d a p t e r   W m d` | `548b31fba3fd375d…` | `/home/sansforensics/.el/knowledge.sqlite` |
+| `01KT9W4KEPEXGS04FF9312RV0J` | knowledge_lookup | low | `el.knowledge 0.1.0` | `kb.lookup_iocs([C:\Program Files\Tencent\QQ Games\QQGames.exe   vk     0      DhcpSubnetMaskOpt` | `9646ece8e6bf3e69…` | `/home/sansforensics/.el/knowledge.sqlite` |
+| `01KT9W4KEQHA670FXQ0ZRP7XV3` | knowledge_lookup | low | `el.knowledge 0.1.0` | `kb.lookup_iocs([C:\Program Files\VMware\VMware Tools\VMwareService.exe ])` | `47b8fd12f2130b53…` | `/home/sansforensics/.el/knowledge.sqlite` |
+| `01KT9W4KERCXB74GF99TB25D91` | knowledge_lookup | low | `el.knowledge 0.1.0` | `kb.lookup_iocs([C:\Program Files\VMware\VMware Tools\VMwareService.exe,VMwareService,1768,,,VMware T` | `f36899bfa6e2f20c…` | `/home/sansforensics/.el/knowledge.sqlite` |
+| `01KT9W4KESA0WVBN1GG7PD31BR` | knowledge_lookup | low | `el.knowledge 0.1.0` | `kb.lookup_iocs([C:\WINDOWS\security\templates\setup security.inf,,,,,,C])` | `91fd870250545d61…` | `/home/sansforensics/.el/knowledge.sqlite` |
+| `01KT9W4KEVHY8P3BE808DRHPZC` | knowledge_lookup | low | `el.knowledge 0.1.0` | `kb.lookup_iocs([HKEY_CURRENT_USER\Software\Microsoft\Office\9.0\Common\UserData])` | `b0650f935c01e63f…` | `/home/sansforensics/.el/knowledge.sqlite` |
+| `01KT9W4KEW772HYABJA2NXZ6Q0` | knowledge_lookup | low | `el.knowledge 0.1.0` | `kb.lookup_iocs([HKEY_CURRENT_USER\Software\Microsoft\Office\9.0\Common\UserData ])` | `815da2444d6da231…` | `/home/sansforensics/.el/knowledge.sqlite` |
+| `01KT9W4KEX0TVZ9KHG93DSGERA` | knowledge_lookup | low | `el.knowledge 0.1.0` | `kb.lookup_iocs([x00mozilla@example.com])` | `f9873bc913e271a3…` | `/home/sansforensics/.el/knowledge.sqlite` |
+| `01KT9W4KEYP3SE4NDSKD0TH3CQ` | knowledge_lookup | low | `el.knowledge 0.1.0` | `kb.lookup_iocs([x0Finfo@netlock.hu])` | `b34ae18e8294b7d4…` | `/home/sansforensics/.el/knowledge.sqlite` |
+| `01KT9W4KEZGND02RQ0P79Y7VRW` | knowledge_lookup | low | `el.knowledge 0.1.0` | `kb.lookup_iocs([x11info@diginotar.nl])` | `3b3f44be586c0c5a…` | `/home/sansforensics/.el/knowledge.sqlite` |
+| `01KT9W4KF0PS255XN9G2T33GMP` | knowledge_lookup | low | `el.knowledge 0.1.0` | `kb.lookup_iocs([x15secure@macromedia.com])` | `0b0cf2305b2ddbb1…` | `/home/sansforensics/.el/knowledge.sqlite` |
+| `01KT9W4KF1QM1DE6CFPX4FMDPY` | knowledge_lookup | low | `el.knowledge 0.1.0` | `kb.lookup_iocs([x19premium-server@thawte.com])` | `20291e19353a4a3d…` | `/home/sansforensics/.el/knowledge.sqlite` |
+| `01KT9W4KF28CK69M2YAZ3S25X7` | knowledge_lookup | low | `el.knowledge 0.1.0` | `kb.lookup_iocs([x1Cchambersroot@chambersign.org])` | `fe41a0762bc56beb…` | `/home/sansforensics/.el/knowledge.sqlite` |
+| `01KT9W4KF38J7THZHKWW2DFNHT` | knowledge_lookup | low | `el.knowledge 0.1.0` | `kb.lookup_iocs([x1Fchambersignroot@chambersign.org])` | `9301471a41cf4dc5…` | `/home/sansforensics/.el/knowledge.sqlite` |
+| `01KT9W515C27WXJ4RTQAKNACAK` | threat_hunter | low | `yara yara-x-cli 1.15.0` | `/usr/local/bin/yr scan -s -p 4 -a 30 /opt/EL/cases/m57-jean/analysis/threat_hunter/case_iocs.yar /me` | `e3b0c44298fc1c14…` | `/cases/m57-jean/analysis/threat_hunter/yara_hits_nps-2008-jean.E01.txt` |
+| `01KT9W52QXBTM8QC4XEDQCFVN7` | threat_hunter | high | `yara yara-x-cli 1.15.0` | `/usr/local/bin/yr scan -r -s -p 4 -a 30 /opt/EL/cases/m57-jean/analysis/threat_hunter/case_iocs.yar ` | `fe956f51b2842c64…` | `/opt/EL/cases/m57-jean/analysis/threat_hunter/yara_hits_analysis.txt` |
+| `01KT9W52Z8WMWQ5Q23Z3XMG865` | ach_engine | high | `el.ach_engine 0.1.0` | `ACH score over 33 hypotheses` | `db2f542e8caa9d6c…` | `/opt/EL/cases/m57-jean/ach_matrix.json` |
+| `01KT9WCDV3CD4T3TVS7FPKQH0F` | red_reviewer | high | `el.triage 0.1.0` | `head -c 64 /media/sansforensics/images/M57-Jean/nps-2008-jean.E01` | `0591eef38dba09dc…` | `/opt/EL/cases/m57-jean/analysis/triage/head.bin` |

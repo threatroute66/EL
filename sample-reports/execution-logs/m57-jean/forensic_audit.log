@@ -1,0 +1,50 @@
+2026-06-04T17:30:27+00:00 [INFO] case=m57-jean event=intake_complete pid=140277 input_path=/media/sansforensics/images/M57-Jean/nps-2008-jean.E01 input_sha256=df3a995c7a594e0ba6d95b9aae735a444313fae435a87e7536f9dad3db2769ce input_size_bytes=1572860321
+2026-06-04T17:30:27+00:00 [INFO] case=m57-jean event=state_transition pid=140277 from_=intake to=triage
+2026-06-04T17:30:27+00:00 [INFO] case=m57-jean event=agent_start pid=140277 agent=triage state=triage
+2026-06-04T17:30:27+00:00 [INFO] case=m57-jean event=agent_handoff pid=140277 agent=triage published="evidence_kind=EWF (E01)"
+2026-06-04T17:30:27+00:00 [INFO] case=m57-jean event=agent_done pid=140277 agent=triage findings_emitted=1
+2026-06-04T17:30:27+00:00 [INFO] case=m57-jean event=state_transition pid=140277 from_=triage to=hypothesis_gen
+2026-06-04T17:30:27+00:00 [INFO] case=m57-jean event=state_transition pid=140277 from_=hypothesis_gen to=parallel_investigate
+2026-06-04T17:30:27+00:00 [INFO] case=m57-jean event=investigator_selected pid=140277 name=DiskForensicatorAgent evidence_kind="EWF (E01)"
+2026-06-04T17:30:27+00:00 [INFO] case=m57-jean event=agent_start pid=140277 agent=disk_forensicator state=parallel_investigate
+2026-06-04T17:44:06+00:00 [INFO] case=m57-jean event=agent_handoff pid=140277 agent=disk_forensicator published="artifacts_dir=/opt/EL/cases/m57-jean/exports/windows-artifacts, partitions=list[1], raw_input_path=/media/sansforensics/images/M57-Jean/nps-2008-jean.E01, sector_size=512"
+2026-06-04T17:44:06+00:00 [INFO] case=m57-jean event=agent_done pid=140277 agent=disk_forensicator findings_emitted=13
+2026-06-04T17:44:06+00:00 [INFO] case=m57-jean event=agent_start pid=140277 agent=malware_triage state=parallel_investigate
+2026-06-04T17:45:15+00:00 [INFO] case=m57-jean event=agent_done pid=140277 agent=malware_triage findings_emitted=3
+2026-06-04T17:45:15+00:00 [INFO] case=m57-jean event=agent_start pid=140277 agent=windows_artifact state=parallel_investigate
+2026-06-04T17:45:19+00:00 [INFO] case=m57-jean event=agent_done pid=140277 agent=windows_artifact findings_emitted=11
+2026-06-04T17:45:19+00:00 [INFO] case=m57-jean event=agent_start pid=140277 agent=lateral_movement_analyst state=parallel_investigate
+2026-06-04T17:45:19+00:00 [INFO] case=m57-jean event=agent_done pid=140277 agent=lateral_movement_analyst findings_emitted=1
+2026-06-04T17:45:19+00:00 [INFO] case=m57-jean event=agent_start pid=140277 agent=execution_corroborator state=parallel_investigate
+2026-06-04T17:45:19+00:00 [INFO] case=m57-jean event=agent_done pid=140277 agent=execution_corroborator findings_emitted=1
+2026-06-04T17:45:19+00:00 [INFO] case=m57-jean event=agent_start pid=140277 agent=credential_analyst state=parallel_investigate
+2026-06-04T17:45:19+00:00 [INFO] case=m57-jean event=agent_done pid=140277 agent=credential_analyst findings_emitted=1
+2026-06-04T17:45:19+00:00 [INFO] case=m57-jean event=agent_start pid=140277 agent=powershell_analyst state=parallel_investigate
+2026-06-04T17:45:19+00:00 [INFO] case=m57-jean event=agent_done pid=140277 agent=powershell_analyst findings_emitted=1
+2026-06-04T17:45:19+00:00 [INFO] case=m57-jean event=agent_start pid=140277 agent=sigma_analyst state=parallel_investigate
+2026-06-04T17:45:20+00:00 [INFO] case=m57-jean event=agent_done pid=140277 agent=sigma_analyst findings_emitted=1
+2026-06-04T17:45:20+00:00 [INFO] case=m57-jean event=agent_start pid=140277 agent=email_forensicator state=parallel_investigate
+2026-06-04T17:45:20+00:00 [INFO] case=m57-jean event=agent_done pid=140277 agent=email_forensicator findings_emitted=9
+2026-06-04T17:45:20+00:00 [INFO] case=m57-jean event=agent_start pid=140277 agent=browser_forensicator state=parallel_investigate
+2026-06-04T17:45:21+00:00 [INFO] case=m57-jean event=agent_done pid=140277 agent=browser_forensicator findings_emitted=3
+2026-06-04T17:45:21+00:00 [INFO] case=m57-jean event=agent_start pid=140277 agent=recovery state=parallel_investigate
+2026-06-04T17:50:14+00:00 [INFO] case=m57-jean event=agent_done pid=140277 agent=recovery findings_emitted=3
+2026-06-04T17:50:14+00:00 [INFO] case=m57-jean event=agent_start pid=140277 agent=artifact_recovery state=parallel_investigate
+2026-06-04T17:50:29+00:00 [INFO] case=m57-jean event=agent_done pid=140277 agent=artifact_recovery findings_emitted=0
+2026-06-04T17:50:29+00:00 [INFO] case=m57-jean event=state_transition pid=140277 from_=parallel_investigate to=correlate
+2026-06-04T17:50:29+00:00 [INFO] case=m57-jean event=agent_start pid=140277 agent=correlator state=correlate
+2026-06-04T17:50:29+00:00 [INFO] case=m57-jean event=agent_done pid=140277 agent=correlator findings_emitted=1
+2026-06-04T17:50:45+00:00 [INFO] case=m57-jean event=knowledge_iocs_recorded pid=140277 new_rows=1777 total_iocs=1790
+2026-06-04T17:50:45+00:00 [INFO] case=m57-jean event=agent_start pid=140277 agent=threat_hunter state=correlate
+2026-06-04T17:51:00+00:00 [INFO] case=m57-jean event=agent_done pid=140277 agent=threat_hunter findings_emitted=2
+2026-06-04T17:51:01+00:00 [INFO] case=m57-jean event=state_transition pid=140277 from_=correlate to=adversarial_review
+2026-06-04T17:51:01+00:00 [INFO] case=m57-jean event=agent_start pid=140277 agent=red_reviewer state=adversarial_review
+2026-06-04T17:55:01+00:00 [INFO] case=m57-jean event=red_review_deferred pid=140277 component=red_reviewer findings=222 trigger=claude_code_session
+2026-06-04T17:55:01+00:00 [INFO] case=m57-jean event=agent_done pid=140277 agent=red_reviewer findings_emitted=1
+2026-06-04T17:55:05+00:00 [INFO] case=m57-jean event=state_transition pid=140277 from_=adversarial_review to=synthesize
+2026-06-04T17:55:05+00:00 [INFO] case=m57-jean event=state_transition pid=140277 from_=synthesize to=report
+2026-06-04T17:55:05+00:00 [INFO] case=m57-jean event=state_transition pid=140277 from_=report to=done
+2026-06-04T17:56:18+00:00 [INFO] case=m57-jean event=llm_call pid=140277 component=executive_ai model=claude-sonnet-4-6 transport=claude_cli_headless input_tokens=3 output_tokens=3830
+2026-06-04T18:02:28+00:00 [INFO] case=m57-jean event=case_sealed pid=140277 merkle_root=d59d9a96bffa3c890dc252f7b99003efbaaef6897e87c611c03b88b4a8f4c5c3 archive_path=/opt/EL/cases/_archives/m57-jean-20260604T175638Z.tar.gz
+2026-06-04T18:02:45+00:00 [INFO] case=m57-jean event=sigma_export pid=140277 rules_walked=4911 converted=2387 backends=["splunk","elasticsearch","opensearch","kusto"] output_dir=/opt/EL/cases/m57-jean/reports/sigma_rules
+2026-06-04T18:02:45+00:00 [INFO] case=m57-jean event=case_complete pid=140277 final_state=done leading_hypothesis=H_BEC_ACCOUNT_TAKEOVER leading_score=51 report_path=/opt/EL/cases/m57-jean/reports/report.md
