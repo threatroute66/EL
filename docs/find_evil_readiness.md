@@ -21,8 +21,8 @@ requirement directly — an `execution_log.jsonl` + `traceability_matrix.md`
 linking every claim to the specific subprocess that produced it. Every
 claim is Pydantic-enforced to carry tool + version + command +
 `output_sha256` + `output_path`, and `confidence="insufficient"` is a
-first-class output ("I don't know" beats a guess). 3,255 tests
-(3,169 pass · 86 skip, ~11 min). Validated end-to-end on 12 distinct
+first-class output ("I don't know" beats a guess). 3,267 tests
+(3,178 pass · 89 skip, ~10 min). Validated end-to-end on 12 distinct
 evidence types including M57-Jean,
 LoneWolf, BelkaCTF mobile / macOS / Android, SRL-2018 (paired
 memory + disk + baseline), and ~2000 malware-traffic pcaps.
@@ -116,7 +116,7 @@ Three architectural mechanisms, all tested and fired on real cases:
   packages, creates venv, runs `el doctor` which probes every
   external tool (vol3, Sleuth Kit, EZ Tools via dotnet, plaso,
   bulk_extractor, yara, evtexport, msiecfexport, cryptsetup, …).
-- **3,255 pytest tests** (3,169 pass · 86 skip) in ~11 min. Includes real-LUKS
+- **3,267 pytest tests** (3,178 pass · 89 skip) in ~10 min. Includes real-LUKS
   end-to-end round-trip, real pefile carve analysis on LoneWolf,
   and content-schema regression tests.
 - Host requirements documented in README (RAM / vCPU / disk / SIFT
@@ -388,7 +388,7 @@ decision path for evidence extraction.
 - **`el serve` HTTP server**: binds 127.0.0.1 only by default; the
   systemd user unit ships with `NoNewPrivileges=true`,
   `ProtectSystem=strict`, `ReadOnlyPaths=/opt/EL/cases`.
-- **Tested for bypass**: 3,255 tests include schema-violation
+- **Tested for bypass**: 3,267 tests include schema-violation
   attempts (`tests/test_finding_contract.py`), state-machine refusal
   (`tests/test_coordinator_blocks.py`), ACH-no-score-from-insufficient
   (`tests/test_ach_excludes_insufficient.py`), ssdeep+phash cross-

@@ -31,7 +31,7 @@ cd /opt/EL
 # 2. Health check — every tool EL needs, schema validates, Kùzu importable
 .venv/bin/el doctor
 
-# 3. Full test suite (3,255 tests, ~11 minutes wall-clock)
+# 3. Full test suite (3,178 passed, 89 skipped, ~10 minutes wall-clock)
 make test
 
 # 4. Just the explicit bypass-attempt suite (~0.2 s)
@@ -155,7 +155,7 @@ If the sha256 of step 4 doesn't match step 3, EL has produced a hallucinated cla
 │   ├── schemas/            Pydantic Finding contract (the enforcement)
 │   ├── reporting/          report.md + case.html + executive HTML/PDF + STIX
 │   └── cli.py              `el` typer entrypoint
-├── tests/                  3,255 tests — run via `make test` (~11 min)
+├── tests/                  3,178 passing — run via `make test` (~10 min)
 │   ├── test_security_boundaries.py     Find Evil bypass-test artifact
 │   ├── test_finding_contract.py        Pydantic schema enforcement
 │   └── test_ioc_*.py / test_*_fp_*.py  90+ false-positive regression locks

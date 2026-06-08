@@ -774,7 +774,7 @@ Rolled out in four tiers per
 
 ## Status
 
-- **3,255 tests; `make test` runs them in ~11 minutes.**
+- **3,178 tests passing (89 skipped); `make test` runs them in ~10 minutes.**
 - 34 specialist agents · 140+ skill primitives · 33 case-level hypotheses
   with deterministic scorers · 105 ATT&CK technique → tactic mappings ·
   21 malware family fingerprints · 9 disk anomaly patterns
