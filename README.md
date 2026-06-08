@@ -10,6 +10,8 @@ A multi-agent DFIR orchestrator for the SANS SIFT Workstation, built for
 the [SANS Find Evil 2026](https://findevil.devpost.com/) competition and
 designed as a reusable forensic investigation framework.
 
+📺 **Watch the intro:** [EL Introduction (YouTube)](https://youtu.be/ErcxDSlFIAQ)
+
 **Judges:** start at [`docs/JUDGES.md`](docs/JUDGES.md) — single-page
 quickstart with a 5-min contract verification, a 30-min end-to-end run
 against the public M57-Jean scenario, and a reference table mapping the
