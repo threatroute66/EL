@@ -828,6 +828,10 @@ Created by **Murat Cakir**, [GSE #185](https://www.giac.org/certified-profession
 EL would not exist without the people, institutions, and bodies of work that
 shaped both the practice and the principles it leans on. Thanks to:
 
+- **Dr. Eric Cole** (1970–2026) *(in memoriam)* — for the cybersecurity
+  tradecraft, teaching, and writing that shaped a generation of defenders. His
+  passing during EL's preparation is deeply felt; remembered with gratitude.
+  ([memorial](https://nationalsecurity.gmu.edu/dr-eric-cole/))
 - **Rob T. Lee** and **SANS Institute** — for the rigorous DFIR pedagogy EL
   was built to satisfy, and for the corpora that exercised it end-to-end.
 - **Current GSE holders** and **everyone pursuing that track** — the
