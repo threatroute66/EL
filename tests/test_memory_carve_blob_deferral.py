@@ -87,6 +87,31 @@ def test_weak_extension_alone_is_not_a_memory_hint(tmp_path):
     assert not _looks_like_memory_input(tmp_path / "image.img", None)
 
 
+def test_delimited_mem_segment_recognised(tmp_path):
+    """Narcos regression: a 'mem' (or 'ram') token that appears as a *delimited
+    segment* of the filename or bundle device label must be recognised — even
+    though it is not the whole label. Previously '<suspect>-mem' and split
+    stems like 'Narcos-Mem-1.001' slipped through to carve-only because 'mem'
+    was only matched as an exact label string."""
+    # Bundle device labels: "<bundle>:<suspect>-mem"
+    assert _looks_like_memory_input(
+        tmp_path / "Narcos-Mem-1.001", "narcos-full:steve-mem")
+    assert _looks_like_memory_input(
+        tmp_path / "Narcos-Mem-2.001.raw", "narcos-full:john-mem")
+    # Filename segment alone (no helpful label)
+    assert _looks_like_memory_input(tmp_path / "Narcos-Mem-3.001", None)
+    assert _looks_like_memory_input(tmp_path / "host_ram_0.raw", None)
+
+
+def test_mem_substring_does_not_false_fire(tmp_path):
+    """The segment matcher must NOT fire on words that merely *contain* 'mem'
+    or 'ram' as a substring (no bare segment): remember, member, program,
+    diagram. Guards against over-broad matching from the Narcos fix."""
+    assert not _looks_like_memory_input(tmp_path / "remember.raw", None)
+    assert not _looks_like_memory_input(tmp_path / "members.img", None)
+    assert not _looks_like_memory_input(tmp_path / "program.bin", "case:diagram")
+
+
 # ---------------------------------------------------------------------------
 # Deferral behaviour in TriageAgent.run
 # ---------------------------------------------------------------------------
@@ -143,3 +168,93 @@ def test_unnamed_carve_blob_carves_immediately_without_vol3(tmp_path, monkeypatc
 
     assert ctx.shared.get("evidence_kind") == "unallocated (carve-only)"
     assert called["vol3"] is False
+
+
+# ---------------------------------------------------------------------------
+# Improvement #2 — vol3 banner-scan fallback for truncated acquisitions
+# ---------------------------------------------------------------------------
+
+def test_scan_windows_banner_finds_truncated_kernel(tmp_path):
+    """A raw memory image whose page tables sit above a truncated capture
+    still carries the ntoskrnl version banner. scan_windows_banner must find
+    it (no vol3, no symbols) and report build + a truncation diagnosis."""
+    from el.skills.vol3 import scan_windows_banner
+    img = tmp_path / "host-mem.raw"
+    img.write_bytes(b"")
+    with img.open("wb") as f:
+        f.truncate(8 * 1024 * 1024)
+        f.seek(3 * 1024 * 1024)
+        f.write(b"Microsoft (R) Windows (R) Version 10.0.17134 (Build 17134)")
+    probe = scan_windows_banner(img, max_bytes=8 * 1024 * 1024,
+                                chunk=1 * 1024 * 1024)
+    assert probe.is_windows_memory is True
+    assert probe.build == "10.0.17134"
+    assert probe.banner_offset is not None
+    assert "truncated" in probe.reason.lower() or "no kernel layer" in probe.reason.lower()
+
+
+def test_scan_windows_banner_negative_on_non_windows(tmp_path):
+    """No Windows kernel banner → is_windows_memory False (so triage does NOT
+    misroute a genuine non-Windows blob to the Windows carve diagnosis)."""
+    from el.skills.vol3 import scan_windows_banner
+    img = tmp_path / "blob.raw"
+    img.write_bytes(b"\x00" * (4 * 1024 * 1024) + b"random non-kernel bytes")
+    probe = scan_windows_banner(img, max_bytes=8 * 1024 * 1024,
+                                chunk=1 * 1024 * 1024)
+    assert probe.is_windows_memory is False
+    assert probe.build is None
+
+
+def test_vol3_failure_with_banner_routes_to_carve(tmp_path, monkeypatch):
+    """End-to-end: when vol3 automagic raises (no layer) BUT the raw banner
+    scan confirms Windows memory, _maybe_run_vol3 emits an insufficient
+    diagnosis and routes the image to the carve pipeline for IOC recovery —
+    instead of dead-ending on a generic 'no OS family'."""
+    from el.skills import vol3 as vol3_mod
+    img = _blob(tmp_path / "john-mem.raw")
+    ctx = _ctx(tmp_path, img, case_id="narcos-full:john-mem")
+
+    def fake_detect_os(image, out_dir):
+        raise vol3_mod.Vol3Error("no banner plugin produced usable output")
+
+    def fake_banner(image, **kw):
+        return vol3_mod.TruncatedMemoryProbe(
+            is_windows_memory=True, build="10.0.17134", banner_offset=123,
+            reason="Windows kernel banner found ... truncated acquisition.")
+
+    monkeypatch.setattr(vol3_mod, "detect_os", fake_detect_os)
+    monkeypatch.setattr(vol3_mod, "scan_windows_banner", fake_banner)
+
+    analysis = ctx.case_dir / "analysis" / "triage"
+    out = TriageAgent()._maybe_run_vol3(ctx, analysis)
+
+    assert ctx.shared.get("mem_truncated_windows") is True
+    assert ctx.shared.get("evidence_kind") == "unallocated (carve-only)"
+    assert any(f.confidence == "insufficient" and "10.0.17134" in f.claim
+               for f in out)
+
+
+def test_vol3_failure_without_banner_stays_insufficient(tmp_path, monkeypatch):
+    """When vol3 fails AND no Windows banner is present, the image is not
+    confidently Windows memory — emit the generic insufficient and do NOT
+    force a Windows carve classification."""
+    from el.skills import vol3 as vol3_mod
+    img = _blob(tmp_path / "mystery-mem.raw")
+    ctx = _ctx(tmp_path, img, case_id="case:mem")
+
+    def fake_detect_os(image, out_dir):
+        raise vol3_mod.Vol3Error("no banner plugin produced usable output")
+
+    def fake_banner(image, **kw):
+        return vol3_mod.TruncatedMemoryProbe(
+            is_windows_memory=False, build=None, banner_offset=None,
+            reason="no Windows kernel banner in the scanned range")
+
+    monkeypatch.setattr(vol3_mod, "detect_os", fake_detect_os)
+    monkeypatch.setattr(vol3_mod, "scan_windows_banner", fake_banner)
+
+    out = TriageAgent()._maybe_run_vol3(ctx, ctx.case_dir / "analysis" / "triage")
+
+    assert ctx.shared.get("mem_truncated_windows") is None
+    assert any(f.confidence == "insufficient" and "vol3 failed" in f.claim
+               for f in out)

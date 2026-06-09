@@ -443,6 +443,104 @@ def recover_windows_symbols(image: str | Path, out_dir: str | Path,
         "acquisition; symbol-walking plugins are unrecoverable."), None
 
 
+# Windows kernel version banner that ntoskrnl writes into a non-paged data
+# section — present in any genuine Windows physical-memory capture. We scan
+# for it directly (bounded byte read, no vol3 layer) as a fallback when the
+# automagic LayerStacker can't build a kernel layer. Two shapes appear: the
+# printf template (`Version %hs (Build %u%hs)`) the kernel carries verbatim,
+# and resolved `10.0.NNNNN` build strings.
+_WIN_KERNEL_BANNER_RE = (
+    rb"Microsoft \(R\) Windows \(R\) Version"        # printf template
+    rb"|Windows 10 Kernel Version"                    # resolved banner
+    rb"|NT Kernel"                                    # KUSER_SHARED_DATA-adjacent
+)
+_WIN_BUILD_RE = rb"10\.0\.1[0-9]{4}\b"               # 10.0.17134 / 17763 / 16299…
+
+
+@dataclass
+class TruncatedMemoryProbe:
+    """Result of the no-layer banner-scan fallback (``scan_windows_banner``)."""
+    is_windows_memory: bool          # kernel banner found in the raw bytes
+    build: str | None                # e.g. "10.0.17134" if a build string hit
+    banner_offset: int | None        # byte offset of the first banner hit
+    reason: str                      # human-readable diagnosis
+
+
+def scan_windows_banner(image: str | Path,
+                        max_bytes: int = 6 * 1024 ** 3,
+                        chunk: int = 64 * 1024 ** 2) -> TruncatedMemoryProbe:
+    """Fallback kernel identification when vol3's automagic finds no layer.
+
+    When ``windows.info`` fails with "No suitable kernels found", the cause is
+    usually one of: (a) a truncated acquisition where the System DTB / page
+    tables sit at a physical address ABOVE the captured range (common on VMs
+    that remap RAM above the 4 GB MMIO hole — the DumpIt/Comae 4 GB linear
+    capture then omits the page tables), or (b) a smeared/non-atomic capture.
+    Either way the structured process view is unrecoverable, but the image is
+    still a genuine Windows memory dump whose *string-level* evidence (process
+    names, credentials, IPs, mail accounts) carves cleanly.
+
+    This scans the raw bytes (no vol3, no symbols) for the ntoskrnl version
+    banner so EL can (1) confirm the input IS Windows memory, (2) name the
+    build, and (3) emit a precise ``insufficient`` diagnosis + route to the
+    carve pipeline rather than dead-ending on a generic "no banner" error.
+
+    Bounded: reads at most ``max_bytes`` in ``chunk``-sized windows with a
+    small overlap so a banner straddling a boundary still matches. Read-only.
+    """
+    import re as _re
+    path = Path(image)
+    banner_re = _re.compile(_WIN_KERNEL_BANNER_RE)
+    build_re = _re.compile(_WIN_BUILD_RE)
+    overlap = 256
+    pos = 0
+    banner_off: int | None = None
+    build: str | None = None
+    try:
+        size = path.stat().st_size
+    except OSError as e:
+        return TruncatedMemoryProbe(False, None, None,
+                                    f"image not readable: {e}")
+    limit = min(size, max_bytes)
+    try:
+        with open(path, "rb") as fh:
+            carry = b""
+            while pos < limit:
+                fh.seek(pos)
+                buf = carry + fh.read(min(chunk, limit - pos))
+                if not buf:
+                    break
+                if banner_off is None:
+                    m = banner_re.search(buf)
+                    if m:
+                        banner_off = pos - len(carry) + m.start()
+                if build is None:
+                    mb = build_re.search(buf)
+                    if mb:
+                        build = mb.group(0).decode("ascii", "ignore")
+                if banner_off is not None and build is not None:
+                    break
+                carry = buf[-overlap:]
+                pos += min(chunk, limit - pos)
+    except OSError as e:
+        return TruncatedMemoryProbe(False, build, banner_off,
+                                    f"read error during scan: {e}")
+    is_win = banner_off is not None or build is not None
+    if is_win:
+        reason = (
+            f"Windows kernel banner found in raw bytes"
+            f"{f' (build {build})' if build else ''} but vol3 built no "
+            f"kernel layer — likely a truncated/non-atomic acquisition "
+            f"(System DTB above the captured physical range). Structured "
+            f"process/network plugins are unavailable; string/IOC carving "
+            f"of this memory image is the recoverable path."
+        )
+    else:
+        reason = ("no Windows kernel banner in the scanned range — not a "
+                  "Windows memory image, or capture too damaged to identify")
+    return TruncatedMemoryProbe(is_win, build, banner_off, reason)
+
+
 def detect_os(image: str | Path, out_dir: str | Path) -> tuple[str | None, PluginRun]:
     """Best-effort OS family detection by trying banner plugins.
 

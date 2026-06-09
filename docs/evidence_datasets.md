@@ -76,13 +76,13 @@ ours to grant.
 | **Source** | SANS FOR508 course dataset — "Stark Research Labs / Compromised Enterprise Network" · course-restricted |
 | **What EL found** | Per-case ACH put **`H_APT_ESPIONAGE`** as leader on 12 of 21 hosts; no false-positive false-leader cases after the session's detector/scoring fixes. Cross-host correlation surfaced the shared attacker infrastructure (C2 `172.16.4.10:8080`, WinRM pivot `172.16.5.21:5985`, multi-protocol staging `172.16.4.6`). Full multi-host bundle run (ingress → pivot → impact) reconstructed in [`sample-reports/SRL-2018-shakedown.md`](../sample-reports/SRL-2018-shakedown.md). |
 
-### B2. Narcos 2019 — 3-device challenge bundle
+### B2. Narcos 2019 — 6-device drug-trafficking scenario (disk + memory) · **public**
 
 | | |
 |---|---|
-| **Tested against** | `Narcos-1.001` / `Narcos-2.001` / `Narcos-3.001` — 3-device raw (dd) image bundle |
-| **Source** | Third-party DFIR challenge image set (2019 "Narcos"), local lab corpus |
-| **What EL found** | Multi-device `investigate-bundle` run; leading hypothesis **Targeted intrusion / espionage** (`H_APT_ESPIONAGE`, score 22, gap +13) with anti-forensic tampering context flagged (index 29). |
+| **Tested against** | 3 suspects × (30 GB split-raw disk + 4 GB split-raw memory) = 6 devices, ~102 GB. Steve Kowhai (Narcos-1, Win10 1809), John Fredricksen (Narcos-2, 1803), Jane Estaban (Narcos-3, 1709) |
+| **Source** | Digital Corpora — 2019 Narcos scenario · https://digitalcorpora.org/corpora/scenarios/2019-narcos/ · **public** (a teacher solution + per-actor artefact spreadsheets ship with the scenario, used here as the scoring baseline) |
+| **What EL found** | 6-device `investigate-bundle`; per-device ACH leader **Targeted intrusion / espionage** (score 22–29). Independently reproduced the solution's findings on the artefact-recovery dimensions: full per-suspect software stack via amcache∧shimcache execution corroboration (Image Steganography 1.5.2, TrueCrypt 7.1a, Quasar RAT, CCleaner, Baidu AV, Discord, OpenOffice — with exact paths); Australian time-zone attribution for the two interdicted suspects; Protonmail accounts for all three; and — from memory string/IOC carve — the TrueCrypt password `ilovediving`, the Quasar implant alias `updater.exe`, target host `JOHNFLAPTOP`, and the C2 channel `202.2.12.12 ↔ 202.2.12.13:4782`. Full side-by-side in `cases/narcos-full/reports/EL_vs_solution_comparison.md`. **Surfaced a real limitation** (Vol3 could not build a kernel layer on the truncated 4 GB Comae captures — the same wall the original team's Volatility 2.6 hit) that drove the June 2026 memory-handling fixes — see [accuracy_report.md § Sequence 6](accuracy_report.md#sequence-6--narcos-2019-memory-image-misroute--truncated-acquisition-fallback). |
 
 ### B3. Rocba — disk + memory challenge
 

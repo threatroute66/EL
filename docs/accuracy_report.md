@@ -302,6 +302,7 @@ audit:
 | AFF4 + `.ad1` commercial containers | Not supported | Low — EnCase/FTK-only |
 | LiME / AVML (Linux memory) | Not supported — vol3 symbol + profile path untested | Medium |
 | Hyper-V / VMware VM memory snapshots | Vol3 flat-`.vmem` works; `.vmss`/`.vmsn` snapshot-side untested | Low |
+| Truncated memory captures (DTB above captured range) | Vol3 builds no kernel layer when a 4 GB linear dump omits page tables remapped above the MMIO hole (DumpIt/Comae on >4 GB-remap VMs). `scan_windows_banner` confirms the OS/build and routes to string/IOC carve + a precise `insufficient` — structured process/network plugins stay unavailable (matches Volatility 2.6's own struggle on these) | Medium — acquisition-side |
 | Suricata EVE / IIS W3C / ESXi / Kubernetes audit logs | Not parsed; `CloudForensicator` silent-dispatches and emits `insufficient` when shape isn't recognised | Medium |
 | Office XLM macros / PDF object streams | VBA via olevba shipped; XLM via `pcodedmp` + PDF via `pdfparser` not yet wired into `malware_triage` | Medium |
 | Teams / Slack LevelDB + IndexedDB | Not parsed — needs LevelDB Python dep | Low |
@@ -556,34 +557,103 @@ other-CDN-suffix coverage, mixed-rowset detector-still-fires).
 The FP class is now formally tracked under "Known false-positive
 classes" earlier in this doc. Commit `6a6e1ff`.
 
+### Sequence 6 — Narcos 2019: memory-image misroute + truncated-acquisition fallback (June 2026)
+
+Real evidence: Digital Corpora **2019 Narcos** — 3 drug-case suspects ×
+(30 GB split-raw disk + 4 GB split-raw memory) = 6 devices, ~102 GB, run as
+one `investigate-bundle` (`narcos-full`) and scored against the scenario's
+shipped teacher solution.
+
+**Failure 1 — memory dumps triaged as carve-only.** All three raw memory
+images routed to `evidence_kind="unallocated (carve-only)"` and the
+`DiskForensicator` carve path instead of `MemoryForensicator`. Triage's
+`_looks_like_memory_input` already defers a memory-named carve-blob to a
+vol3 probe — but it matched the short tokens `mem`/`ram` only as an *exact*
+label string, so the bundle device labels `steve-mem` / `john-mem` /
+`jane-mem` and the split stems `Narcos-Mem-N.001` (which merely *contain* a
+`mem` segment) slipped through. Observable in the audit log:
+`investigator_selected name=DiskForensicatorAgent evidence_kind="unallocated (carve-only)"`
+on a device named `…-mem`.
+
+**Self-correction 1.** Reworked `_looks_like_memory_input` to match on
+*delimited segments*: a new `_segment_tokens()` splits the filename and the
+bundle device label on every non-alphanumeric delimiter and letter↔digit
+boundary (`Narcos-Mem-1.001` → `{narcos, mem, 1, 001}`), then matches whole
+segments against the token set. Catches `<suspect>-mem` / `<host>_ram` /
+split stems without false-firing on substrings (`remember`, `member`,
+`program`, `diagram` yield no bare `mem`/`ram` segment). Locked in by
+`test_delimited_mem_segment_recognised` + `test_mem_substring_does_not_false_fire`
+in `tests/test_memory_carve_blob_deferral.py`.
+
+**Failure 2 — vol3 dead-ended on a genuine Windows memory image.** Even
+with routing fixed, Volatility 3's automagic built **no kernel layer** on
+any of the three images. Verbose diagnostic:
+`DtbSelfRef64bit not met: 0x13ffffa00 > 0xffffffff` / `physical_layer
+maximum_address: 4294967295` / `No suitable kernels found during pdbscan`.
+The System DTB sits at physical ~5.4 GB — **above** the 4 GB the Comae
+DumpIt capture contained (these VMs remap RAM above the 4 GB MMIO hole; the
+linear 4 GB dump omits the page tables). The original scenario team hit the
+same wall — their notes say Volatility 2.6 "does not currently support Win
+10x64 build 1809" and they fell back to bulk_extractor. EL's prior behaviour
+was a generic `insufficient: vol3 failed: no banner plugin produced usable
+output` — true but unhelpful, and it discarded a recoverable image.
+
+**Self-correction 2.** Added `vol3.scan_windows_banner()` — a bounded,
+symbol-free raw-byte scan for the ntoskrnl version banner (`Microsoft (R)
+Windows (R) Version` / `10.0.NNNNN`). When the automagic raises, triage now
+calls it; if the banner is present it (a) confirms the input IS Windows
+memory and names the build, (b) emits a **precise** `insufficient` diagnosis
+(truncated/non-atomic acquisition, DTB above captured range — structured
+plugins unavailable, carving is the recoverable path), and (c) routes the
+image to the carve pipeline so bulk_extractor + IOC extraction still run.
+Validated on the real Narcos memory: confirmed Windows build `10.0.17134`
+with the banner at offset ~3.8 GB. Locked in by four tests
+(`test_scan_windows_banner_*`, `test_vol3_failure_with_banner_routes_to_carve`,
+`test_vol3_failure_without_banner_stays_insufficient`).
+
+Why it matters: the carve path recovers the *forensic conclusions* the
+structured plugins would have — on Narcos, EL's affuse + string/IOC carve
+of the memory recovered the TrueCrypt password `ilovediving`, the Quasar
+implant alias `updater.exe`, the RAT target host, the C2 IPs + port, and
+every actor's Protonmail account, exactly the artefacts the solution's own
+bulk_extractor pass surfaced. EL keeps the load-bearing evidence even where
+Vol3's process table is unrecoverable, and now *says precisely why* rather
+than emitting a generic failure.
+
 ---
 
-What these five sequences share:
+What these six sequences share:
 - Triggered by **real third-party evidence** (M57 / BelkaCTF /
-  vanko-r2), not synthetic test fixtures.
+  vanko-r2 / Narcos), not synthetic test fixtures.
 - The first symptom was always **observable in the agent's own
   outputs** — a triage finding admitting "no shape match",
   an audit log with `agent_start` but no `agent_done`, a
   bundle summary listing fewer devices than requested, a
   finding whose own sample list exposes its noise, or an audit
-  log entry recording `aup_blocked_batches > 0`.
+  log entry recording `aup_blocked_batches > 0`, or an
+  `investigator_selected` event routing a `…-mem` device to the
+  disk carve path.
 - The fix landed at the layer that owned the root cause:
   streaming primitive (OOM), regex flag (case mismatch),
   state instantiation (coordinator reuse), suffix allowlist
-  (CDN noise), prompt construction (AUP content trigger).
+  (CDN noise), prompt construction (AUP content trigger),
+  segment-tokeniser + raw-banner fallback (memory misroute).
 
 Sequences 1–3 caught silent crashes (no output where output was
 expected). Sequence 4 caught output that was emitted but contained
 a known-noise class. Sequence 5 caught the adversarial review
 layer itself silently failing — arguably the most dangerous shape
 because a broken challenger produces output that looks identical
-to a working one. The architecture handles all three shapes
-because Findings and audit events carry the data needed to
-self-incriminate: a missing `agent_done` event, a sample list
-that points at a CDN, a `claim` text the analyst can sanity-
-check against the ground truth they brought to the engagement,
-or an `aup_blocked_batches` counter that proves coverage was
-incomplete.
+to a working one. Sequence 6 caught a *misroute* — correct output
+from the wrong agent (a memory image carved as a disk), plus a
+genuine tool limitation reported too vaguely to act on. The
+architecture handles all of these because Findings and audit
+events carry the data needed to self-incriminate: a missing
+`agent_done` event, a sample list that points at a CDN, a `claim`
+text the analyst can sanity-check against the ground truth they
+brought to the engagement, an `aup_blocked_batches` counter that
+proves coverage was incomplete, or an `investigator_selected`
+line naming the wrong agent for the evidence kind.
 
 The accuracy posture isn't "we never made a mistake"; it's
 "the architecture surfaces our mistakes and tests pin them

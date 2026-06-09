@@ -7,6 +7,7 @@ attempts vol3 OS detection.
 from __future__ import annotations
 
 import hashlib
+import re
 from pathlib import Path
 
 from el.agents.base import Agent, AgentContext
@@ -236,22 +237,39 @@ _MEM_EXT_STRONG: frozenset[str] = frozenset(
 _MEM_EXT_WEAK: frozenset[str] = frozenset({".raw", ".img", ".bin"})
 
 
+def _segment_tokens(s: str) -> set[str]:
+    """Split a name/label into lowercase alphanumeric segments, breaking on
+    every non-alphanumeric delimiter AND on letter↔digit boundaries. So
+    ``"Narcos-Mem-1.001"`` → ``{"narcos", "mem", "1", "001"}`` and
+    ``"steve-mem"`` → ``{"steve", "mem"}``. Lets a short token like ``mem``
+    match as a whole segment without false-firing on substrings such as
+    ``"remember"`` or ``"member"`` (which yield no bare ``mem`` segment)."""
+    return set(re.findall(r"[a-z]+|[0-9]+", s.lower()))
+
+
 def _looks_like_memory_input(path: Path, case_id: str | None) -> bool:
     """True when the input *names itself* a memory capture — so a carve-blob
     false positive can be deferred to a vol3 kernel probe instead of being
     routed straight to carving. Name-only heuristic (no I/O); correctness is
     still decided by Volatility downstream, this only gates whether we bother
-    to probe before carving."""
-    name = path.name.lower()
+    to probe before carving.
+
+    Matching is segment-based: the short tokens ``mem``/``ram`` (and the
+    longer ``_MEM_NAME_TOKENS``) must appear as a *whole* delimited segment
+    of the filename or the bundle device label. This catches the common
+    bundle-device naming ``<suspect>-mem`` / ``<host>_ram`` and split-image
+    stems like ``Narcos-Mem-1.001`` that the previous exact-string check
+    missed (it only matched a label that WAS literally ``mem``, never one
+    that merely contained a ``mem`` segment)."""
     ext = path.suffix.lower()
-    # Bundle device label, e.g. case_id "rocba:memory" → "memory".
-    label = ""
+    name_segs = _segment_tokens(path.name)
+    # Bundle device label, e.g. case_id "rocba:memory" → "memory",
+    # "narcos-full:steve-mem" → segments {"steve","mem"}.
+    label_segs: set[str] = set()
     if case_id and ":" in case_id:
-        label = case_id.rsplit(":", 1)[-1].strip().lower()
-    if label and (label in _MEM_LABEL_TOKENS
-                  or any(t in label for t in _MEM_NAME_TOKENS)):
-        return True
-    if any(t in name for t in _MEM_NAME_TOKENS):
+        label_segs = _segment_tokens(case_id.rsplit(":", 1)[-1])
+    segs = name_segs | label_segs
+    if segs & set(_MEM_LABEL_TOKENS):
         return True
     if ext in _MEM_EXT_STRONG:
         return True
@@ -587,6 +605,35 @@ class TriageAgent(Agent):
                     confidence="low", evidence=[ev],
                 )))
         except vol3.Vol3Error as e:
+            # vol3 automagic built no kernel layer. Before giving up, scan the
+            # raw bytes for the ntoskrnl banner: a genuine Windows memory image
+            # whose System DTB sits above a truncated capture range still
+            # carries identifiable kernel strings and carves cleanly. When the
+            # banner is present, emit a precise diagnosis and route the image
+            # to the carve pipeline so string/IOC recovery still runs, rather
+            # than dead-ending on a generic "no OS family" insufficient.
+            probe = None
+            try:
+                probe = vol3.scan_windows_banner(ctx.input_path)
+            except Exception:
+                probe = None
+            if probe is not None and probe.is_windows_memory:
+                ctx.shared["mem_truncated_windows"] = True
+                # Route to carve so bulk_extractor + IOC extraction still run
+                # over the memory image (recovers credentials, process names,
+                # IPs, mail accounts that the structured plugins would have).
+                ctx.shared["evidence_kind"] = "unallocated (carve-only)"
+                out.append(self.emit(ctx, Finding(
+                    case_id=ctx.case_id, agent=self.name,
+                    confidence="insufficient",
+                    claim=(f"Windows memory image confirmed by raw kernel "
+                           f"banner"
+                           f"{f' (build {probe.build})' if probe.build else ''}"
+                           f", but Volatility 3 built no kernel layer — "
+                           f"{probe.reason} Routing to the carve pipeline for "
+                           f"string/IOC recovery."),
+                )))
+                return out
             out.append(self.emit(ctx, Finding(
                 case_id=ctx.case_id, agent=self.name,
                 claim=f"Cannot determine memory OS family — vol3 failed: {e}",
