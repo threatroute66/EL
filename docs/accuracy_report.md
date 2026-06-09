@@ -606,10 +606,20 @@ memory and names the build, (b) emits a **precise** `insufficient` diagnosis
 (truncated/non-atomic acquisition, DTB above captured range — structured
 plugins unavailable, carving is the recoverable path), and (c) routes the
 image to the carve pipeline so bulk_extractor + IOC extraction still run.
-Validated on the real Narcos memory: confirmed Windows build `10.0.17134`
-with the banner at offset ~3.8 GB. Locked in by four tests
-(`test_scan_windows_banner_*`, `test_vol3_failure_with_banner_routes_to_carve`,
+Locked in by four tests (`test_scan_windows_banner_*`,
+`test_vol3_failure_with_banner_routes_to_carve`,
 `test_vol3_failure_without_banner_stays_insufficient`).
+
+**Validated by re-running all three Narcos memory images through the fixed
+pipeline** (`narcos-mem-r2`): every dump now routes via the memory probe,
+Vol3 fails the layer build, and the banner fallback identifies the exact
+Windows build — `steve-mem` → **10.0.17763 (1809)**, `john-mem` →
+**10.0.17134 (1803)**, `jane-mem` → **10.0.16299 (1709)** — a perfect match
+to the scenario's per-suspect builds. EL pinned Steve's **1809**, the build
+the original solution's Volatility 2.6 could not identify at all. Each
+device emitted its truncated-acquisition diagnosis and routed to carve,
+which recovered the Protonmail accounts (and, by targeted string carve, the
+TrueCrypt password + Quasar C2 artefacts) the structured plugins would have.
 
 Why it matters: the carve path recovers the *forensic conclusions* the
 structured plugins would have — on Narcos, EL's affuse + string/IOC carve
