@@ -37,13 +37,15 @@ canonical-answer claims are locked against them.
 | **Ground truth** | Jean was socially engineered by a spoofed "Alison/President" email and replied with `m57biz.xls` attached — pretexting-driven BEC exfil |
 | **What EL found** | Leading hypothesis **`H_BEC_ACCOUNT_TAKEOVER`** by a wide ACH gap. Two inbound phishing findings (display-name vs SMTP mismatch) + two reply-chain precursors; attachment named inline `1_m57biz.xls (291840 B)`; anti-forensics signal (15 zero-size + 15 zero-timestamp + 15 MACB-skew system binaries); 3 wiped binaries recovered from unallocated space. **EL reached the canonical answer that two public human writeups missed** — see [accuracy_report.md § M57-Jean](accuracy_report.md#m57-jean-nps--digitalcorpora--bec--pretexting-exfil) for the head-to-head. |
 
-### A2. Lone Wolf 2018 — APT espionage + Cobalt Strike (paired disk + memory)
+### A2. Lone Wolf 2018 — benign attack-planning laptop (paired disk + memory)
 
 | | |
 |---|---|
-| **Tested against** | "Lone Wolf" Windows disk image + paired memory capture (run as `nromanoff` Win7 9.6 GB disk and as the GMU LoneWolf paired disk+memory) |
-| **Source** | Digital Corpora — 2018 Lone Wolf scenario (Thomas Moore) · https://digitalcorpora.org/corpora/scenarios/ · public |
-| **What EL found** | Disk leader **`H_APT_ESPIONAGE`** (nromanoff score 38, gap +20); memory leader **`H_C2_BEACONING`** (score 11, gap +8). Cobalt Strike family fingerprint (Malleable-C2 `__utm.gif`) in `domain.txt`/`url.txt`; 4 Azure-hosted C2 IPs at :443 in netscan; multi-technique lateral-movement chain (service install + WMI consumer + PS-remoting); full 9-tactic ATT&CK chain on nromanoff. See [accuracy_report.md § GMU LoneWolf](accuracy_report.md#gmu-lonewolf-paired-disk--memory) and § nromanoff. |
+| **Tested against** | `LoneWolf.E01` (9-segment, 512 GB physical / ~13.7 GB compressed) + `memdump.mem` (17.9 GB) + pagefile. Windows 10 1709, user `jcloudy`, host DESKTOP-PM6C56D |
+| **Source** | Digital Corpora — 2018 Lone Wolf Scenario (Thomas J. Moore, GMU CFRS 780) · https://digitalcorpora.org/corpora/scenarios/2018-lone-wolf-scenario/ · **public** (scenario guide + evidence validation report ship with it) |
+| **Scenario** | Benign-of-malware, single-user **attack-planning** case: Jim Cloudy planned a physical attack on a gun-violence town hall and mirrored planning documents across OneDrive/Dropbox/Box/Google Drive/AWS S3. No intrusion, no C2, no malware. |
+| **What EL found** | ✅ Identity `jcloudy` / DESKTOP-PM6C56D / Win10 1709 / Eastern TZ; ✅✅ **multi-cloud evidence mirror** — 14 files synced across all 5 cloud services (the scenario's crux); ✅ AWS key cleartext in `rootkey.csv`; ✅ planning-lexicon hit in `Planning.docx`; ✅ Chrome+Edge execution/history; ✅ **Vol3 built a full kernel layer on the 17.9 GB dump** (full plugin set, no OOM). **Two false positives** were surfaced and fixed this run — Google-Analytics `__utm.gif` misread as Cobalt Strike, and legitimate OneDrive/cloud beaconing misread as Azure C2 (see [accuracy_report.md § Sequence 7](accuracy_report.md#sequence-7--lone-wolf-false-positives-google-analytics-as-cobalt-strike--cloud-sync-as-c2-june-2026)). Full side-by-side: `cases/lonewolf/reports/EL_vs_solution_comparison.md`. |
+| **Distinct from** | the genuinely-malicious `nromanoff` Win7 image (real Cobalt Strike + Mimikatz + PsExec) documented in [accuracy_report.md § nromanoff](accuracy_report.md) — a different dataset. |
 
 ### A3. BelkaCTF — mobile + macOS + Linux
 

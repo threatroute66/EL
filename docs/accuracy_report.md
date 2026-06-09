@@ -75,18 +75,40 @@ conclusion, and it did so with per-finding evidence citations
 that a judge can verify by recomputing `output_sha256` on each
 `output_path`.
 
-### GMU LoneWolf (paired disk + memory)
+### 2018 Lone Wolf (Digital Corpora — paired disk + memory) — **corrected 2026-06**
 
-| Signal | Result |
+> **Correction (2026-06).** An earlier version of this row credited EL with a
+> "Cobalt Strike attribution" and "Live C2 beacons (4 Azure IPs)" as *wins* on
+> this image. A full re-run (case `lonewolf`, disk + 17.9 GB memory) scored
+> against the scenario guide establishes that **both were false positives** on
+> what is a benign, malware-free, single-user attack-*planning* laptop (Jim
+> Cloudy). They are now root-caused, fixed, and regression-locked — see
+> [§ Sequence 7](#sequence-7--lone-wolf-false-positives-google-analytics-as-cobalt-strike--cloud-sync-as-c2-june-2026).
+> Honesty over perfection: this is logged as a correction, not quietly edited away.
+
+| Signal | Corrected result |
 |---|---|
-| Disk leading hypothesis | H_APT_ESPIONAGE score 21 (gap +9 over H_LATERAL_MOVEMENT 12) |
-| Memory leading hypothesis | H_C2_BEACONING score 11 (gap +8 over H_APT_ESPIONAGE 3) |
-| Cobalt Strike attribution | ✅ Family fingerprint in `domain.txt` + `url.txt` (Malleable-C2 `__utm.gif` pattern) |
-| Live C2 beacons | ✅ 4 Azure-hosted IPs at :443 in Netscan (52 + 17 + 7 + 7 repeated CLOSED connections) |
-| Lateral-movement chain | ✅ Multi-technique kill-chain 2018-03-27 → 2018-04-06: service install + WMI event-consumer + PS-remoting |
-| Anti-forensics | ✅ 15 zero-size + 15 zero-timestamp Windows system binaries |
-| PE deep-dive | ✅ 149/150 carved PEs analyzed, 1 with `credential_dump` import signature (OpenProcess + ReadProcessMemory) |
-| Cross-case knowledge overlap | ✅ 19 Layer-3 hits linking memory IOCs to 14 prior Qakbot/Valak/Ursnif/Icedid/Ta551 pcap campaigns |
+| Scenario reality | Benign single-user **attack-planning** case (no malware, no intrusion, no C2). Defining feature: planning docs mirrored across OneDrive/Dropbox/Box/Google Drive/AWS S3 |
+| **Artefact recovery (the real win)** | ✅ Identity `jcloudy` / DESKTOP-PM6C56D / Win10 1709 / Eastern TZ; ✅✅ **multi-cloud evidence mirror** (14 files across all 5 cloud services); ✅ AWS key cleartext in `rootkey.csv`; ✅ planning-lexicon hit in `Planning.docx`; ✅ Chrome+Edge execution/history |
+| Memory (17.9 GB full FTK dump) | ✅ Vol3 built a full kernel layer; pslist/psscan/netscan/modscan/ssdt/filescan/mftscan all ran (no OOM) |
+| ~~Cobalt Strike attribution~~ | ❌ **FALSE POSITIVE** — `__utm.gif` matched legitimate Google Analytics / DoubleClick beacons carved from the browser cache, not CS Malleable-C2. Guarded (Sequence 7). |
+| ~~Live C2 beacons (Azure :443)~~ | ❌ **FALSE POSITIVE** — the "52 + 17 + 7 + 7 CLOSED" beacons to Microsoft/Azure/Akamai/Dropbox :443 are legitimate OneDrive/Office365/telemetry/CDN traffic. Guarded (Sequence 7). |
+| ~~Qakbot/Valak/Ursnif "19 Layer-3 hits"~~ | ⚠ **Overstated** — low-confidence cross-case overlaps on shared infra domains (cert authorities, CDNs); context, not malware attribution |
+| ~~Lateral-movement chain~~ | ⚠ **Suspect** — service-install/WMI/PS-remoting EID counts on a single-user laptop are consistent with legitimate Windows + cloud-app activity, not an intrusion |
+| Content (manifesto, "Operation 2nd Hand Smoke.pptx") | ❌ document body not read (no OCR/doc-body extraction) — human-review boundary |
+
+Full side-by-side: `cases/lonewolf/reports/EL_vs_solution_comparison.md`. The
+lesson — EL's *artefact-recovery* layer reproduced the scenario's core
+findings, but its *threat-hypothesis* layer manufactured a cyber-adversary
+that doesn't exist on a benign planning laptop. The two FP guards remove the
+worst of it; a "benign-baseline / no-incident" posture for single-user
+non-intrusion images is on the backlog.
+
+_(Note: the genuinely-malicious nromanoff Win7 image documented below is a
+**different** dataset from the benign Lone Wolf laptop above. Its true-positive
+Cobalt Strike + lateral-movement findings are **not** affected by the
+Sequence-7 guards — those fire on attacker hosts and non-cloud IPs; they only
+suppress the legitimate-Google-Analytics and legitimate-cloud-provider shapes.)_
 
 ### nromanoff (Find Evil 2017 / Lone Wolf — Win7, 9.6 GB, `--timeline`)
 
@@ -630,24 +652,83 @@ bulk_extractor pass surfaced. EL keeps the load-bearing evidence even where
 Vol3's process table is unrecoverable, and now *says precisely why* rather
 than emitting a generic failure.
 
+### Sequence 7 — Lone Wolf false positives: Google-Analytics-as-Cobalt-Strike + cloud-sync-as-C2 (June 2026)
+
+Real evidence: Digital Corpora **2018 Lone Wolf Scenario** — Jim Cloudy, a
+benign-of-malware single-user Windows 10 laptop on which the subject planned a
+physical attack and mirrored planning documents across five cloud services
+(OneDrive/Dropbox/Box/Google Drive/AWS S3). Run as case `lonewolf` (512 GB
+disk + 17.9 GB memory) and scored against the scenario guide.
+
+**Why this case is the ideal FP stress test.** There is no cyber-adversary —
+no malware, no C2, no intrusion. So *anything* EL's threat-hypothesis layer
+flags as malicious is, by construction, a candidate false positive. Two fired.
+
+**Failure 1 — "Cobalt Strike" was Google Analytics.** EL's `cobalt_strike`
+family fingerprint includes `/__utm.gif`, because Cobalt Strike's default
+Malleable-C2 profile *mimics* Google Analytics. On a normal browsing disk that
+exact path appears in carved cache URLs pointed at the *real* GA / DoubleClick
+hosts (`le-analytics.com/__utm.gif`, `doubleclick.net/j/__utm.gif`), so the
+fingerprint matched legitimate web tracking and lifted `H_C2_OR_REVERSE_SHELL`
++ `H_PROCESS_INJECTION`. Same class as the M57 Trickbot `/table.bmp` FP, but
+the network-context scoping didn't catch it because the match *is* in network
+context — it's just benign.
+
+**Self-correction 1.** A per-pattern benign-context guard
+(`_BENIGN_ANALYTICS` in `el/intel/malware_families.py`): the `__utm.gif`
+pattern is suppressed when the containing URL is on a legitimate analytics host
+(matched against the full line, so bulk_extractor-truncated fragments like
+`le-analytics.com` still count). A `__utm.gif` beacon on an attacker host
+(non-analytics domain) still fires, and the literal "cobalt strike" string
+pattern is unaffected. Locked by 3 tests in `test_malware_family_context.py`.
+
+**Failure 2 — "Azure C2 beaconing" was OneDrive / Office365.** The bundle's
+leading hypothesis came out `H_C2_BEACONING`, driven by netscan flagging
+repeated HTTPS connections (52→`13.89.184.76`, 17→`52.176.102.108`, +others to
+Microsoft/Azure/Bing/Akamai/Dropbox :443) as periodic C2. On a cloud-heavy
+Win10 host these are legitimate OneDrive/Office365/telemetry/CDN connections.
+This is the precise shape of the *now-corrected* "GMU LoneWolf → Live C2
+beacons ✅" row earlier in this report — the same 52/17/7/7 CLOSED counts.
+
+**Self-correction 2.** A benign-cloud guard in `el/skills/netscan_triage.py`
+(`benign_cloud_provider` + curated Microsoft/Azure/Akamai/Google/AWS/
+Cloudflare/Dropbox CIDR set): a repeat-endpoint beacon to a known cloud/CDN
+range on a web port (80/443/8443) is emitted at **low** confidence with a
+"consistent with legitimate cloud traffic" caveat and does **not** lift
+`H_C2_BEACONING`. Crucially this is a *downgrade, not a suppression* — a beacon
+to a cloud IP on a non-web port (e.g. Azure:4444), or to any non-cloud host,
+still fires, so genuinely cloud-hosted C2 is surfaced (at low confidence) for
+the analyst rather than hidden. Locked by 4 tests in `test_netscan_triage.py`.
+
+What distinguishes Sequence 7: unlike 1–6 (crashes, misroutes, a broken
+challenger), these were **confident wrong answers** — high/medium findings, a
+wrong leading hypothesis, dressed in real evidence. The benign scenario was
+what exposed them: with no true adversary, every "malicious" finding was
+suspect by definition. The fixes follow the established CDN-allowlist pattern
+(Sequence 4) — narrow, downgrade-not-suppress, true-positive-preserving — and
+the over-credited rows in this report's Lone Wolf entry were **corrected**
+rather than deleted.
+
 ---
 
-What these six sequences share:
+What these seven sequences share:
 - Triggered by **real third-party evidence** (M57 / BelkaCTF /
-  vanko-r2 / Narcos), not synthetic test fixtures.
+  vanko-r2 / Narcos / Lone Wolf), not synthetic test fixtures.
 - The first symptom was always **observable in the agent's own
   outputs** — a triage finding admitting "no shape match",
   an audit log with `agent_start` but no `agent_done`, a
   bundle summary listing fewer devices than requested, a
-  finding whose own sample list exposes its noise, or an audit
-  log entry recording `aup_blocked_batches > 0`, or an
+  finding whose own sample list exposes its noise, an audit
+  log entry recording `aup_blocked_batches > 0`, an
   `investigator_selected` event routing a `…-mem` device to the
-  disk carve path.
+  disk carve path, or a "C2 beacon" finding whose own cited IP
+  resolves to a Microsoft/Akamai range.
 - The fix landed at the layer that owned the root cause:
   streaming primitive (OOM), regex flag (case mismatch),
   state instantiation (coordinator reuse), suffix allowlist
   (CDN noise), prompt construction (AUP content trigger),
-  segment-tokeniser + raw-banner fallback (memory misroute).
+  segment-tokeniser + raw-banner fallback (memory misroute),
+  benign-context guards (GA-as-CobaltStrike, cloud-as-C2).
 
 Sequences 1–3 caught silent crashes (no output where output was
 expected). Sequence 4 caught output that was emitted but contained
@@ -656,14 +737,18 @@ layer itself silently failing — arguably the most dangerous shape
 because a broken challenger produces output that looks identical
 to a working one. Sequence 6 caught a *misroute* — correct output
 from the wrong agent (a memory image carved as a disk), plus a
-genuine tool limitation reported too vaguely to act on. The
-architecture handles all of these because Findings and audit
-events carry the data needed to self-incriminate: a missing
+genuine tool limitation reported too vaguely to act on. Sequence 7
+caught **confident wrong answers** — high/medium findings and a
+wrong leading hypothesis on a benign machine, where legitimate
+Google-Analytics and cloud-sync traffic were read as Cobalt Strike
+and C2. The architecture handles all of these because Findings and
+audit events carry the data needed to self-incriminate: a missing
 `agent_done` event, a sample list that points at a CDN, a `claim`
 text the analyst can sanity-check against the ground truth they
 brought to the engagement, an `aup_blocked_batches` counter that
-proves coverage was incomplete, or an `investigator_selected`
-line naming the wrong agent for the evidence kind.
+proves coverage was incomplete, an `investigator_selected`
+line naming the wrong agent for the evidence kind, or a beacon
+finding citing an IP its own guard now recognises as cloud infra.
 
 The accuracy posture isn't "we never made a mistake"; it's
 "the architecture surfaces our mistakes and tests pin them

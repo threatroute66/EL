@@ -256,14 +256,22 @@ def run_forensic_scan(
         return result
 
     finally:
-        # Always unmount and reap the process.
+        # Always unmount and reap the process. A plain `fusermount -u` fails
+        # to reap a mount whose MemProcFS daemon already died (e.g. killed
+        # under memory pressure on a large image) — that leaves a zombie
+        # "Transport endpoint is not connected" mount under cases/ which later
+        # breaks pytest collection and re-runs. Fall back to a lazy unmount
+        # (`-uz`) which detaches a dead endpoint. (LoneWolf 17.9 GB run, 2026-06.)
         try:
-            subprocess.run(
+            r = subprocess.run(
                 ["fusermount", "-u", str(mount_dir)],
-                check=False,
-                capture_output=True,
-                timeout=30,
+                check=False, capture_output=True, timeout=30,
             )
+            if r.returncode != 0:
+                subprocess.run(
+                    ["fusermount", "-uz", str(mount_dir)],
+                    check=False, capture_output=True, timeout=30,
+                )
         except (subprocess.SubprocessError, FileNotFoundError):
             pass
         try:

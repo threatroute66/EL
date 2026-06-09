@@ -25,8 +25,73 @@ dicts from `vol3.PluginRun.rows`.
 """
 from __future__ import annotations
 
+import ipaddress
 from collections import Counter
 from dataclasses import dataclass, field
+
+# Curated CIDR blocks for the major cloud / CDN providers. A Windows 10 host
+# running OneDrive, Office 365, Edge, Windows Update + telemetry (and, in the
+# Lone Wolf scenario, Dropbox / Box / Google Drive / S3 clients) makes a steady
+# stream of repeated HTTPS connections to these networks — which trips the
+# repeat-endpoint beacon heuristic and falsely reads as C2. We do NOT suppress
+# such hits outright (attackers do host C2 on Azure/AWS) — instead the caller
+# downgrades them to low confidence with a "consistent with legitimate cloud
+# traffic" caveat and does not lift H_C2_BEACONING. Conservative, well-published
+# ranges only; an unlisted cloud IP simply keeps the normal beacon treatment.
+_BENIGN_CLOUD_CIDRS: tuple[tuple[str, str], ...] = (
+    # Microsoft / Azure / Office 365 / Bing
+    ("13.64.0.0/11", "Microsoft"), ("13.104.0.0/14", "Microsoft"),
+    ("20.33.0.0/16", "Microsoft"), ("20.34.0.0/15", "Microsoft"),
+    ("20.36.0.0/14", "Microsoft"), ("20.40.0.0/13", "Microsoft"),
+    ("20.48.0.0/12", "Microsoft"), ("20.64.0.0/10", "Microsoft"),
+    ("20.128.0.0/16", "Microsoft"), ("40.64.0.0/10", "Microsoft"),
+    ("40.74.0.0/15", "Microsoft"), ("52.96.0.0/12", "Microsoft"),
+    ("52.112.0.0/14", "Microsoft"), ("52.120.0.0/14", "Microsoft"),
+    ("52.160.0.0/11", "Microsoft"), ("65.52.0.0/14", "Microsoft"),
+    ("104.40.0.0/13", "Microsoft"), ("131.253.1.0/24", "Microsoft"),
+    ("131.253.61.0/24", "Microsoft"), ("191.232.0.0/13", "Microsoft"),
+    ("204.79.195.0/24", "Microsoft"), ("204.79.197.0/24", "Microsoft"),
+    ("2620:1ec::/36", "Microsoft"), ("2a01:111::/32", "Microsoft"),
+    # Akamai (CDN for Microsoft, Apple, etc.)
+    ("2.16.0.0/13", "Akamai"), ("23.0.0.0/12", "Akamai"),
+    ("23.192.0.0/11", "Akamai"), ("104.64.0.0/10", "Akamai"),
+    ("184.24.0.0/13", "Akamai"),
+    # Google
+    ("8.8.4.0/24", "Google"), ("8.8.8.0/24", "Google"),
+    ("142.250.0.0/15", "Google"), ("172.217.0.0/16", "Google"),
+    ("172.253.0.0/16", "Google"), ("216.58.192.0/19", "Google"),
+    ("2607:f8b0::/32", "Google"),
+    # AWS (S3 / general)
+    ("3.0.0.0/9", "AWS"), ("13.32.0.0/15", "AWS"), ("52.216.0.0/15", "AWS"),
+    ("54.224.0.0/12", "AWS"), ("99.84.0.0/16", "AWS"),
+    # Cloudflare / Fastly / Dropbox
+    ("104.16.0.0/13", "Cloudflare"), ("172.64.0.0/13", "Cloudflare"),
+    ("2606:4700::/32", "Cloudflare"), ("151.101.0.0/16", "Fastly"),
+    ("162.125.0.0/16", "Dropbox"), ("2620:100:6000::/40", "Dropbox"),
+)
+
+# Pre-parse once.
+_BENIGN_CLOUD_NETS = tuple(
+    (ipaddress.ip_network(cidr), name) for cidr, name in _BENIGN_CLOUD_CIDRS)
+# Web-service ports where cloud/CDN traffic legitimately clusters.
+_CLOUD_WEB_PORTS = frozenset({80, 443, 8443})
+
+
+def benign_cloud_provider(addr: str, port: int) -> str | None:
+    """Return the provider name if (addr, port) is a repeated HTTPS/HTTP
+    connection to a well-known cloud/CDN range — i.e. the shape of legitimate
+    OneDrive / Office365 / browser / CDN traffic rather than C2. None otherwise.
+    Only web ports qualify; an Azure IP on an odd port stays suspicious."""
+    if port not in _CLOUD_WEB_PORTS:
+        return None
+    try:
+        ip = ipaddress.ip_address(addr)
+    except ValueError:
+        return None
+    for net, name in _BENIGN_CLOUD_NETS:
+        if ip.version == net.version and ip in net:
+            return name
+    return None
 
 
 # Admin / remote-access ports. Presence of ANY of these in an outbound
@@ -202,6 +267,14 @@ class BeaconHit:
     states: dict[str, int] = field(default_factory=dict)
     local_ports: list[int] = field(default_factory=list)
     pids: list[int] = field(default_factory=list)
+    cloud_provider: str = ""   # set when the endpoint is a known cloud/CDN range
+
+    @property
+    def benign_cloud(self) -> bool:
+        """True when this beacon is repeated web traffic to a known cloud/CDN
+        provider — the shape of OneDrive/Office365/browser/CDN sync, not C2.
+        The caller downgrades these to low confidence without lifting C2."""
+        return bool(self.cloud_provider)
 
     @property
     def port_label(self) -> str:
@@ -257,6 +330,7 @@ def detect_repeat_endpoint_beacon(rows: list[dict],
             foreign_addr=fa, foreign_port=port, count=len(hits),
             proto=proto, states=dict(states),
             local_ports=local_ports, pids=pids,
+            cloud_provider=benign_cloud_provider(fa, port) or "",
         ))
     # Strongest signal first
     out.sort(key=lambda b: -b.count)

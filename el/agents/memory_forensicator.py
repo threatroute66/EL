@@ -274,8 +274,11 @@ class MemoryForensicatorAgent(Agent):
             try:
                 # Best-effort unmount + remove if previous run was killed mid-mount.
                 import subprocess as _sp
-                _sp.run(["fusermount", "-u", str(mount_dir)],
-                         check=False, capture_output=True, timeout=10)
+                _r = _sp.run(["fusermount", "-u", str(mount_dir)],
+                             check=False, capture_output=True, timeout=10)
+                if _r.returncode != 0:   # dead endpoint → lazy detach
+                    _sp.run(["fusermount", "-uz", str(mount_dir)],
+                            check=False, capture_output=True, timeout=10)
                 if mount_dir.is_dir() and not any(mount_dir.iterdir()):
                     mount_dir.rmdir()
             except Exception:
@@ -308,8 +311,11 @@ class MemoryForensicatorAgent(Agent):
             # Best-effort unmount any stale FUSE mount left by the partial run.
             try:
                 import subprocess as _sp
-                _sp.run(["fusermount", "-u", str(mount_dir)],
-                         check=False, capture_output=True, timeout=10)
+                _r = _sp.run(["fusermount", "-u", str(mount_dir)],
+                             check=False, capture_output=True, timeout=10)
+                if _r.returncode != 0:   # dead endpoint → lazy detach
+                    _sp.run(["fusermount", "-uz", str(mount_dir)],
+                            check=False, capture_output=True, timeout=10)
             except Exception:
                 pass
             return out
@@ -1256,11 +1262,32 @@ class MemoryForensicatorAgent(Agent):
             # that distinction in the claim so the analyst sees it.
             is_unregistered = b.port_category in ("registered", "ephemeral") \
                 and b.port_label.startswith(("unregistered", "ephemeral"))
+            states = ", ".join(f"{k or '?'}={v}" for k, v in b.states.items())
+            if b.benign_cloud:
+                # Repeated HTTPS to a known cloud/CDN range (Microsoft/Azure,
+                # Akamai, Google, AWS, Dropbox …) is the shape of legitimate
+                # OneDrive / Office365 / browser / cloud-sync traffic, not C2.
+                # Surface it for context but do NOT score H_C2_BEACONING — this
+                # was the Lone Wolf false positive (a cloud-heavy Win10 host
+                # whose OneDrive/telemetry beaconing read as "Azure C2"). A
+                # genuinely cloud-hosted C2 still appears here at low confidence
+                # for the analyst to pivot on.
+                out.append(self.emit(ctx, Finding(
+                    case_id=ctx.case_id, agent=self.name, confidence="low",
+                    claim=(f"Repeated HTTPS to {b.foreign_addr}:{b.foreign_port} "
+                           f"({b.count} connection(s); {b.proto}; states: {states}) "
+                           f"— destination is in a known {b.cloud_provider} "
+                           f"cloud/CDN range. Consistent with legitimate cloud-"
+                           f"service traffic (OneDrive / Office365 / browser / "
+                           f"sync); NOT scored as C2 beaconing. Pivot on the "
+                           f"owning process if a cloud-hosted C2 is suspected."),
+                    evidence=[ev],
+                )))
+                continue
             base_conf = "high" if b.count >= 10 else "medium"
             confidence = base_conf
             if is_unregistered and confidence == "medium" and b.count >= 6:
                 confidence = "high"
-            states = ", ".join(f"{k or '?'}={v}" for k, v in b.states.items())
             out.append(self.emit(ctx, Finding(
                 case_id=ctx.case_id, agent=self.name, confidence=confidence,
                 claim=(f"Netscan beacon pattern: {b.count} connection(s) from "

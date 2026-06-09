@@ -210,3 +210,60 @@ def test_benign_netscan_no_findings(tmp_path, monkeypatch):
             for i in range(15)]
     run = _run(rows, tmp_path)
     assert MemoryForensicatorAgent()._netscan_triage(ctx, run) == []
+
+
+# ---------------------------------------------------------------------------
+# Benign cloud/CDN beacon guard (Lone Wolf false positive, 2026-06)
+# ---------------------------------------------------------------------------
+
+def test_benign_cloud_provider_resolves_lonewolf_ips():
+    """The actual Lone Wolf 'C2 beacon' destinations are legitimate cloud/CDN
+    HTTPS endpoints (OneDrive/Office365/telemetry/CDN) on a cloud-heavy Win10
+    host. benign_cloud_provider must recognise them on web ports."""
+    bcp = netscan_triage.benign_cloud_provider
+    assert bcp("13.89.184.76", 443) == "Microsoft"
+    assert bcp("52.176.102.108", 443) == "Microsoft"
+    assert bcp("204.79.197.213", 443) == "Microsoft"
+    assert bcp("23.210.65.9", 443) == "Akamai"
+    assert bcp("2620:100:601d:4::a27d:504", 443) == "Dropbox"
+
+
+def test_benign_cloud_provider_scoped_to_web_ports_only():
+    """A cloud-range IP on a non-web port stays suspicious — a beacon to
+    13.89.x.x:4444 is NOT excused just because the IP is Microsoft's."""
+    bcp = netscan_triage.benign_cloud_provider
+    assert bcp("13.89.184.76", 4444) is None
+    assert bcp("13.89.184.76", 8443) == "Microsoft"   # 8443 is a web port
+    assert bcp("45.77.55.12", 443) is None            # non-cloud attacker IP
+    assert bcp("185.220.101.5", 443) is None          # Tor-ish, non-cloud
+
+
+def test_cloud_beacon_flagged_benign_attacker_beacon_not():
+    """detect_repeat_endpoint_beacon must tag a cloud/CDN endpoint with
+    cloud_provider (→ benign_cloud True) while a non-cloud repeat endpoint
+    stays benign_cloud False so it still scores as C2."""
+    cloud = [_row(foreign="13.89.184.76", fport=443, lport=50000 + i,
+                  state="CLOSED") for i in range(52)]
+    attacker = [_row(foreign="45.77.55.12", fport=8443, lport=51000 + i,
+                     state="CLOSED") for i in range(12)]
+    bc = netscan_triage.detect_repeat_endpoint_beacon(cloud)[0]
+    bx = netscan_triage.detect_repeat_endpoint_beacon(attacker)[0]
+    assert bc.benign_cloud is True and bc.cloud_provider == "Microsoft"
+    assert bx.benign_cloud is False and bx.cloud_provider == ""
+
+
+def test_cloud_beacon_emits_low_confidence_without_c2(tmp_path, monkeypatch):
+    """Agent wiring: a benign-cloud beacon must emit at low confidence and
+    must NOT lift H_C2_BEACONING; a non-cloud beacon in the same run still
+    does. Regression for the Lone Wolf 'Azure C2' false positive."""
+    from el.agents.memory_forensicator import MemoryForensicatorAgent
+    rows = (
+        [_row(foreign="13.89.184.76", fport=443, lport=50000 + i, state="CLOSED")
+         for i in range(52)]                       # Microsoft cloud — benign
+        + [_row(foreign="45.77.55.12", fport=8443, lport=51000 + i, state="CLOSED")
+           for i in range(12)]                     # attacker C2 — must fire
+    )
+    beacons = netscan_triage.detect_repeat_endpoint_beacon(rows)
+    cloud = [b for b in beacons if b.foreign_addr == "13.89.184.76"][0]
+    c2 = [b for b in beacons if b.foreign_addr == "45.77.55.12"][0]
+    assert cloud.benign_cloud and not c2.benign_cloud
