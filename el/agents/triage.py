@@ -626,11 +626,12 @@ class TriageAgent(Agent):
                 out.append(self.emit(ctx, Finding(
                     case_id=ctx.case_id, agent=self.name,
                     confidence="insufficient",
-                    claim=(f"Windows memory image confirmed by raw kernel "
-                           f"banner"
-                           f"{f' (build {probe.build})' if probe.build else ''}"
-                           f", but Volatility 3 built no kernel layer — "
-                           f"{probe.reason} Routing to the carve pipeline for "
+                    # probe.reason already states the banner hit, the build,
+                    # and the no-kernel-layer diagnosis — don't restate it.
+                    claim=(f"Memory image identified by raw-byte kernel-banner "
+                           f"fallback"
+                           f"{f' (Windows build {probe.build})' if probe.build else ''}"
+                           f": {probe.reason} Routing to the carve pipeline for "
                            f"string/IOC recovery."),
                 )))
                 return out
