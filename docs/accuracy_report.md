@@ -700,6 +700,45 @@ to a cloud IP on a non-web port (e.g. Azure:4444), or to any non-cloud host,
 still fires, so genuinely cloud-hosted C2 is surfaced (at low confidence) for
 the analyst rather than hidden. Locked by 4 tests in `test_netscan_triage.py`.
 
+**Self-correction 2b — the residual two, and a keyword self-trap.** A fresh
+re-run showed the cloud allowlist alone left two beacons (to public web IPs
+not on any list) still leading H_C2_BEACONING. Two further fixes: (i) a
+`weak_web_residue` guard — a beacon that is a public web port + low count +
+no in-flight session (CLOSED-only) is leftover ordinary browsing and is
+downgraded too (the SRL true positive on 8080/attributed/private and every
+high-volume / established / internal / non-web-port beacon still fire,
+verified across 7 shapes); (ii) a **keyword self-trap**: the C2 scorer
+(`_h_c2_beaconing`) is keyword-based and matched the word *"beacon"* inside
+our own suppression caveat ("NOT scored as C2 *beaconing*"), so the downgrade
+text re-lifted the very hypothesis it cleared. Reworded the caveat to avoid
+the scorer's trigger words. After both, the Lone Wolf memory ACH has **no
+malicious leader (all hypotheses score 0)** — the correct result for a
+benign image, vs. the prior false "Active C2 beaconing, score 10."
+
+**The deeper framing (why the memory path is weak at all).** vol3 `netscan`
+is a point-in-time *snapshot* of socket structures — it has no inter-arrival
+timestamps, so it can only COUNT repeated `(IP, port)` sockets, which can't
+separate regular C2 from bursty browsing. The strong signal — interval
+regularity (RITA: MAD/dispersion over connection timings, the low-and-slow
+60 s/2 KB shape volume thresholds miss) — needs a time series, which EL
+already computes in `el/skills/network_beaconing.py` over a Zeek conn.log
+(wired into NetworkAnalyst for pcap). So the principled posture is exactly
+what these guards enforce: count-only netscan beacons are low-confidence
+*leads*; the netscan finding now explicitly says so and recommends capturing
+pcap / running the RITA path to confirm cadence. High-confidence beaconing
+comes only from interval analysis.
+
+**Robustness bonus — a 14-hour MemProcFS hang.** The first re-run wedged: the
+MemProcFS FUSE daemon stalled on the 17.9 GB image, and the harvest reads
+(`is_file`/sha256/csv over the mount) are unbounded syscalls *inside* the
+try, so even the finally-clause unmount never ran. Fixed with a hard
+`threading.Timer` watchdog that SIGKILLs the process group + lazy-unmounts at
+`timeout_seconds + harvest_timeout`, turning a blocked read into a caught
+`OSError` with a note; the harvest is now wrapped to degrade to a partial
+result. (MemProcFS is a corroborator — it must never wedge the case.)
+Surfaced as a stale "Transport endpoint is not connected" mount that also
+broke pytest collection; a lazy-unmount fallback covers that too.
+
 What distinguishes Sequence 7: unlike 1–6 (crashes, misroutes, a broken
 challenger), these were **confident wrong answers** — high/medium findings, a
 wrong leading hypothesis, dressed in real evidence. The benign scenario was

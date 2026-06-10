@@ -1263,24 +1263,36 @@ class MemoryForensicatorAgent(Agent):
             is_unregistered = b.port_category in ("registered", "ephemeral") \
                 and b.port_label.startswith(("unregistered", "ephemeral"))
             states = ", ".join(f"{k or '?'}={v}" for k, v in b.states.items())
-            if b.benign_cloud:
-                # Repeated HTTPS to a known cloud/CDN range (Microsoft/Azure,
-                # Akamai, Google, AWS, Dropbox …) is the shape of legitimate
-                # OneDrive / Office365 / browser / cloud-sync traffic, not C2.
-                # Surface it for context but do NOT score H_C2_BEACONING — this
-                # was the Lone Wolf false positive (a cloud-heavy Win10 host
-                # whose OneDrive/telemetry beaconing read as "Azure C2"). A
-                # genuinely cloud-hosted C2 still appears here at low confidence
-                # for the analyst to pivot on.
+            if b.is_low_signal:
+                # Low-signal repeat endpoint — the shape of legitimate web
+                # traffic in a RAM snapshot, not C2. Two flavours, both emitted
+                # at low confidence WITHOUT lifting H_C2_BEACONING (this was the
+                # Lone Wolf false positive: a benign cloud-heavy Win10 laptop
+                # whose OneDrive/telemetry/browsing beaconing read as "Azure
+                # C2" and became the leading hypothesis). A genuinely
+                # cloud-hosted or low-volume HTTPS C2 still appears here for the
+                # analyst to pivot on — surfaced, not hidden.
+                if b.benign_cloud:
+                    why = (f"destination is in a known {b.cloud_provider} "
+                           f"cloud/CDN range — consistent with legitimate "
+                           f"cloud-service traffic (OneDrive / Office365 / "
+                           f"browser / sync)")
+                else:
+                    why = ("low-volume HTTPS to a public web port with no "
+                           "in-flight session (CLOSED-only) — consistent with "
+                           "leftover ordinary web browsing")
+                # NB: keep this claim free of the H_C2_BEACONING scorer's
+                # trigger words ("beacon", "c2 channel", "periodic check-in",
+                # "suspicious destination ports") — otherwise the suppression
+                # caveat itself re-lifts the very hypothesis it is clearing
+                # (the scorer is keyword-based, not tag-based).
                 out.append(self.emit(ctx, Finding(
                     case_id=ctx.case_id, agent=self.name, confidence="low",
                     claim=(f"Repeated HTTPS to {b.foreign_addr}:{b.foreign_port} "
                            f"({b.count} connection(s); {b.proto}; states: {states}) "
-                           f"— destination is in a known {b.cloud_provider} "
-                           f"cloud/CDN range. Consistent with legitimate cloud-"
-                           f"service traffic (OneDrive / Office365 / browser / "
-                           f"sync); NOT scored as C2 beaconing. Pivot on the "
-                           f"owning process if a cloud-hosted C2 is suspected."),
+                           f"— {why}. Treated as benign web/cloud traffic, not "
+                           f"malicious command channel; pivot on the owning "
+                           f"process if a hosted backdoor is suspected."),
                     evidence=[ev],
                 )))
                 continue
@@ -1298,7 +1310,13 @@ class MemoryForensicatorAgent(Agent):
                        f"signature shape of periodic C2 beaconing."
                        + (" Unregistered destination port elevates suspicion — "
                           "no legitimate service documented."
-                          if is_unregistered else "")),
+                          if is_unregistered else "")
+                       + " NB: this is a connection-COUNT signal from a memory "
+                         "snapshot — it lacks the inter-arrival timing that "
+                         "interval-regularity analysis (RITA over a pcap / Zeek "
+                         "conn.log, via NetworkAnalyst) uses to confirm low-and-"
+                         "slow beaconing. Capture network traffic for this host "
+                         "to validate the cadence."),
                 evidence=[ev],
                 hypotheses_supported=["H_C2_BEACONING"],
             )))

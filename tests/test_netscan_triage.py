@@ -267,3 +267,49 @@ def test_cloud_beacon_emits_low_confidence_without_c2(tmp_path, monkeypatch):
     cloud = [b for b in beacons if b.foreign_addr == "13.89.184.76"][0]
     c2 = [b for b in beacons if b.foreign_addr == "45.77.55.12"][0]
     assert cloud.benign_cloud and not c2.benign_cloud
+
+
+# ---------------------------------------------------------------------------
+# Weak web-residue guard + scorer keyword-trap (Lone Wolf residuals, 2026-06)
+# ---------------------------------------------------------------------------
+
+def test_weak_web_residue_downgrades_only_browsing_shape():
+    """A public web-port beacon with low count + no in-flight session is
+    leftover web browsing, not C2 — downgraded. But the SRL true positive
+    (8080 / attributed / private), high-volume, established, internal, and
+    non-web-port beacons must all still fire."""
+    def rws(addr, port, n, state="CLOSED", pid=None):
+        return [{"Proto": "TCPv4", "LocalAddr": "10.0.0.5", "LocalPort": 50000 + i,
+                 "ForeignAddr": addr, "ForeignPort": port, "State": state,
+                 "PID": pid} for i in range(n)]
+    fire = netscan_triage.detect_repeat_endpoint_beacon
+    # Downgraded (Lone Wolf residual shape)
+    assert fire(rws("107.152.26.197", 443, 7))[0].weak_web_residue is True
+    assert fire(rws("208.185.50.40", 443, 4))[0].weak_web_residue is True
+    # Still fire (must NOT be low-signal)
+    assert fire(rws("172.16.4.10", 8080, 10, pid=2500))[0].is_low_signal is False  # SRL TP
+    assert fire(rws("45.77.55.12", 443, 15))[0].is_low_signal is False             # high-volume
+    assert fire(rws("45.77.55.12", 443, 5, state="ESTABLISHED"))[0].is_low_signal is False
+    assert fire(rws("172.16.9.9", 443, 6))[0].is_low_signal is False               # internal :443
+    assert fire(rws("1.2.3.4", 4444, 6))[0].is_low_signal is False                 # non-web port
+
+
+def test_low_signal_caveat_does_not_relift_c2_beaconing():
+    """Regression for the keyword-in-caveat trap: the H_C2_BEACONING scorer
+    is keyword-based, so a downgraded beacon's suppression text must NOT
+    contain its trigger words ('beacon', 'c2 channel', 'periodic check-in',
+    'suspicious destination ports') — otherwise the caveat re-lifts the very
+    hypothesis it clears. The agent's low-signal claim is reproduced here."""
+    from el.intel.hypotheses import _h_c2_beaconing
+    from el.schemas.finding import Finding, EvidenceItem
+    ev = EvidenceItem(tool="t", version="1", command="t",
+                      output_sha256="x" * 64, output_path="/x")
+    claim = ("Repeated HTTPS to 107.152.26.197:443 (7 connection(s); TCPv4; "
+             "states: CLOSED=7) — low-volume HTTPS to a public web port with no "
+             "in-flight session (CLOSED-only) — consistent with leftover "
+             "ordinary web browsing. Treated as benign web/cloud traffic, not "
+             "malicious command channel; pivot on the owning process if a "
+             "hosted backdoor is suspected.")
+    f = Finding(case_id="t", agent="memory_forensicator", confidence="low",
+                claim=claim, evidence=[ev])
+    assert _h_c2_beaconing(f) == 0, "low-signal caveat must not lift H_C2_BEACONING"

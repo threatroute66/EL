@@ -277,6 +277,50 @@ class BeaconHit:
         return bool(self.cloud_provider)
 
     @property
+    def weak_web_residue(self) -> bool:
+        """True for a beacon that has the shape of leftover ordinary web
+        browsing in a memory snapshot — and is therefore weak C2 evidence:
+
+          * a standard web port (80/443/8443),
+          * a PUBLIC destination (internal :443 beacons could be a real
+            service/C2 and are left to fire),
+          * a low repeat count (< 10 — sustained C2 in a RAM snapshot tends
+            to leave many beacon-interval connections), AND
+          * no ESTABLISHED / SYN session (only CLOSED/CLOSE_WAIT/TIME_WAIT
+            residue — an in-flight session is a stronger signal).
+
+        The caller downgrades these to low confidence without lifting
+        H_C2_BEACONING. This is the unavoidable cost of distinguishing
+        'legitimate web service polled a handful of times' from
+        'low-volume HTTPS C2' on a benign host without threat intel — a
+        genuinely low-volume HTTPS C2 to a fresh public IP is still surfaced
+        here, just at low confidence rather than as a leading hypothesis.
+        Surfaced on the benign 2018 Lone Wolf laptop (2026-06), whose only
+        residual 'C2' signal was two such browsing-leftover clusters.
+        Distinct from `benign_cloud`, which names a specific provider.
+        """
+        if self.cloud_provider:
+            return False   # already handled, and provider-labelled
+        if self.foreign_port not in _CLOUD_WEB_PORTS:
+            return False
+        if self.count >= 10:
+            return False
+        try:
+            ip = ipaddress.ip_address(self.foreign_addr)
+        except ValueError:
+            return False
+        if not ip.is_global:
+            return False
+        active = {"ESTABLISHED", "SYN_SENT", "SYN_RCVD"}
+        return not any(s in active for s in self.states)
+
+    @property
+    def is_low_signal(self) -> bool:
+        """Either a known cloud/CDN endpoint or a weak web-residue cluster —
+        the caller emits these at low confidence and does NOT lift C2."""
+        return self.benign_cloud or self.weak_web_residue
+
+    @property
     def port_label(self) -> str:
         return port_annotation(self.foreign_port)
 

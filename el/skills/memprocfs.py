@@ -19,8 +19,11 @@ from __future__ import annotations
 import csv
 import hashlib
 import json
+import os
 import shutil
+import signal
 import subprocess
+import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -133,6 +136,7 @@ def run_forensic_scan(
     *,
     forensic_mode: int = 1,
     timeout_seconds: int = 1800,
+    harvest_timeout: int = 180,
     yara_rules_path: Path | None = None,
     stderr_dir: Path | None = None,
 ) -> MemProcFSResult:
@@ -198,6 +202,34 @@ def run_forensic_scan(
         stderr_path=stderr_path,
     )
 
+    # Hard watchdog. The scan-poll loop below is bounded by timeout_seconds,
+    # but the harvest reads after it (is_file / sha256 / csv over the FUSE
+    # mount) are unbounded syscalls — if the MemProcFS daemon stalls or dies
+    # mid-walk they block FOREVER, *inside* the try, so even the finally-clause
+    # unmount never runs. (Observed: a 17.9 GB image hung the whole run for
+    # ~14 h.) This timer fires at the total deadline and force-detaches:
+    # SIGKILL the MemProcFS process group + lazy-unmount the FUSE mount, which
+    # makes any blocked read return ENOTCONN (→ OSError, handled below) instead
+    # of hanging. Best-effort — MemProcFS is a corroborator, never the primary
+    # evidence path.
+    _watchdog_fired = threading.Event()
+
+    def _force_detach() -> None:
+        _watchdog_fired.set()
+        try:
+            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+        except (ProcessLookupError, PermissionError, OSError):
+            pass
+        try:
+            subprocess.run(["fusermount", "-uz", str(mount_dir)],
+                           check=False, capture_output=True, timeout=15)
+        except (subprocess.SubprocessError, FileNotFoundError):
+            pass
+
+    watchdog = threading.Timer(timeout_seconds + harvest_timeout, _force_detach)
+    watchdog.daemon = True
+    watchdog.start()
+
     try:
         # Wait for the FS to actually appear (FUSE mount can take a few seconds).
         forensic_root = mount_dir / "forensic"
@@ -233,29 +265,44 @@ def run_forensic_scan(
             )
 
         # FindEvil — the headline triage signal.
-        findevil_csv = forensic_root / "findevil" / "findevil.csv"
-        if findevil_csv.is_file():
-            result.findevil_csv_path = findevil_csv
-            result.findevil_csv_sha256 = _sha256_file(findevil_csv)
-            result.forensic_findings = [
-                FindEvilHit.from_csv_row(r) for r in _read_csv_rows(findevil_csv)
-            ]
+        # Harvest reads walk the FUSE mount and can block if the daemon
+        # stalls; the watchdog above force-detaches at the deadline, after
+        # which these raise OSError (ENOTCONN). Catch it so we return whatever
+        # we already have plus a note, rather than propagating a raw hang error.
+        try:
+            findevil_csv = forensic_root / "findevil" / "findevil.csv"
+            if findevil_csv.is_file():
+                result.findevil_csv_path = findevil_csv
+                result.findevil_csv_sha256 = _sha256_file(findevil_csv)
+                result.forensic_findings = [
+                    FindEvilHit.from_csv_row(r)
+                    for r in _read_csv_rows(findevil_csv)
+                ]
 
-        # YARA hits (if any rules ran).
-        for candidate in (
-            forensic_root / "yara" / "yara.csv",
-            forensic_root / "yara" / "matches.csv",
-        ):
-            if candidate.is_file():
-                result.yara_csv_path = candidate
-                result.yara_csv_sha256 = _sha256_file(candidate)
-                result.yara_hits = _read_csv_rows(candidate, max_rows=500)
-                break
+            # YARA hits (if any rules ran).
+            for candidate in (
+                forensic_root / "yara" / "yara.csv",
+                forensic_root / "yara" / "matches.csv",
+            ):
+                if candidate.is_file():
+                    result.yara_csv_path = candidate
+                    result.yara_csv_sha256 = _sha256_file(candidate)
+                    result.yara_hits = _read_csv_rows(candidate, max_rows=500)
+                    break
+        except OSError as e:
+            result.note = (
+                (result.note + "; " if result.note else "")
+                + (f"forensic-output harvest aborted after the "
+                   f"{timeout_seconds + harvest_timeout}s watchdog force-detached "
+                   f"a stalled FUSE mount ({e})"
+                   if _watchdog_fired.is_set()
+                   else f"forensic-output read failed: {e}"))
 
         result.duration_seconds = time.time() - started
         return result
 
     finally:
+        watchdog.cancel()
         # Always unmount and reap the process. A plain `fusermount -u` fails
         # to reap a mount whose MemProcFS daemon already died (e.g. killed
         # under memory pressure on a large image) — that leaves a zombie

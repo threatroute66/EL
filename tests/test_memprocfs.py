@@ -152,3 +152,52 @@ def test_real_binary_help_smoke():
     )
     text = (p.stdout + p.stderr).lower()
     assert "memprocfs" in text
+
+
+# ---------------------------------------------------------------------------
+# Anti-hang watchdog: a stalled FUSE harvest must degrade, not propagate
+# (LoneWolf 17.9 GB run hung the whole investigation ~14 h, 2026-06)
+# ---------------------------------------------------------------------------
+
+def test_harvest_oserror_degrades_gracefully(tmp_path, monkeypatch):
+    """When a forensic-output read over the FUSE mount raises OSError (the
+    state the watchdog leaves behind after force-detaching a stalled mount),
+    run_forensic_scan must return a result with an explanatory note rather
+    than propagating a raw error or hanging. Also confirms harvest_timeout is
+    part of the bounded deadline."""
+    import el.skills.memprocfs as mpfs
+
+    mount_dir = tmp_path / "mnt"
+    img = tmp_path / "mem.raw"; img.write_bytes(b"\x00" * 1024)
+
+    monkeypatch.setattr(mpfs, "_which", lambda: tmp_path / "memprocfs")
+
+    class _FakeProc:
+        def __init__(self):
+            self.pid = 999999
+            self.returncode = None
+            # Materialise the forensic tree so the wait-loop + harvest proceed.
+            fr = mount_dir / "forensic"
+            (fr / "findevil").mkdir(parents=True, exist_ok=True)
+            (fr / "progress_percent.txt").write_text("100")
+            (fr / "findevil" / "findevil.csv").write_text("Process,Detail\n")
+        def poll(self): return None
+        def terminate(self): self.returncode = -15
+        def wait(self, timeout=None): return 0
+        def kill(self): self.returncode = -9
+
+    monkeypatch.setattr(mpfs.subprocess, "Popen", lambda *a, **k: _FakeProc())
+    # Neutralise the real unmount + watchdog kill so the test stays hermetic.
+    monkeypatch.setattr(mpfs.subprocess, "run",
+                        lambda *a, **k: type("R", (), {"returncode": 0})())
+    monkeypatch.setattr(mpfs.os, "killpg", lambda *a, **k: None)
+    monkeypatch.setattr(mpfs.os, "getpgid", lambda *a, **k: 999999)
+    # Simulate the FUSE read blowing up (ENOTCONN after a force-detach).
+    monkeypatch.setattr(mpfs, "_sha256_file",
+                        lambda *a, **k: (_ for _ in ()).throw(OSError("ENOTCONN")))
+
+    result = mpfs.run_forensic_scan(img, mount_dir, harvest_timeout=5,
+                                    timeout_seconds=5)
+    assert result is not None
+    assert result.note and ("read failed" in result.note
+                            or "force-detached" in result.note)
