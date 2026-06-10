@@ -156,6 +156,44 @@ surfacing true-positive IOCs when they re-appear in a new
 case (the LoneWolf memory → Qakbot/Valak match above is
 directly driven by this store).
 
+### Anti-Forensics Case 2 — layered crypto, the EL scope boundary
+
+A public anti-forensics challenge (`AF-Case2.E01`, 39 GiB Win10 NTFS,
+archive.org item `anti-forensics-case-2`) whose three tasks are pure
+**decryption chains**: an AES `README.txt.aes`, a BitLocker volume
+`R2D2.vhd`, and a PGP message `Keys.txt`. It is the cleanest illustration
+of where EL stops and the analyst begins — and an honest one, because EL
+neither solved it outright nor pretended to.
+
+**What EL did well (automated).** Correctly characterised the case —
+leading hypothesis `H_INSIDER_DEVICE_DESTRUCTION` (anti-forensics, score 34)
+— and corroborated the crypto *tooling* from execution artifacts:
+`gpg4win-4.1.0` and `bitlockerwizardelev.exe` (amcache ∧ shimcache), plus
+`.aes`/`.asc` handlers in BAM/DAM. So EL pointed an analyst at "this user
+encrypted things, here's what they ran."
+
+**Where EL stopped (by design).** EL does not decrypt or crack — every
+factual claim is grounded in a deterministic tool's output, and there is no
+"guess the password" code path. It also did **not** surface the encrypted
+*artifacts themselves* as findings — `R2D2.vhd`, `README.txt.aes`,
+`Keys.txt`, the BitLocker recovery-key `.TXT`, and the GnuPG keyring
+(`private-keys-v1.d`) drew no detector. All three answers were recovered
+hands-on with SIFT tools (Sleuth Kit + the Edge browser cache → AES password
+`StarWars!`; the recovery key + the volume → `DeceiveYou.png` "R2D2 has been
+cloned"; dislocker/gpg + a themed passphrase "May the force be with you" →
+the secret `MT4orceBWY23`).
+
+**The honest takeaway + a backlog item.** EL's value on a crypto case is
+*surfacing and prioritising* (it found the tooling and ranked the
+anti-forensic posture), not *breaking* the crypto. The miss worth fixing:
+there is no **encrypted-artifact detector**. A worthwhile addition (tracked
+for the backlog) would flag BitLocker volumes (`-FVE-FS-` / BitLocker-shaped
+`.vhd`), aescrypt files (the `AES\x02` magic), VeraCrypt/TrueCrypt
+containers, and PGP/GnuPG key material (`.asc`, `.gpg`, a user's
+`private-keys-v1.d`) as high-value `H_ENCRYPTION_PRESENT` leads — so the
+analyst is pointed straight at the encrypted objects to attack, even though
+EL will never attack them itself.
+
 ---
 
 ## Known false-positive classes — already fixed as regression tests
@@ -319,7 +357,8 @@ audit:
 
 | Miss | What EL does instead | Priority |
 |---|---|---|
-| Encrypted containers (FileVault legacy, BitLocker untested, APFS-encrypted) | Raises targeted error pointing at unlock primitive (LUKS works end-to-end; others need operator-supplied key path) | Medium — operator-blockable |
+| Encrypted containers (FileVault legacy, APFS-encrypted) + encrypted-artifact surfacing | LUKS works end-to-end; others need an operator-supplied key path. On Anti-Forensics Case 2, EL detected BitLocker/aescrypt/PGP *usage* via execution artifacts but did not surface the encrypted *objects* (`R2D2.vhd`, `.aes`, `.asc`, recovery-key `.TXT`, `private-keys-v1.d`) as findings — no encrypted-artifact detector yet (backlog) | Medium — operator-blockable |
+| Decryption / passphrase + key cracking | Out of scope by design — EL grounds every claim in a tool's output and has no "guess the password" code path. It points the analyst at the encrypted objects + the tooling used; the analyst decrypts (dislocker / gpg / aescrypt). Demonstrated honestly on Anti-Forensics Case 2 | By design — not a gap to "fix" |
 | ReFS / btrfs / xfs / zfs filesystems | `disk_forensicator` emits `insufficient` — Sleuth Kit doesn't support ReFS, extractor assumes ext* | Low — rare in IR corpora |
 | AFF4 + `.ad1` commercial containers | Not supported | Low — EnCase/FTK-only |
 | LiME / AVML (Linux memory) | Not supported — vol3 symbol + profile path untested | Medium |
