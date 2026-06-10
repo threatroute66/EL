@@ -138,3 +138,76 @@ def test_h_ntfs_ads_lifts_hypothesis_in_ach():
     # …and NOT in the competing ranked list
     ranked, _ = score_findings([f])
     assert all(r.hyp_id != "H_NTFS_ADS_PRESENT" for r in ranked)
+
+
+# ---------------------------------------------------------------------------
+# Encrypted-artifact leads (Anti-Forensics Case 2, 2026-06)
+# All tag the advisory H_DISK_ENCRYPTED only (dual-use → no anti-forensics
+# inflation). They SURFACE encrypted objects + recovery material; EL never
+# decrypts. Filename/extension patterns over the fls bodyfile.
+# ---------------------------------------------------------------------------
+
+def test_bitlocker_recovery_key_file_detected():
+    text = ("0|/Users/IEUser/Documents/BitLocker Recovery Key "
+            "EBB0BD7C-DB64-47F5-9A3B-03939F6E8F76.TXT|126830-128-4|r/r|0|0|2000|0|0|0|0\n")
+    by_id = {h.pattern_id: h for h in scan_text(text)}
+    assert "BITLOCKER_RECOVERY_KEY_FILE" in by_id
+    h = by_id["BITLOCKER_RECOVERY_KEY_FILE"]
+    assert h.hypotheses == ["H_DISK_ENCRYPTED"]
+    assert any(tid == "T1552.001" for tid, _ in h.attack_techniques)
+
+
+def test_aescrypt_file_detected():
+    text = "0|/Users/IEUser/Documents/README.txt.aes|126755-128-1|r/r|0|0|418|0|0|0|0\n"
+    by_id = {h.pattern_id: h for h in scan_text(text)}
+    assert "AESCRYPT_ENCRYPTED_FILE" in by_id
+    assert by_id["AESCRYPT_ENCRYPTED_FILE"].hypotheses == ["H_DISK_ENCRYPTED"]
+
+
+def test_pgp_gpg_key_material_detected():
+    text = (
+        "0|/Users/IEUser/Downloads/John_0x61BE50C1_public.asc|126919|r/r|0|0|3100|0|0|0|0\n"
+        "0|/Users/IEUser/AppData/Roaming/gnupg/pubring.kbx|126937|r/r|0|0|1996|0|0|0|0\n"
+        "0|/Users/IEUser/AppData/Roaming/gnupg/private-keys-v1.d/01A2C899.key|126847|r/r|0|0|600|0|0|0|0\n"
+    )
+    by_id = {h.pattern_id: h for h in scan_text(text)}
+    assert "PGP_GPG_KEY_MATERIAL" in by_id
+    h = by_id["PGP_GPG_KEY_MATERIAL"]
+    # all three forms (armored .asc, keyring, private-keys-v1.d) matched
+    assert len(h.matches) >= 3
+    assert any(tid == "T1552.004" for tid, _ in h.attack_techniques)
+
+
+def test_veracrypt_container_detected():
+    text = "0|/Users/IEUser/Documents/secret.tc|999-128-1|r/r|0|0|5000000|0|0|0|0\n"
+    assert any(h.pattern_id == "VERACRYPT_TRUECRYPT_CONTAINER" for h in scan_text(text))
+
+
+def test_encryption_leads_are_advisory_not_antiforensics():
+    """Encryption is dual-use: these patterns must NOT lift H_ANTI_FORENSICS
+    (would inflate the anti-forensic narrative on a host that merely uses
+    encryption legitimately). They tag only the advisory H_DISK_ENCRYPTED."""
+    text = (
+        "0|/Users/IEUser/Documents/README.txt.aes|1|r/r|0|0|1|0|0|0|0\n"
+        "0|/Users/IEUser/Documents/x.tc|2|r/r|0|0|1|0|0|0|0\n"
+        "0|/Users/IEUser/AppData/Roaming/gnupg/secring.gpg|3|r/r|0|0|1|0|0|0|0\n"
+    )
+    for h in scan_text(text):
+        if h.pattern_id in {"AESCRYPT_ENCRYPTED_FILE", "VERACRYPT_TRUECRYPT_CONTAINER",
+                            "PGP_GPG_KEY_MATERIAL"}:
+            assert "H_ANTI_FORENSICS" not in h.hypotheses
+            assert h.hypotheses == ["H_DISK_ENCRYPTED"]
+
+
+def test_benign_files_not_flagged_as_encrypted():
+    """No false positives on ordinary system/user files (incl. a legit VM
+    .vhd, which is deliberately NOT name-flagged to avoid VM noise)."""
+    text = (
+        "0|/Windows/System32/kernel32.dll|1|r/r|0|0|1|0|0|0|0\n"
+        "0|/Users/IEUser/notes.txt|2|r/r|0|0|1|0|0|0|0\n"
+        "0|/VMs/win10/disk.vhd|3|r/r|0|0|1|0|0|0|0\n"
+        "0|/Users/IEUser/report.docx|4|r/r|0|0|1|0|0|0|0\n"
+    )
+    enc_ids = {"BITLOCKER_RECOVERY_KEY_FILE", "AESCRYPT_ENCRYPTED_FILE",
+               "PGP_GPG_KEY_MATERIAL", "VERACRYPT_TRUECRYPT_CONTAINER"}
+    assert not any(h.pattern_id in enc_ids for h in scan_text(text))

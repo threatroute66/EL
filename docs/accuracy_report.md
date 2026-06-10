@@ -183,16 +183,24 @@ hands-on with SIFT tools (Sleuth Kit + the Edge browser cache → AES password
 cloned"; dislocker/gpg + a themed passphrase "May the force be with you" →
 the secret `MT4orceBWY23`).
 
-**The honest takeaway + a backlog item.** EL's value on a crypto case is
+**The honest takeaway + the fix.** EL's value on a crypto case is
 *surfacing and prioritising* (it found the tooling and ranked the
-anti-forensic posture), not *breaking* the crypto. The miss worth fixing:
-there is no **encrypted-artifact detector**. A worthwhile addition (tracked
-for the backlog) would flag BitLocker volumes (`-FVE-FS-` / BitLocker-shaped
-`.vhd`), aescrypt files (the `AES\x02` magic), VeraCrypt/TrueCrypt
-containers, and PGP/GnuPG key material (`.asc`, `.gpg`, a user's
-`private-keys-v1.d`) as high-value `H_ENCRYPTION_PRESENT` leads — so the
-analyst is pointed straight at the encrypted objects to attack, even though
-EL will never attack them itself.
+anti-forensic posture), not *breaking* the crypto. The miss this case
+exposed — no **encrypted-artifact detector** — is now **shipped**: four
+`disk_anomaly` patterns flag the encrypted *objects* the analyst must attack,
+each tagging the existing advisory `H_DISK_ENCRYPTED` (+1; dual-use, so no
+anti-forensic inflation and no false-positive risk):
+`BITLOCKER_RECOVERY_KEY_FILE` (the `BitLocker Recovery Key {GUID}.TXT` unlock
+material), `AESCRYPT_ENCRYPTED_FILE` (`.aes`), `PGP_GPG_KEY_MATERIAL`
+(`.asc`/`.gpg`/`.pgp`, `pubring.kbx`, `secring.gpg`, `trustdb.gpg`,
+`private-keys-v1.d/`), and `VERACRYPT_TRUECRYPT_CONTAINER` (`.tc`/`.hc`).
+Validated on this case's real `fls` bodyfile — recovery-key ×4, `.aes` ×2,
+PGP/GnuPG material ×10. So a re-run now points the analyst straight at the
+recovery key, the encrypted README, and the GnuPG keyring. EL still never
+decrypts — that boundary is unchanged. (Filename/extension patterns; content
+magic for `-FVE-FS-` / `AES\x02` and BitLocker-shaped `.vhd` remains a
+possible v2, and whole-disk BitLocker is already detected at intake.) 6
+regression tests in `tests/test_disk_anomaly.py`.
 
 ---
 
@@ -357,7 +365,8 @@ audit:
 
 | Miss | What EL does instead | Priority |
 |---|---|---|
-| Encrypted containers (FileVault legacy, APFS-encrypted) + encrypted-artifact surfacing | LUKS works end-to-end; others need an operator-supplied key path. On Anti-Forensics Case 2, EL detected BitLocker/aescrypt/PGP *usage* via execution artifacts but did not surface the encrypted *objects* (`R2D2.vhd`, `.aes`, `.asc`, recovery-key `.TXT`, `private-keys-v1.d`) as findings — no encrypted-artifact detector yet (backlog) | Medium — operator-blockable |
+| Encrypted containers (FileVault legacy, APFS-encrypted) | LUKS works end-to-end; others need an operator-supplied key path. Whole-disk BitLocker is detected at intake | Medium — operator-blockable |
+| ~~Encrypted-artifact surfacing~~ ✅ shipped | `disk_anomaly` now flags the on-disk encrypted *objects* + recovery material — `BITLOCKER_RECOVERY_KEY_FILE`, `AESCRYPT_ENCRYPTED_FILE` (`.aes`), `PGP_GPG_KEY_MATERIAL` (`.asc`/`.gpg`/keyring/`private-keys-v1.d`), `VERACRYPT_TRUECRYPT_CONTAINER` (`.tc`/`.hc`) → advisory `H_DISK_ENCRYPTED`. Validated on the Anti-Forensics Case 2 bodyfile. Content-magic (`AES\x02` / `-FVE-FS-` / BitLocker `.vhd`) is a possible v2 | — |
 | Decryption / passphrase + key cracking | Out of scope by design — EL grounds every claim in a tool's output and has no "guess the password" code path. It points the analyst at the encrypted objects + the tooling used; the analyst decrypts (dislocker / gpg / aescrypt). Demonstrated honestly on Anti-Forensics Case 2 | By design — not a gap to "fix" |
 | ReFS / btrfs / xfs / zfs filesystems | `disk_forensicator` emits `insufficient` — Sleuth Kit doesn't support ReFS, extractor assumes ext* | Low — rare in IR corpora |
 | AFF4 + `.ad1` commercial containers | Not supported | Low — EnCase/FTK-only |

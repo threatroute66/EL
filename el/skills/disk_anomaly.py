@@ -168,6 +168,65 @@ PATTERNS: list[PathPattern] = [
             ("T1564.004", "Hide Artifacts: NTFS File Attributes"),
         ],
     ),
+    # --- Encrypted-artifact leads -----------------------------------------
+    # Encryption is dual-use, so all of these tag only H_DISK_ENCRYPTED — the
+    # ADVISORY (+1) "encryption present" hypothesis — never H_ANTI_FORENSICS.
+    # The point is to SURFACE the encrypted objects + the recovery material so
+    # the analyst knows what to attack (with the right key/passphrase); EL
+    # never decrypts. Surfaced by Anti-Forensics Case 2, where the recovery
+    # key file, the .aes README, the PGP message, and the GnuPG keyring drew
+    # no detector even though they were the whole case. Filename/extension
+    # patterns only (no content magic) — whole-disk BitLocker is already
+    # detected at intake; these catch the on-disk *files* it misses.
+    PathPattern(
+        pattern_id="BITLOCKER_RECOVERY_KEY_FILE",
+        description=("A BitLocker recovery-key text file left on disk "
+                     "('BitLocker Recovery Key {GUID}.TXT') — the 48-digit "
+                     "numeric password that unlocks an encrypted volume. "
+                     "High-value: retrieve it and pair with the matching "
+                     "volume (dislocker / manage-bde)."),
+        regex=re.compile(rf"{_S}BitLocker Recovery Key {_NS}*\.txt\b", re.I),
+        hypotheses=["H_DISK_ENCRYPTED"],
+        attack_techniques=[("T1552.001", "Unsecured Credentials: Credentials In Files")],
+    ),
+    PathPattern(
+        pattern_id="AESCRYPT_ENCRYPTED_FILE",
+        description=("File with an '.aes' extension — aescrypt-encrypted "
+                     "content (magic 'AES\\x02'). The original is usually "
+                     "deleted; recover the plaintext from a cache / shadow "
+                     "copy / unallocated, or supply the password to aescrypt."),
+        regex=re.compile(rf"{_S}{_NS}+\.aes\b", re.I),
+        hypotheses=["H_DISK_ENCRYPTED"],
+        attack_techniques=[("T1027", "Obfuscated, Compressed, or Encrypted Files or Information")],
+    ),
+    PathPattern(
+        pattern_id="PGP_GPG_KEY_MATERIAL",
+        description=("PGP / GnuPG key material or encrypted message on disk — "
+                     "a GnuPG keyring (pubring.kbx, secring.gpg, trustdb.gpg, "
+                     "private-keys-v1.d/) or an armored .asc/.gpg/.pgp file. "
+                     "The private keyring is the recovery material for any "
+                     "message encrypted to that user; surface it so the "
+                     "analyst can attempt decryption (with the key passphrase)."),
+        regex=re.compile(
+            rf"{_S}(?:"
+            r"pubring\.(?:kbx|gpg)|secring\.gpg|trustdb\.gpg"
+            rf"|private-keys-v1\.d(?={_S})"
+            rf"|{_NS}+\.(?:asc|gpg|pgp)"
+            r")\b", re.I),
+        hypotheses=["H_DISK_ENCRYPTED"],
+        attack_techniques=[("T1552.004", "Unsecured Credentials: Private Keys")],
+    ),
+    PathPattern(
+        pattern_id="VERACRYPT_TRUECRYPT_CONTAINER",
+        description=("VeraCrypt / TrueCrypt encrypted-container file "
+                     "('.tc' / '.hc' extension). By design the content is "
+                     "indistinguishable from random data; the extension (and "
+                     "the VeraCrypt/TrueCrypt tool execution) is the lead. "
+                     "Mount with the password / keyfile to recover."),
+        regex=re.compile(rf"{_S}{_NS}+\.(?:tc|hc)\b", re.I),
+        hypotheses=["H_DISK_ENCRYPTED"],
+        attack_techniques=[("T1027", "Obfuscated, Compressed, or Encrypted Files or Information")],
+    ),
 ]
 
 
