@@ -85,6 +85,16 @@ guess.**
 > **Pattern: Multi-Agent Framework** (Python coordinator over 34 specialist
 > agents) **with Claude Code session integration** (Playwright MCP server +
 > `el-red-review` / `el-ai-brief` deferred-LLM skills).
+>
+> The dashed boxes in the diagram are **architectural trust boundaries**, not
+> decoration. Three are marked: the **Evidence zone** (strict read-only —
+> write-bits stripped at intake), the **Deterministic pipeline** (court-vetted
+> CLI tools + pure-Python ACH; no LLM in the scoring path), and the **Advisory
+> LLM zone**. The first two are **architectural guardrails enforced in code**;
+> the Advisory LLM zone holds the **only prompt-based guardrails** (Red Reviewer
+> / executive-brief prompt text), which never score, write, or block — so even
+> if the model ignores its prompt, it has no mechanism to touch evidence or the
+> findings ledger.
 
 ```mermaid
 flowchart TB
