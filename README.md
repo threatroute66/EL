@@ -94,6 +94,15 @@ flowchart TB
     %% write-bits; ACH is pure Python; the LLM never scores/writes/blocks),
     %% NOT prompt-text guardrails.
 
+    subgraph LEGEND["◆ LEGEND — architecture pattern &amp; guardrail types &nbsp;(dashed box = trust boundary)"]
+        direction TB
+        L_PAT["<b>PATTERN: Multi-Agent Framework</b><br/>Python coordinator over 34 specialist agents<br/>+ Claude Code session integration (Playwright MCP + skills)"]
+        L_EVID["<b>Evidence zone</b> — ARCHITECTURAL guardrail<br/>strict read-only; write-bits stripped at intake"]
+        L_DET["<b>Deterministic zone</b> — ARCHITECTURAL guardrails<br/>court-vetted CLI tools · pure-Python ACH · schema rejects evidence-less findings"]
+        L_LLM["<b>Advisory LLM zone</b> — the ONLY PROMPT-BASED guardrails<br/>(Red Reviewer / executive-brief prompt text); never scores, writes, or blocks"]
+        L_PAT ~~~ L_EVID ~~~ L_DET ~~~ L_LLM
+    end
+
     subgraph ZONE_EVID["🔒 TRUST BOUNDARY · Evidence zone<br/>STRICT READ-ONLY — chain of custody<br/>(write-bits stripped at intake; originals never modified)"]
         direction TB
         subgraph INPUTS["Evidence inputs (16 validated shapes, 27 routed kinds)"]
@@ -212,11 +221,16 @@ flowchart TB
     classDef zoneDet fill:#0a1410,stroke:#3fb950,stroke-width:3px,stroke-dasharray:6 4,color:#7ee787
     classDef zoneLLM fill:#160e1f,stroke:#bc8cff,stroke-width:3px,stroke-dasharray:6 4,color:#d2a8ff
     classDef zoneExt fill:#161313,stroke:#8b949e,stroke-width:2px,stroke-dasharray:4 4,color:#8b949e
-    class INPUTS,AGENTS,SHARED,OUT sub
+    classDef legendPat fill:#0d1117,stroke:#58a6ff,stroke-width:2px,color:#79c0ff
+    class INPUTS,AGENTS,SHARED,OUT,LEGEND sub
     class ZONE_EVID zoneEvid
     class ZONE_DET zoneDet
     class ZONE_LLM zoneLLM
     class PUSH zoneExt
+    class L_PAT legendPat
+    class L_EVID zoneEvid
+    class L_DET zoneDet
+    class L_LLM zoneLLM
 ```
 
 > **Guardrail legend — architectural vs prompt-based.** The dashed zones above
