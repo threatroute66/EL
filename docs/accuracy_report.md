@@ -11,6 +11,18 @@ satisfy the Find Evil 2026 submission requirement:_
 > claims identified during testing. **Honesty valued over
 > perfection.**"_
 
+**Beyond those three, the rubric also requires evidence integrity** — how the
+architecture keeps original data read-only. That has its own dedicated section
+below. Every required topic is its own heading in this report:
+
+- [Validated real-case results](#validated-real-case-results)
+- [Known false-positive classes](#known-false-positive-classes--already-fixed-as-regression-tests) — **false positives**, already fixed as regression tests
+- [Known honest misses](#known-honest-misses) — **missed / unsupported artifacts**
+- [Self-correction sequences](#self-correction-sequences-during-real-case-work)
+- [**Evidence integrity — how original data stays unmodified**](#evidence-integrity--how-the-architecture-prevents-original-data-from-being-modified) — architectural read-only enforcement **+ what happens if the model ignores the restriction**
+- [Hallucination posture](#hallucination-posture--why-el-cannot-invent-a-claim) — **hallucinated claims**: why EL cannot invent one
+- [Summary grade](#summary-grade)
+
 ---
 
 ## Approach
