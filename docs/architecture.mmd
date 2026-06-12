@@ -1,0 +1,130 @@
+flowchart TB
+    %% ============ ARCHITECTURAL TRUST BOUNDARIES (dashed boxes) ============
+    %% Crossing a dashed border = crossing a trust boundary.
+    %% These are ARCHITECTURAL guardrails enforced in code (intake strips
+    %% write-bits; ACH is pure Python; the LLM never scores/writes/blocks),
+    %% NOT prompt-text guardrails.
+
+    subgraph ZONE_EVID["🔒 TRUST BOUNDARY · Evidence zone<br/>STRICT READ-ONLY — chain of custody<br/>(write-bits stripped at intake; originals never modified)"]
+        direction TB
+        subgraph INPUTS["Evidence inputs (16 validated shapes, 27 routed kinds)"]
+            direction LR
+            IN_MEM["memory image<br/>(.raw / .vmem / .mdd)"]
+            IN_DISK["disk image<br/>E01 / raw / NTFS / ext4 / APFS<br/>+ VHDX / VMDK"]
+            IN_PCAP["pcap / pcapng<br/>(also pcap-collection)"]
+            IN_LOG["EVTX / .evt /<br/>CloudTrail / Entra / M365 /<br/>k8s-audit / Falco events"]
+            IN_FS["FS tree<br/>Windows / Linux / macOS /<br/>Android / iOS / QNAP"]
+            IN_VELO["Velociraptor bundle<br/>+ UAC collection<br/>+ dfTimewolf bundle"]
+            IN_LIVE["<i>live Linux system</i><br/>UAC + Tracee eBPF"]
+        end
+        INTAKE["<b>Intake</b><br/>hash + manifest<br/>read-only enforcement"]
+        INPUTS --> INTAKE
+    end
+
+    subgraph ZONE_DET["TRUST BOUNDARY · Deterministic pipeline<br/>court-vetted CLI tools · Pydantic-validated findings<br/>NO LLM in the scoring path"]
+        direction TB
+        TRIAGE["<b>Triage</b><br/>magic bytes + directory shape<br/>sets evidence_kind"]
+        COORD{"<b>Coordinator</b><br/><a href='docs/state-machine.md'>state machine</a><br/>intake → triage → hypothesis_gen →<br/>parallel_investigate → correlate →<br/>adversarial_review → synthesize → report → done"}
+        TRIAGE --> COORD
+
+        subgraph AGENTS["34 specialist agents (one per evidence kind, chained as applicable)"]
+            direction TB
+            A_MEM["MemoryForensicator<br/>18 vol3 plugins + Baseliner<br/>+ MemProcFS FindEvil corroboration"]
+            A_USR["<b>UserActivityAgent</b><br/>Office MRU FILETIMEs + TypedPaths<br/>+ drive-letter↔USB map<br/>+ removable-staging detector"]
+            A_RDP["<b>RDPBruteForceAnalyst</b><br/>inbound :3389 from external IPs<br/>brute-force cluster + breach"]
+            A_DISK["DiskForensicator<br/>Sleuth Kit + EWF + NTFS/ext4/APFS mount"]
+            A_WIN["WindowsArtifactAgent<br/>11 EZ Tools + BAM/DAM + IE5 + XP .evt"]
+            A_LIN["LinuxForensicator<br/>utmp/wtmp/btmp + systemd-journal +<br/>cron + SSH + Father rootkit + UAC mode"]
+            A_MAC["MacOSForensicator<br/>+ Mandiant macos-UnifiedLogs (Rust)"]
+            A_AND["AndroidForensicator<br/>+ MVT (Pegasus / Predator IOCs)"]
+            A_IOS["IOSForensicator<br/>+ MVT mercenary-spyware check"]
+            A_NET["NetworkAnalyst<br/>scapy + Zeek + Suricata + tshark<br/>+ JA3/JA4+ + RITA-algorithm beaconing"]
+            A_LOG["LogAnalyst<br/>EvtxECmd + Hayabusa + Sigma correlation"]
+            A_CRED["CredentialAnalyst"]
+            A_LAT["LateralMovementAnalyst"]
+            A_PS["PowerShellAnalyst<br/>EID 4104 + 4103 + PSReadline"]
+            A_CLOUD["CloudForensicator<br/>CloudTrail / VPC / Entra / M365 / GCP"]
+            A_MAIL["EmailForensicator<br/>PST + OST + inbound phishing"]
+            A_BROWSE["BrowserForensicator<br/>+ Hindsight (Chromium family)"]
+            A_EXEC["ExecutionCorroborator"]
+            A_ENDP["EndpointAnalyst<br/>Velociraptor v0.7+ schema<br/>(PEDump / ProcessInfo / MFT / Linux)"]
+            A_TIME["TimelineSynthesist<br/>Plaso → Timesketch push"]
+            A_HUNT["ThreatHunter<br/>YARA / YARA-X auto-prefer + stego-carrier"]
+            A_MAL["MalwareTriage<br/>capa + FLOSS + pefile + 21 families"]
+            A_LOGC["<b>LogCorpus</b><br/>multi-host SOC logs → per-format parsers<br/>(Win Event XML / eCAR / Zeek JSON / ASA / Snort / syslog)"]
+            A_LIVE["<b>LiveResponseCollector</b><br/>UAC IR-triage + Tracee eBPF"]
+            A_DFTW["<b>DFTimewolfDispatcher</b><br/>recipe + sub-artifact inventory"]
+            A_K8S["K8sAuditAnalyst"]
+            A_CONT["<b>ContainerForensicator</b><br/>Falco events → escape / k8s privesc"]
+        end
+        COORD --> AGENTS
+
+        subgraph SHARED["Shared per-case substrate"]
+            direction LR
+            LEDGER[("findings.sqlite<br/>(Pydantic-validated)")]
+            GRAPH[("graph.kuzu<br/>Locard entities + edges")]
+            KNOW[("~/.el/knowledge.sqlite<br/>(cross-case IOC + imphash)")]
+        end
+        AGENTS --> LEDGER
+        AGENTS --> GRAPH
+        AGENTS -. ioc registration .-> KNOW
+
+        CORR["<b>Correlator</b><br/>cross-agent Kùzu graph queries"]
+        ACH["<b>ACH Engine</b><br/>33 hypotheses × all findings<br/>Heuer diagnostic scoring<br/><i>(pure Python — no LLM)</i>"]
+        RED["<b>Red Reviewer</b><br/>rule-based challenger (always, deterministic)<br/>+ LLM augmentation (advisory only)<br/>blocks SYNTHESIZE until every unresolved Finding resolves"]
+        LEDGER --> CORR --> ACH --> RED
+        RED -- "any unresolved?" --> COORD
+
+        REPORT["<b>Reporter</b><br/>deterministic projection of Findings"]
+        RED --> REPORT
+
+        subgraph OUT["Judge-facing outputs (sealed at DONE)"]
+            direction LR
+            O_MD["report.md<br/>narrative.md"]
+            O_HTML["case.html<br/>(dark theme, zero CDN)"]
+            O_STIX["stix-bundle.json<br/><i>(deterministic UUID5 ids,<br/>Layer-3 recurrence labels)</i>"]
+            O_JSON["findings.json"]
+            O_SIGMA["reports/sigma_rules/<br/>SPL · KQL · Lucene packs"]
+            O_EXEC["execution_log.jsonl<br/>execution_log.md<br/><b>traceability_matrix.md</b>"]
+            O_SEAL["seal.json<br/>+ tar.gz archive"]
+        end
+        REPORT --> OUT
+
+        SERVE["<b>el serve</b><br/>loopback HTTP viewer :8089"]
+        O_HTML --> SERVE
+    end
+
+    INTAKE --> TRIAGE
+
+    subgraph ZONE_LLM["TRUST BOUNDARY · Advisory LLM zone<br/>Claude Code session skills (no API key needed)<br/>NEVER scores ACH · NEVER writes evidence · NEVER blocks"]
+        direction TB
+        MCP["<b>Playwright MCP server</b><br/>(.mcp.json → npx @playwright/mcp)<br/>browser automation over the web view"]
+        SKILL_RR["skill: <b>el-red-review</b><br/>fulfils deferred adversarial challenger"]
+        SKILL_AI["skill: <b>el-ai-brief</b><br/>fulfils deferred executive brief"]
+    end
+
+    subgraph PUSH["External push targets (opt-in, env-var configured)<br/>outside all trust boundaries"]
+        direction LR
+        P_TS["Timesketch<br/>(.plaso upload)"]
+        P_OCTI["OpenCTI<br/>(STIX bundle)"]
+        P_MISP["MISP<br/>(STIX bundle)"]
+        P_CAPE["CAPE Sandbox<br/>(dynamic analysis)"]
+    end
+
+    REPORT -. opt-in .-> PUSH
+    SERVE <-. drive / screenshot .-> MCP
+    RED -. "deferred when inside Claude Code<br/>(CLAUDECODE=1, no API key)" .-> SKILL_RR
+    REPORT -. "deferred when inside Claude Code" .-> SKILL_AI
+    SKILL_RR -. verdicts merge .-> LEDGER
+    SKILL_AI -. brief re-renders .-> REPORT
+
+    classDef sub fill:#0d1117,stroke:#30363d,color:#c9d1d9
+    classDef zoneEvid fill:#1c1408,stroke:#d29922,stroke-width:3px,stroke-dasharray:6 4,color:#e3b341
+    classDef zoneDet fill:#0a1410,stroke:#3fb950,stroke-width:3px,stroke-dasharray:6 4,color:#7ee787
+    classDef zoneLLM fill:#160e1f,stroke:#bc8cff,stroke-width:3px,stroke-dasharray:6 4,color:#d2a8ff
+    classDef zoneExt fill:#161313,stroke:#8b949e,stroke-width:2px,stroke-dasharray:4 4,color:#8b949e
+    class INPUTS,AGENTS,SHARED,OUT sub
+    class ZONE_EVID zoneEvid
+    class ZONE_DET zoneDet
+    class ZONE_LLM zoneLLM
+    class PUSH zoneExt
