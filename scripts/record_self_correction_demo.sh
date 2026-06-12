@@ -25,6 +25,12 @@ IMG="${1:-/media/sansforensics/images1/2019 Narcos/Narcos-1/Memory Dump/Narcos-M
 CASE="${EL_CASE:-sc-demo}"
 CASE_DIR="$EL_ROOT/cases/$CASE"
 AUDIT="$CASE_DIR/analysis/forensic_audit.log"
+RUNLOG="/tmp/el-${CASE}-investigate.log"
+# Fast mode (default): stop and exit the instant the self-correction is printed
+# — the screencast ends at ~20s instead of waiting out the multi-minute carve.
+# The investigation keeps running, fully detached, to completion in the
+# background. Set EL_SC_FAST=0 to keep the old behaviour (wait for the carve).
+EL_SC_FAST="${EL_SC_FAST:-1}"
 
 bold() { printf '\033[1m%s\033[0m\n' "$*"; }
 cyan() { printf '\033[36m%s\033[0m\n' "$*"; }
@@ -42,12 +48,17 @@ if [[ ! -r "$IMG" ]]; then
 fi
 
 # Fresh case dir so the demo is reproducible run-to-run (evidence is read-only;
-# we only remove EL's own prior output for this demo case).
+# we only remove EL's own prior output for this demo case). Kill any prior
+# in-flight run of this demo case first so we don't clobber a live carve.
+pkill -f "el investigate .*--case-id $CASE" 2>/dev/null && sleep 1
 rm -rf "$CASE_DIR"
 
 cyan ">> el investigate (the memory image vol3 cannot build a kernel layer for)"
-# --foreground keeps it attached so the screencast shows the live run.
-"$EL" investigate "$IMG" --case-id "$CASE" --foreground &
+# Launch fully detached (own session, output to a logfile) so the script can
+# exit cleanly after the self-correction without the asciinema pty closing
+# SIGHUP-ing the run — the investigation finishes in the background either way.
+setsid "$EL" investigate "$IMG" --case-id "$CASE" --foreground \
+    >"$RUNLOG" 2>&1 < /dev/null &
 EL_PID=$!
 
 # Watch the audit log for the self-correction event and print it the instant
@@ -73,14 +84,22 @@ done
 
 [[ "$shown" -eq 0 ]] && dim "(no self-correction event observed yet — see the audit log)"
 
-cyan ">> letting the carve pipeline finish (recovers what the structured plugins could not) ..."
-wait "$EL_PID"
+echo
+dim  "Web view : http://localhost:8089/$CASE/reports/case.html  (Self-corrections panel)"
+dim  "JSONL    : $CASE_DIR/analysis/self_corrections.jsonl"
+dim  "Exec log : $CASE_DIR/reports/execution_log.jsonl  (event=self_correction)"
+echo
 
+if [[ "$EL_SC_FAST" == "1" ]]; then
+  bold "✓ self-correction captured — recording complete."
+  dim  "The investigation continues in the background to completion"
+  dim  "(carve + report); follow it at $RUNLOG"
+  exit 0
+fi
+
+# EL_SC_FAST=0 — wait out the full carve and show the final ledger.
+cyan ">> letting the carve pipeline finish (recovers what the structured plugins could not) ..."
+while kill -0 "$EL_PID" 2>/dev/null; do sleep 2; done
 echo
 bold "Final self-correction ledger for this case:"
 "$EL" self-corrections "$CASE_DIR"
-
-echo
-dim  "Web view  : http://localhost:8089/$CASE/reports/case.html  (Self-corrections panel)"
-dim  "JSONL     : $CASE_DIR/analysis/self_corrections.jsonl"
-dim  "Exec log  : $CASE_DIR/reports/execution_log.jsonl  (event=self_correction)"
