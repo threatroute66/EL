@@ -15,6 +15,13 @@ The [M57-Jean](https://digitalcorpora.org/corpora/scenarios/m57-patents/)
 disk image (public, Digital Corpora) investigated end-to-end. 497 logged
 events across 16 agents.
 
+> **Reviewing with a crawler/bot?** GitHub's `robots.txt` blocks automated
+> access to raw `.jsonl` and the directory-listing API. Open
+> [`m57-jean/README.md`](m57-jean/) — it renders on the folder page with the
+> file inventory (line counts + sha256) and the spot-check finding→tool
+> events quoted verbatim, so the evidence is readable without opening the raw
+> file.
+
 | File | What it is |
 |---|---|
 | `execution_log.jsonl` | Machine-readable spine — every state transition, agent start/stop, agent handoff, tool execution (with `output_sha256` + `finding_id`), finding emission, and LLM call, each stamped `ts_utc` (UTC) |
