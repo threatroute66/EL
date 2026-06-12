@@ -1,7 +1,7 @@
 # Demo video — chapter index & content guide
 
 **Video:** [EL — demo walkthrough](https://youtu.be/QuliIYfjqrI) ·
-**Runtime: 4:45** (`PT4M45S` / 285 s — under the 5:00 cap) ·
+**Runtime: 4:46** (`PT4M46S` / 286 s — under the 5:00 cap) ·
 **Published:** 2026-06-12 · **Channel:** Murat Cakir
 
 > **Why this page exists.** YouTube returns **HTTP 429** to automated
@@ -10,7 +10,7 @@
 > list below is reproduced from the video's **own YouTube chapter markers**
 > (set by the uploader; read from the watch-page metadata, not invented), so
 > the structure is reviewable without playback. The runtime is confirmed
-> from the page's `lengthSeconds` (285 s). Audio narration and on-screen
+> from the page's `lengthSeconds` (286 s). Audio narration and on-screen
 > terminal content require ~5 minutes of human playback to confirm directly —
 > the chapter structure (live install, Claude setup, a live investigation, a
 > dedicated self-correction segment, the web UI) reflects a live screencast
@@ -65,7 +65,7 @@ on-screen moment against written artifacts:
 
 ## What a human reviewer should confirm (≈5 min)
 
-1. Runtime ≤ 5:00 — shown as **4:45** (already confirmed via page metadata).
+1. Runtime ≤ 5:00 — shown as **4:46** (already confirmed via page metadata).
 2. It is a live-terminal screencast with audio narration (not slides /
    marketing) — the Installation, Claude-setup, and "Running a forensic
    investigation" chapters are the ones to spot-check.
