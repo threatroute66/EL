@@ -2,7 +2,7 @@
 
 > One page from fresh SIFT to a verifiable EL run. Three paths: a **5-minute test-suite walk-through** (Path A) that proves the architectural contracts with no evidence download; a **30-minute end-to-end investigation** against a public DFIR scenario where EL reached the canonical answer two public human writeups missed, run as a **standalone CLI** (Path B); and the **same investigation driven conversationally from inside a Claude Code session** with no `ANTHROPIC_API_KEY` (Path C).
 
-📺 **Watch the 4:58 demo walkthrough:** [EL demo (YouTube)](https://youtu.be/ErcxDSlFIAQ) — live-terminal screencast; self-correction at [3:15](https://youtu.be/ErcxDSlFIAQ?t=195). [Chapter index](demo_video.md).
+📺 **Watch the 4:45 demo walkthrough:** [EL demo (YouTube)](https://youtu.be/QuliIYfjqrI) — live-terminal screencast; self-correction at [2:07](https://youtu.be/QuliIYfjqrI?t=127). [Chapter index](demo_video.md).
 
 ## Prerequisites
 

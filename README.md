@@ -10,7 +10,7 @@ A multi-agent DFIR orchestrator for the SANS SIFT Workstation, built for
 the [SANS Find Evil 2026](https://findevil.devpost.com/) competition and
 designed as a reusable forensic investigation framework.
 
-📺 **Watch the 4:58 demo walkthrough:** [EL demo (YouTube)](https://youtu.be/ErcxDSlFIAQ) — a live-terminal screencast with narration that installs EL, runs a real forensic investigation end-to-end, hits an on-screen **self-correction ("Bug found & fixed") at [3:15](https://youtu.be/ErcxDSlFIAQ?t=195)**, then shows the case + executive reports. Full [chapter index & content guide](docs/demo_video.md); the same self-correction loops (insufficient-finding → code fix → test-lock) are documented in [`sample-reports/SRL-2018-shakedown.md`](sample-reports/SRL-2018-shakedown.md) and [§ Self-correction](#self-correction).
+📺 **Watch the 4:45 demo walkthrough:** [EL demo (YouTube)](https://youtu.be/QuliIYfjqrI) — a live-terminal screencast with narration that installs EL, runs a real forensic investigation end-to-end, hits an on-screen **self-correction ("Bug found & fixed") at [2:07](https://youtu.be/QuliIYfjqrI?t=127)**, then shows the case + executive reports. Full [chapter index & content guide](docs/demo_video.md); the same self-correction loops (insufficient-finding → code fix → test-lock) are documented in [`sample-reports/SRL-2018-shakedown.md`](sample-reports/SRL-2018-shakedown.md) and [§ Self-correction](#self-correction).
 
 **Judges:** start at [`docs/JUDGES.md`](docs/JUDGES.md) — single-page
 quickstart with a 5-min contract verification, a 30-min end-to-end run

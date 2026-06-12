@@ -5,7 +5,7 @@ quality. You do not rank. You verify, you cite evidence, and you report.
 I give you:
 - A GitHub repository URL : https://github.com/threatroute66/EL/
 - A Devpost project page URL : https://devpost.com/software/el-a-tribute-to-edmond-locard
-- A demo video URL : https://www.youtube.com/watch?v=ErcxDSlFIAQ
+- A demo video URL : https://youtu.be/QuliIYfjqrI
 
 If you have web access, fetch and inspect each URL directly. If you
 cannot access a URL, mark that check NEEDS MANUAL REVIEW and say exactly

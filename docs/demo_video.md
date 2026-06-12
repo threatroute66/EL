@@ -1,7 +1,7 @@
 # Demo video — chapter index & content guide
 
-**Video:** [EL — demo walkthrough](https://youtu.be/ErcxDSlFIAQ) ·
-**Runtime: 4:58** (`PT4M58S` / 298 s — under the 5:00 cap) ·
+**Video:** [EL — demo walkthrough](https://youtu.be/QuliIYfjqrI) ·
+**Runtime: 4:45** (`PT4M45S` / 285 s — under the 5:00 cap) ·
 **Published:** 2026-06-08 · **Channel:** Murat Cakir
 
 > **Why this page exists.** YouTube returns **HTTP 429** to automated
@@ -10,7 +10,7 @@
 > list below is reproduced from the video's **own YouTube chapter markers**
 > (set by the uploader; read from the watch-page metadata, not invented), so
 > the structure is reviewable without playback. The runtime is confirmed
-> from the page's `lengthSeconds` (298 s). Audio narration and on-screen
+> from the page's `lengthSeconds` (285 s). Audio narration and on-screen
 > terminal content require ~5 minutes of human playback to confirm directly —
 > the chapter structure (live install, Claude setup, a live investigation, a
 > dedicated self-correction segment, the web UI) reflects a live screencast
@@ -29,26 +29,26 @@ Each timestamp deep-links into the video.
 
 | Time | Chapter | What it shows |
 |---|---|---|
-| [0:00](https://youtu.be/ErcxDSlFIAQ?t=0) | Introducing to EL | What EL is — a multi-agent DFIR orchestrator |
-| [0:13](https://youtu.be/ErcxDSlFIAQ?t=13) | Repo URL | The public GitHub repository |
-| [0:23](https://youtu.be/ErcxDSlFIAQ?t=23) | `JUDGES.md` | The judge-oriented entry doc |
-| [0:31](https://youtu.be/ErcxDSlFIAQ?t=31) | Architecture | The architecture diagram + trust boundaries |
-| [0:36](https://youtu.be/ErcxDSlFIAQ?t=36) | State machine | The coordinator state machine |
-| [0:41](https://youtu.be/ErcxDSlFIAQ?t=41) | Self-assessment report | The self-assessment |
-| [0:45](https://youtu.be/ErcxDSlFIAQ?t=45) | Accuracy report | `docs/accuracy_report.md` |
-| [0:50](https://youtu.be/ErcxDSlFIAQ?t=50) | Installation | Installing EL on the SIFT Workstation (live terminal) |
-| [1:40](https://youtu.be/ErcxDSlFIAQ?t=100) | Claude setup | Wiring up the Claude Code session |
-| [1:50](https://youtu.be/ErcxDSlFIAQ?t=110) | Interaction with EL | Driving EL from the CLI |
-| [2:00](https://youtu.be/ErcxDSlFIAQ?t=120) | Running a forensic investigation | A live end-to-end `el investigate` run |
-| [**3:15**](https://youtu.be/ErcxDSlFIAQ?t=195) | **Self-correction sequence** | **On-screen "Bug found & fixed" — EL detects a problem and corrects it during the run** |
-| [3:20](https://youtu.be/ErcxDSlFIAQ?t=200) | Results | The findings the run produced |
-| [3:30](https://youtu.be/ErcxDSlFIAQ?t=210) | Web interface | The `el serve` case report (`case.html`) |
-| [4:45](https://youtu.be/ErcxDSlFIAQ?t=285) | Executive report | The executive-tier report |
+| [0:00](https://youtu.be/QuliIYfjqrI?t=0) | Introducing to EL | What EL is — a multi-agent DFIR orchestrator |
+| [0:13](https://youtu.be/QuliIYfjqrI?t=13) | Repo URL | The public GitHub repository |
+| [0:23](https://youtu.be/QuliIYfjqrI?t=23) | `JUDGES.md` | The judge-oriented entry doc |
+| [0:31](https://youtu.be/QuliIYfjqrI?t=31) | Architecture | The architecture diagram + trust boundaries |
+| [0:36](https://youtu.be/QuliIYfjqrI?t=36) | State machine | The coordinator state machine |
+| [0:41](https://youtu.be/QuliIYfjqrI?t=41) | Self-assessment report | The self-assessment |
+| [0:45](https://youtu.be/QuliIYfjqrI?t=45) | Accuracy report | `docs/accuracy_report.md` |
+| [0:50](https://youtu.be/QuliIYfjqrI?t=50) | Installation | Installing EL on the SIFT Workstation (live terminal) |
+| [1:18](https://youtu.be/QuliIYfjqrI?t=78) | Claude setup | Wiring up the Claude Code session |
+| [1:30](https://youtu.be/QuliIYfjqrI?t=90) | Interaction with EL | Driving EL from the CLI |
+| [1:45](https://youtu.be/QuliIYfjqrI?t=105) | Running a forensic investigation | A live end-to-end `el investigate` run |
+| [**2:07**](https://youtu.be/QuliIYfjqrI?t=127) | **Self-correction sequence** | **On-screen "Bug found & fixed" — EL detects a problem and corrects it during the run** |
+| [3:01](https://youtu.be/QuliIYfjqrI?t=181) | Results | The findings the run produced |
+| [3:14](https://youtu.be/QuliIYfjqrI?t=194) | Web interface | The `el serve` case report (`case.html`) |
+| [4:33](https://youtu.be/QuliIYfjqrI?t=273) | Executive report | The executive-tier report |
 
 ## The self-correction sequence (rubric Check 4c)
 
 The on-screen self-correction is a dedicated chapter at
-**[3:15](https://youtu.be/ErcxDSlFIAQ?t=195)** ("Self-Correction Sequence").
+**[2:07](https://youtu.be/QuliIYfjqrI?t=127)** ("Self-Correction Sequence").
 The same class of loop — *insufficient finding → code fix → test-lock* — is
 documented end-to-end in the repository, so a reviewer can corroborate the
 on-screen moment against written artifacts:
@@ -65,9 +65,9 @@ on-screen moment against written artifacts:
 
 ## What a human reviewer should confirm (≈5 min)
 
-1. Runtime ≤ 5:00 — shown as **4:58** (already confirmed via page metadata).
+1. Runtime ≤ 5:00 — shown as **4:45** (already confirmed via page metadata).
 2. It is a live-terminal screencast with audio narration (not slides /
    marketing) — the Installation, Claude-setup, and "Running a forensic
    investigation" chapters are the ones to spot-check.
 3. At least one on-screen self-correction — jump straight to
-   [3:15](https://youtu.be/ErcxDSlFIAQ?t=195).
+   [2:07](https://youtu.be/QuliIYfjqrI?t=127).
