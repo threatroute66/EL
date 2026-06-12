@@ -10,7 +10,7 @@ A multi-agent DFIR orchestrator for the SANS SIFT Workstation, built for
 the [SANS Find Evil 2026](https://findevil.devpost.com/) competition and
 designed as a reusable forensic investigation framework.
 
-📺 **Watch the intro:** [EL Introduction (YouTube)](https://youtu.be/ErcxDSlFIAQ)
+📺 **Watch the intro:** [EL Introduction (YouTube)](https://youtu.be/ErcxDSlFIAQ) — **4:58**, screencast of live terminal execution with narration. The self-correction loops are documented end-to-end (insufficient-finding → code fix → test-lock) in [`sample-reports/SRL-2018-shakedown.md`](sample-reports/SRL-2018-shakedown.md) and [§ Self-correction](#self-correction).
 
 **Judges:** start at [`docs/JUDGES.md`](docs/JUDGES.md) — single-page
 quickstart with a 5-min contract verification, a 30-min end-to-end run

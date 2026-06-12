@@ -431,7 +431,7 @@ decision path for evidence extraction.
 
 | # | Gap | Status | Reference |
 |---|---|---|---|
-| 1 | **Demo video** | ❌ Not recorded — postponed | Requires a prepared sequence incl. self-correction scene |
+| 1 | **Demo video** | ✅ **Closed** | Recorded + published (4:58): https://youtu.be/ErcxDSlFIAQ — live terminal screencast with narration |
 | 2 | Consolidated Accuracy Report | ✅ **Closed** | `docs/accuracy_report.md`, commit `d25a95b` |
 | 3 | Architecture diagram upgrade | ✅ **Closed** | Mermaid block in `README.md` "Architecture", commit `6bf5b68` |
 | 4 | Scapy (GPL-2) dependency flag | ✅ **Closed** | README "Third-party dependency license notices" section, commit `6bf5b68` |
