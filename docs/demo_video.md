@@ -2,7 +2,7 @@
 
 **Video:** [EL — demo walkthrough](https://youtu.be/QuliIYfjqrI) ·
 **Runtime: 4:45** (`PT4M45S` / 285 s — under the 5:00 cap) ·
-**Published:** 2026-06-08 · **Channel:** Murat Cakir
+**Published:** 2026-06-12 · **Channel:** Murat Cakir
 
 > **Why this page exists.** YouTube returns **HTTP 429** to automated
 > fetches, so a bot-driven reviewer may be unable to load the watch page to
