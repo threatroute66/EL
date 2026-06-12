@@ -284,6 +284,40 @@ def ledger_cmd(
     console.print(t)
 
 
+@app.command("self-corrections")
+def self_corrections_cmd(
+    case_dir: str = typer.Argument(..., help="Path to a case directory"),
+    json_out: bool = typer.Option(False, "--json", help="Emit raw JSONL records"),
+) -> None:
+    """List the genuine runtime self-corrections EL made on a case.
+
+    Reads analysis/self_corrections.jsonl (aggregating bundle device
+    sub-cases). Each row is a real before/after: EL committed to a first
+    interpretation/route, detected it was wrong, and corrected course.
+    """
+    from el.self_correction import load_self_corrections
+    rows = load_self_corrections(case_dir)
+    if json_out:
+        for r in rows:
+            console.print(json.dumps(r.to_json(), separators=(",", ":")))
+        return
+    if not rows:
+        console.print("[dim]no runtime self-corrections recorded for this case[/dim]")
+        return
+    console.print(f"[bold]Runtime self-corrections ({len(rows)})[/bold]\n")
+    for r in rows:
+        console.print(f"[cyan]⟳ {r.mechanism_label()}[/cyan]")
+        console.print(f"  [dim]{r.utc} · {r.agent} · {r.case_id}[/dim]")
+        console.print(f"  [yellow]trigger[/yellow]    {r.trigger}")
+        console.print(f"  [yellow]initial[/yellow]    {r.initial_interpretation}")
+        console.print(f"  [yellow]detection[/yellow]  {r.detection}")
+        console.print(f"  [green]correction[/green] {r.correction}")
+        console.print(f"  [green]outcome[/green]    {r.outcome}")
+        if r.evidence_sha256:
+            console.print(f"  [dim]sha256 {r.evidence_sha256}[/dim]")
+        console.print("")
+
+
 @app.command("seal-verify")
 def seal_verify_cmd(
     case_dir: str = typer.Argument(..., help="Path to a sealed case directory"),

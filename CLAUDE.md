@@ -107,13 +107,14 @@ el/
 ├── schemas/
 │   └── finding.py         # Pydantic Finding + EvidenceItem + RedReview (the contract)
 ├── audit.py               # forensic_audit.log writer
+├── self_correction.py     # records genuine within-run auto-corrections (vol3 no-kernel→carve, symbol-heal, paired-baseline re-score, challenger escalation) → analysis/self_corrections.jsonl + audit event (→ execution_log.jsonl) + case.html panel; `el self-corrections`
 ├── case_template.py       # per-case CLAUDE.md generator
 ├── tooling.py             # tool registry / probes for `el doctor`
 ├── provisioning.py        # `el provision-snapshot` snapshot capture
 ├── seal.py                # Layer 2 — per-case sha256 manifest + tar.gz archive at DONE
 ├── knowledge.py           # Layer 3 — ~/.el/knowledge.sqlite cross-case IOC store
 └── cli.py                 # typer entrypoints: doctor / intake / investigate / report / hunt / ledger /
-                           #                    provision-snapshot / seal-verify / knowledge
+                           #                    self-corrections / provision-snapshot / seal-verify / knowledge
 
 tests/                     # pytest; run with `make test`
 provisioning/              # apt-packages.txt + optional-tools.txt + snapshots/

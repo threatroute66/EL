@@ -12,6 +12,7 @@ from pathlib import Path
 from el.agents.base import Agent, AgentContext
 from el.evidence.graph import open_graph
 from el.schemas.finding import Finding
+from el.self_correction import record_self_correction
 from el.skills import memory_baseliner, memprocfs as mpfs, netscan_triage, process_profile, vol3
 
 
@@ -383,11 +384,35 @@ class MemoryForensicatorAgent(Agent):
                 supported: list[str] = []
                 if ctx.shared.get("paired_with"):
                     supported.append("H_NOT_CLEAN_BASELINE")
-                out.append(self.emit(ctx, Finding(
+                fnd = self.emit(ctx, Finding(
                     case_id=ctx.case_id, agent=self.name, confidence="high",
                     claim=f"Baseline comparison ({mode}): no non-baseline items observed",
                     evidence=[ev], hypotheses_supported=supported,
-                )))
+                ))
+                out.append(fnd)
+                if "H_NOT_CLEAN_BASELINE" in supported:
+                    # Genuine runtime re-score: a zero-diff would have lifted
+                    # the benign hypothesis, but the paired-capture context
+                    # inverts its meaning.
+                    record_self_correction(
+                        ctx, self.name,
+                        mechanism="paired_baseline_rescore",
+                        trigger=f"Baseline comparison ({mode}) found zero "
+                                f"non-baseline items",
+                        initial="A clean diff would lift the benign / null "
+                                "hypothesis (+2)",
+                        detection="This device is half of a paired A/B capture "
+                                  "(paired_with set) — a zero-diff means the "
+                                  "baseline carries the same persistence, not a "
+                                  "clean host",
+                        correction="Tag H_NOT_CLEAN_BASELINE so _h_benign "
+                                   "suppresses the +2 benign lift and "
+                                   "H_NOT_CLEAN_BASELINE itself lifts",
+                        outcome="ACH no longer mistakes 'identical to baseline' "
+                                "for 'clean'",
+                        evidence_sha256=getattr(ev, "output_sha256", None),
+                        refs=[fnd.finding_id],
+                    )
             else:
                 hyp = {"proc": "H_PROCESS_INJECTION", "drv": "H_ROOTKIT",
                        "svc": "H_PERSISTENCE_SERVICE"}[mode]
@@ -426,14 +451,35 @@ class MemoryForensicatorAgent(Agent):
 
         if rec.status == "healed" and healed_pslist is not None:
             runs["windows.pslist.PsList"] = healed_pslist
-            out.append(self.emit(ctx, Finding(
+            heal_ev = healed_pslist.as_evidence()
+            fnd = self.emit(ctx, Finding(
                 case_id=ctx.case_id, agent=self.name, confidence="high",
                 claim=(f"Vol3 process list RECOVERED: pslist was empty "
                        f"(psscan had {pss.row_count}), but a retry returned "
                        f"{healed_pslist.row_count} rows — process-context plugins "
                        f"re-enabled."),
-                evidence=[healed_pslist.as_evidence()],
-            )))
+                evidence=[heal_ev],
+            ))
+            out.append(fnd)
+            # Genuine runtime self-correction: EL was about to treat the
+            # process list as empty, detected the symbol-degradation signature,
+            # and repopulated it on retry.
+            record_self_correction(
+                ctx, self.name,
+                mechanism="memory_symbol_healing",
+                trigger=f"windows.pslist returned 0 rows but windows.psscan "
+                        f"found {pss.row_count} processes",
+                initial="Treat the process list as empty (symbol-degraded image)",
+                detection="psscan/pslist disagreement is the canonical symbol-"
+                          "degradation signature; retried pslist after symbol "
+                          "recovery",
+                correction=f"pslist retry returned {healed_pslist.row_count} "
+                           f"rows — swapped the populated list back in",
+                outcome="Re-enabled the process-context plugins "
+                        "(PsTree / CmdLine / Malfind)",
+                evidence_sha256=getattr(heal_ev, "output_sha256", None),
+                refs=[fnd.finding_id],
+            )
             for plugin, extra in self._RECOVER_PLUGINS:
                 try:
                     r = vol3.run_plugin(ctx.input_path, plugin, analysis,

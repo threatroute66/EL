@@ -12,6 +12,7 @@ from pathlib import Path
 
 from el.agents.base import Agent, AgentContext
 from el.schemas.finding import EvidenceItem, Finding
+from el.self_correction import record_self_correction
 from el.skills import vol3
 
 
@@ -623,7 +624,7 @@ class TriageAgent(Agent):
                 # over the memory image (recovers credentials, process names,
                 # IPs, mail accounts that the structured plugins would have).
                 ctx.shared["evidence_kind"] = "unallocated (carve-only)"
-                out.append(self.emit(ctx, Finding(
+                fnd = self.emit(ctx, Finding(
                     case_id=ctx.case_id, agent=self.name,
                     confidence="insufficient",
                     # probe.reason already states the banner hit, the build,
@@ -633,7 +634,30 @@ class TriageAgent(Agent):
                            f"{f' (Windows build {probe.build})' if probe.build else ''}"
                            f": {probe.reason} Routing to the carve pipeline for "
                            f"string/IOC recovery."),
-                )))
+                ))
+                out.append(fnd)
+                # Record the genuine runtime self-correction: EL was about to
+                # treat this as a structured-memory image, detected the
+                # no-kernel-layer reality via the banner scan, and re-routed.
+                record_self_correction(
+                    ctx, self.name,
+                    mechanism="memory_truncated_acquisition_fallback",
+                    trigger="Volatility 3 automagic built no kernel layer for "
+                            "the memory image",
+                    initial="Route to the structured memory pipeline "
+                            "(pslist/pstree/malfind via MemoryForensicator)",
+                    detection="Raw-byte ntoskrnl kernel-banner scan confirmed "
+                              "Windows memory"
+                              + (f" (build {probe.build})" if probe.build else "")
+                              + " but no usable DTB in the captured range — a "
+                                "truncated / non-atomic acquisition",
+                    correction="Reclassify evidence_kind as 'unallocated "
+                               "(carve-only)' and route to the carve pipeline",
+                    outcome="bulk_extractor + IOC carve still recover strings, "
+                            "credentials and process names the structured "
+                            "plugins could not",
+                    refs=[fnd.finding_id],
+                )
                 return out
             out.append(self.emit(ctx, Finding(
                 case_id=ctx.case_id, agent=self.name,

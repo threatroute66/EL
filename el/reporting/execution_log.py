@@ -199,7 +199,8 @@ def build_events(case_dir: str | Path) -> list[ExecutionEvent]:
     _type_order = {
         "state_transition": 0, "investigator_selected": 1,
         "agent_start": 2, "tool_execution": 3,
-        "finding_emitted": 4, "agent_handoff": 5, "agent_done": 6,
+        "finding_emitted": 4, "self_correction": 5,
+        "agent_handoff": 6, "agent_done": 7,
     }
     events.sort(key=lambda e: (
         e.ts_utc,
@@ -237,7 +238,7 @@ def write_markdown(events: list[ExecutionEvent], out_path: Path,
     summary = {
         "state_transition": 0, "agent_start": 0, "agent_done": 0,
         "tool_execution": 0, "finding_emitted": 0, "investigator_selected": 0,
-        "agent_handoff": 0, "llm_call": 0,
+        "agent_handoff": 0, "llm_call": 0, "self_correction": 0,
     }
     for ev in events:
         if ev.event_type in summary:
@@ -252,6 +253,7 @@ def write_markdown(events: list[ExecutionEvent], out_path: Path,
     lines.append(f"- Tool executions: **{summary['tool_execution']}**")
     lines.append(f"- LLM calls (token-metered): **{summary['llm_call']}**")
     lines.append(f"- Findings emitted: **{summary['finding_emitted']}**")
+    lines.append(f"- Runtime self-corrections: **{summary['self_correction']}**")
     lines.append("")
 
     # Group events by (state, agent). We track the current state /
@@ -320,6 +322,15 @@ def write_markdown(events: list[ExecutionEvent], out_path: Path,
             if hs:
                 lines.append(f"    - supports: {hs_txt}")
             lines.append("")
+            continue
+        if ev.event_type == "self_correction":
+            mech = ev.fields.get("mechanism", "?")
+            lines.append(f"- _{ev.ts_utc}_ · ⟳ **SELF-CORRECTION** "
+                          f"(`{mech}`) by `{ev.fields.get('agent', ev.agent or '?')}`")
+            for k in ("trigger", "detection", "correction", "outcome"):
+                v = ev.fields.get(k)
+                if v:
+                    lines.append(f"    - {k}: {v}")
             continue
         # Other audit events — surface as a dim bullet so the trace is
         # complete even for intake_complete, etc.

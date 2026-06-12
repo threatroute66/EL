@@ -1631,6 +1631,56 @@ def render_html(
     heatmap_html = _build_attack_heatmap_html(techniques)
     diamond_html = _build_diamond_html(findings, ach_ranking, iocs, manifest)
 
+    # Runtime self-corrections — genuine within-run auto-corrections recorded
+    # during the investigation (analysis/self_corrections.jsonl). Each is a
+    # real before/after: EL committed to a route/interpretation, detected it
+    # was wrong, and corrected course. Server-rendered (static).
+    try:
+        from el.self_correction import load_self_corrections
+        _corrections = load_self_corrections(case_dir)
+    except Exception:
+        _corrections = []
+
+    def _sc_row(k: str, v: str, color: str) -> str:
+        return (
+            '<div style="display:flex;gap:10px;margin:3px 0;font-size:13px">'
+            f'<span style="flex:0 0 92px;color:{color};font-family:monospace">'
+            f'{html.escape(k)}</span>'
+            f'<span style="color:#c9d1d9">{html.escape(v)}</span></div>'
+        )
+
+    if _corrections:
+        _cards = []
+        for c in _corrections:
+            refs = (" · refs: " + ", ".join(html.escape(r) for r in c.refs)
+                    ) if c.refs else ""
+            sha = (f'<div style="color:#6e7681;font-size:11px;'
+                   f'font-family:monospace;margin-top:6px">sha256 '
+                   f'{html.escape(c.evidence_sha256)}</div>'
+                   ) if c.evidence_sha256 else ""
+            _cards.append(
+                '<div style="border:1px solid #21262d;border-left:3px solid '
+                '#2ea043;border-radius:6px;padding:12px 14px;margin-bottom:10px;'
+                'background:#0d1117">'
+                '<div style="font-weight:600;color:#2ea043;margin-bottom:4px">'
+                f'⟳ {html.escape(c.mechanism_label())}</div>'
+                '<div style="color:#8b949e;font-size:12px;margin-bottom:8px">'
+                f'{html.escape(c.utc)} · {html.escape(c.agent)} · '
+                f'{html.escape(c.case_id)}{refs}</div>'
+                + _sc_row("trigger", c.trigger, "#f85149")
+                + _sc_row("initial", c.initial_interpretation, "#f85149")
+                + _sc_row("detection", c.detection, "#d29922")
+                + _sc_row("correction", c.correction, "#2ea043")
+                + _sc_row("outcome", c.outcome, "#2ea043")
+                + sha
+                + '</div>'
+            )
+        selfcorr_html = "".join(_cards)
+    else:
+        selfcorr_html = ('<p style="color:#8b949e">No runtime self-corrections '
+                         'recorded for this case.</p>')
+    selfcorr_count = len(_corrections)
+
     # Tier 5: Executive Narrative — six-beat prose "what happened"
     try:
         narrative = _narrative_synth(
@@ -1664,6 +1714,7 @@ def render_html(
   <nav>
     <a href="#narrative">Narrative</a>
     <a href="#summary">Summary</a>
+    <a href="#self-corrections">Self-corrections</a>
     <a href="#ach">ACH</a>
     <a href="#swimlane">Swimlane</a>
     <a href="#timeline">Timeline</a>
@@ -1700,6 +1751,11 @@ def render_html(
     <div class="summary-card medium"><div class="k">Medium</div><div class="v">{by_conf.get("medium",0)}</div></div>
     <div class="summary-card low"><div class="k">Low</div><div class="v">{by_conf.get("low",0)}</div></div>
   </div>
+</section>
+
+<section id="self-corrections">
+  <h2>Runtime Self-Corrections <span class="count">({selfcorr_count} — genuine within-run auto-corrections: EL committed to a route, detected it was wrong, and corrected course. Each is logged to analysis/self_corrections.jsonl and the execution log.)</span></h2>
+  {selfcorr_html}
 </section>
 
 <section id="ach">

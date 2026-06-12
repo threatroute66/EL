@@ -401,6 +401,32 @@ repeatable; here are the three most recent end-to-end sequences,
 all on real third-party evidence corpora, all committed and
 test-locked.
 
+**Runtime self-corrections are recorded, not just narrated.**
+`el/self_correction.py` captures each genuine within-run
+auto-correction as a first-class structured artifact — the
+before/after with a UTC timestamp — written to
+`<case>/analysis/self_corrections.jsonl` and emitted as an
+`event=self_correction` line in the forensic audit log, which the
+execution-log builder lifts into `reports/execution_log.jsonl`.
+The case report renders them in a dedicated **Runtime
+Self-Corrections** panel, and `el self-corrections <case>` prints
+them at the terminal. Four real correction sites are wired:
+`memory_truncated_acquisition_fallback` (vol3 builds no kernel
+layer → banner scan → re-route to carve),
+`memory_symbol_healing` (pslist retry repopulates the process
+list), `paired_baseline_rescore` (a clean diff on a paired
+capture is re-scored as failed remediation, not a clean host),
+and `adversarial_review_downgrade` (the challenger escalates a
+finding the system had emitted as actionable). The recorder is
+only ever called from a code path that genuinely performed the
+correction — it is instrumentation of real behaviour, not a
+narrator. Example captured on a re-run of Narcos suspect Steve's
+memory image (`Narcos-Mem-1.001`, sha256 `e20e333d…`): triage
+recorded a `memory_truncated_acquisition_fallback` naming Windows
+build **10.0.17763 (1809)** the moment vol3's automagic failed,
+then routed to carve — verifiable in that case's
+`self_corrections.jsonl` and `execution_log.jsonl`.
+
 ### Sequence 1 — M57-pcaps: directory routing → streaming OOM (April 2026)
 
 Real evidence: `/mnt/hgfs/hackathon/M57-net/` — the M57 case's 50

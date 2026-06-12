@@ -23,6 +23,7 @@ from el.agents.base import Agent, AgentContext
 from el.challengers.rules import challenge as rule_challenge
 from el.evidence.ledger import insert as ledger_insert, list_findings
 from el.schemas.finding import Finding, RedReview
+from el.self_correction import record_self_correction
 
 
 CHALLENGER_MODEL = os.environ.get("EL_RED_MODEL", "claude-opus-4-7")
@@ -465,6 +466,7 @@ class RedReviewerAgent(Agent):
 
         passed = challenged = unresolved = 0
         for f in reviewable:
+            rule_status = rule_results[f.finding_id].status
             merged = _merge(rule_results[f.finding_id],
                             llm_results.get(f.finding_id) if llm_results else None)
             f.red_review = RedReview(
@@ -473,6 +475,28 @@ class RedReviewerAgent(Agent):
                 disconfirming_checklist=merged.checklist,
             )
             ledger_insert(ctx.case_dir, f)
+            # Genuine runtime self-correction: the challenger escalated a
+            # finding the system had emitted as actionable. Only record real
+            # escalations (the LLM raised severity over the rule-only verdict);
+            # an unchanged verdict is not a correction.
+            if (merged.status != rule_status
+                    and merged.status in ("challenged", "unresolved")):
+                record_self_correction(
+                    ctx, self.name,
+                    mechanism="adversarial_review_downgrade",
+                    trigger=f"Challenger escalated finding {f.finding_id} from "
+                            f"'{rule_status}' to '{merged.status}'",
+                    initial=f"{f.agent} emitted ({f.confidence}): "
+                            f"{f.claim[:160]}",
+                    detection="LLM disconfirming review disagreed with the "
+                              "rule-only verdict",
+                    correction=f"red_review.status set to '{merged.status}' — "
+                               f"finding flagged for resolution before synthesis",
+                    outcome=("Synthesis blocked until resolved"
+                             if merged.status == "unresolved"
+                             else "Claim carried into the report as challenged"),
+                    refs=[f.finding_id],
+                )
             if merged.status == "passed":
                 passed += 1
             elif merged.status == "challenged":
