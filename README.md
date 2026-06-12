@@ -82,6 +82,10 @@ guess.**
 > layer (Playwright MCP server from `.mcp.json` + the `el-red-review` /
 > `el-ai-brief` deferred-LLM fulfilment skills).
 
+> **Pattern: Multi-Agent Framework** (Python coordinator over 34 specialist
+> agents) **with Claude Code session integration** (Playwright MCP server +
+> `el-red-review` / `el-ai-brief` deferred-LLM skills).
+
 ```mermaid
 flowchart TB
     %% ============ ARCHITECTURAL TRUST BOUNDARIES (dashed boxes) ============
@@ -214,6 +218,17 @@ flowchart TB
     class ZONE_LLM zoneLLM
     class PUSH zoneExt
 ```
+
+> **Guardrail legend — architectural vs prompt-based.** The dashed zones above
+> are **architectural** guardrails, enforced in code regardless of any prompt:
+> evidence stays read-only (intake strips write-bits on `/cases`, `/mnt`,
+> `/media`, `/evidence`), ACH scoring is pure Python, the Finding schema rejects
+> any non-`insufficient` finding with empty `evidence[]`, and the advisory LLM
+> zone can never score, write evidence, or block — its output only re-enters via
+> the validated ledger merge. The only **prompt-based** guardrails are the
+> *contents* of the Red Reviewer's LLM challenger prompt and the executive-brief
+> prompt (the advisory zone); even there the *architecture* (deferred-skill
+> boundary, schema validation on merge) is what makes them non-load-bearing.
 
 ### Agents
 
