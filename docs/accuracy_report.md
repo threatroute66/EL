@@ -843,6 +843,64 @@ shut once we find them."
 
 ---
 
+## Evidence integrity — how the architecture prevents original data from being modified
+
+The Find Evil rubric requires this section to live inside the accuracy
+report. It consolidates the four mechanisms that, together, keep the
+original evidence byte-identical from intake to seal. Three are
+architectural (enforced in code regardless of any prompt); the fourth is
+the tamper-evidence layer that makes a violation of the first three
+detectable after the fact.
+
+| Layer | Mechanism | Where | What it guarantees |
+|---|---|---|---|
+| **1. Protected-path classifier** | `_evidence_is_protected()` flags any input whose resolved path contains `/cases/`, `/mnt/`, `/media/`, or `/evidence/` | `el/evidence/intake.py:124` | Evidence staged in the canonical forensic locations is recognised as read-only territory |
+| **2. Physical write-bit strip** | On intake of a protected file, EL `chmod`s `S_IWUSR`/`S_IWGRP`/`S_IWOTH` **off** before reading a byte | `el/evidence/intake.py:233-244` | The OS itself refuses writes to the original — the only layer that *physically* blocks mutation, not just discourages it |
+| **3. Hash manifest at intake** | `CaseManifest` records `input_sha256` + `input_sha1` + `input_md5` + size + 16-byte magic; directory inputs hashed via a deterministic sorted walk | `el/evidence/intake.py:213-262` | A cryptographic baseline of the evidence as received, before any agent runs |
+| **4. Seal + `seal-verify`** | At `DONE` the coordinator walks every file under `cases/<id>/`, records per-file sha256 + size + a merkle root + the EL git rev into `seal.json`; `el seal-verify` re-hashes and reports any drift | `el/seal.py` (`seal_case` / `verify_seal`) | Any post-hoc mutation of evidence *or* analysis output is detectable — hash drift, size drift, missing files, and new-files-not-in-seal all fail verification |
+
+**Output routing closes the loop.** EL never writes into an evidence
+directory: every artifact goes to `cases/<case_id>/{analysis,exports,reports,raw}/`,
+and `EvidenceItem.output_path` records the in-case file each claim was
+computed from. EL's own readers open evidence with `rb` (read) only.
+
+### What happens if the model ignores the restriction
+
+The rubric asks this explicitly for prompt-based restrictions. EL's
+evidence read-only rule is **not** prompt-based — it is OS-level — so the
+honest answer has three parts:
+
+1. **An LLM has no path to the evidence at all.** The Red Reviewer
+   challenger and the executive-brief skill receive structured `Finding`
+   payloads, not file handles; neither can invoke a tool, open a file, or
+   write to the case directory (see *Hallucination posture* below). A
+   model "deciding" to modify evidence has no mechanism to act on it.
+2. **Deterministic code is physically blocked.** Even an agent's Python
+   attempting to open a protected original for writing hits the stripped
+   write bits (Layer 2). The one honest limitation: `chmod` is
+   best-effort — read-only FUSE mounts (`ewfmount`), vmhgfs shared
+   folders, and read-only NFS reject `chmod` with `EPERM`, and a literal
+   `root` user could re-add the bit. That is *why* Layer 4 exists.
+3. **Whatever slips through is caught at verification.** Because the
+   intake manifest (Layer 3) and the seal (Layer 4) bracket the whole
+   case with sha256, any byte that changed between intake and seal — by
+   any actor, cooperative or not — surfaces as drift on the next
+   `el seal-verify`. Integrity is therefore *enforced* where it can be
+   (Layers 1–2) and *provable* everywhere else (Layers 3–4).
+
+These boundaries are tested adversarially. `tests/test_security_boundaries.py`
+names each test after the bypass it attempts:
+`test_intake_strips_write_bits_when_protected` (Layer 2 — a writable file
+under a protected path must come back with all three write bits cleared),
+`test_protected_path_classifier_recognises_evidence_locations` (Layer 1 —
+`/cases`, `/mnt`, `/media`, `/evidence` all classified protected), and
+`test_user_writable_paths_are_not_falsely_protected` (the inverse — the
+classifier must *not* mass-`chmod` `/home`, `/tmp`, working dirs).
+`tests/test_seal_and_knowledge.py::test_verify_seal_detects_drift` pins
+Layer 4: a one-byte edit after sealing fails `verify_seal`.
+
+---
+
 ## Hallucination posture — why EL cannot invent a claim
 
 EL uses an LLM **only** in two narrow places, both architecturally
@@ -896,6 +954,13 @@ jq 'select(.finding_id=="01KPWZNEC5FR8KWZETDM2BFG8B")' \
    cases/<case_id>/reports/execution_log.jsonl
 sha256sum <the output_path from the row>
 # Should match the output_sha256 in the tool_execution event
+
+# 7. Evidence-integrity boundaries (read-only strip + protected-path
+#    classifier + seal drift detection) — see "Evidence integrity" above
+.venv/bin/pytest -q tests/test_security_boundaries.py tests/test_seal_and_knowledge.py
+
+# 8. Verify a sealed case has not drifted since DONE
+.venv/bin/el seal-verify cases/<case_id>
 ```
 
 ---
